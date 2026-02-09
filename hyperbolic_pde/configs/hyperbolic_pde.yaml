@@ -1,0 +1,55 @@
+seed: 42
+device: cuda
+
+data:
+  path: hyperbolic_pde/data/hyperbolic_dataset.npz
+  nx: 256
+  nt: 256
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
+  cfl: 0.4
+  num_samples: 300
+  num_segments: 3 
+  u_min: 0.0
+  u_max: 1.0
+  ic_points: 64
+  boundary: ghost
+  train_fraction: 0.8
+
+pinn:
+  hidden_layers: 5
+  hidden_width: 64
+  activation: tanh
+  steps: 2000
+  lr: 1.0e-3
+  batch_pdes: 4
+  interior_samples: 256
+  initial_samples: 256
+  boundary_samples: 128
+  lambda_res: 1.0
+  lambda_init: 1.0
+  lambda_bc: 0.1
+  hard_boundary: false
+  save_path: hyperbolic_pde/runs/pinn.pt
+  eval_samples: 5
+  eval_plots: 3
+  plot_dir: hyperbolic_pde/runs/plots/pinn
+
+fno:
+  modes_x: 16
+  modes_t: 16
+  width: 64
+  layers: 5
+  steps: 7000
+  lr: 5.0e-3
+  weight_decay: 0.0
+  grad_clip: null
+  lr_schedule: null
+  lr_min: 1.0e-5
+  lr_step: 500
+  lr_gamma: 0.5
+  batch_size: 32
+  save_path: hyperbolic_pde/runs/fno.pt
+  eval_plots: 3
+  plot_dir: hyperbolic_pde/runs/plots/fno

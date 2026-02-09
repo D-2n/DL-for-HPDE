@@ -1,0 +1,9 @@
+data:
+  num_samples: 20
+  train_fraction: 0.8
+
+
+fno:
+  steps: 5000
+  lr: 1.0e-3
+  batch_size: 1
