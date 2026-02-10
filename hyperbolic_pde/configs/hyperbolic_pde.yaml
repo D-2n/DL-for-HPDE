@@ -3,13 +3,13 @@ device: cuda
 
 data:
   path: hyperbolic_pde/data/hyperbolic_dataset.npz
-  nx: 256
-  nt: 256
+  nx: 64
+  nt: 64
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
-  cfl: 0.4
-  num_samples: 300
+  cfl: 0.1
+  num_samples: 100
   num_segments: 3 
   u_min: 0.0
   u_max: 1.0
@@ -39,17 +39,17 @@ pinn:
 fno:
   modes_x: 16
   modes_t: 16
-  width: 64
-  layers: 5
-  steps: 7000
-  lr: 5.0e-3
+  width: 32
+  layers: 4
+  steps: 2000
+  lr: 1.0e-3
   weight_decay: 0.0
   grad_clip: null
   lr_schedule: null
   lr_min: 1.0e-5
   lr_step: 500
   lr_gamma: 0.5
-  batch_size: 32
+  batch_size: 64
   save_path: hyperbolic_pde/runs/fno.pt
   eval_plots: 3
   plot_dir: hyperbolic_pde/runs/plots/fno

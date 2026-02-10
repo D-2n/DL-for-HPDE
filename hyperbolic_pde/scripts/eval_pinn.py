@@ -108,19 +108,19 @@ def main() -> None:
                 err_np = np.abs(pred_np - truth_np)
 
                 fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
-                im0 = axes[0].pcolormesh(dataset.t, dataset.x, pred_np.T, shading="auto", cmap="jet")
+                im0 = axes[0].pcolormesh(dataset.t, dataset.x, pred_np, shading="auto", cmap="jet")
                 axes[0].set_title("PINN prediction")
                 axes[0].set_xlabel("t")
                 axes[0].set_ylabel("x")
                 fig.colorbar(im0, ax=axes[0])
 
-                im1 = axes[1].pcolormesh(dataset.t, dataset.x, truth_np.T, shading="auto", cmap="jet")
+                im1 = axes[1].pcolormesh(dataset.t, dataset.x, truth_np, shading="auto", cmap="jet")
                 axes[1].set_title("Godunov FVM truth")
                 axes[1].set_xlabel("t")
                 axes[1].set_ylabel("x")
                 fig.colorbar(im1, ax=axes[1])
 
-                im2 = axes[2].pcolormesh(dataset.t, dataset.x, err_np.T, shading="auto", cmap="magma")
+                im2 = axes[2].pcolormesh(dataset.t, dataset.x, err_np, shading="auto", cmap="magma")
                 axes[2].set_title("Absolute error")
                 axes[2].set_xlabel("t")
                 axes[2].set_ylabel("x")

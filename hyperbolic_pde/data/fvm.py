@@ -96,7 +96,6 @@ def solve_conservation_fvm(
         amax = max(1e-6, amax)
         dt = cfl * dx / amax
         dt = min(dt, t_max - t)
-
         if boundary == "periodic":
             u_right = np.roll(u, -1)
             fhat = godunov_flux(u, u_right)
