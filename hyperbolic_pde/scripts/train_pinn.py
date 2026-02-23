@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -96,7 +97,14 @@ def main() -> None:
 
     opt = torch.optim.Adam(model.parameters(), lr=float(pinn_cfg["lr"]))
 
-    steps = int(pinn_cfg["steps"])
+    epochs = pinn_cfg.get("epochs")
+    if epochs is None:
+        if "steps" in pinn_cfg:
+            epochs = int(pinn_cfg["steps"])
+            print(f"[PINN] config uses steps={epochs}; treating as epochs.")
+        else:
+            raise KeyError("pinn config must define 'epochs' (or legacy 'steps')")
+    epochs = int(epochs)
     batch_pdes = int(pinn_cfg["batch_pdes"])
     n_int = int(pinn_cfg["interior_samples"])
     n_init = int(pinn_cfg["initial_samples"])
@@ -113,7 +121,8 @@ def main() -> None:
 
     rng = np.random.default_rng(int(cfg.get("seed", 42)))
 
-    for step in range(1, steps + 1):
+    start_time = time.perf_counter()
+    for epoch in range(1, epochs + 1):
         opt.zero_grad(set_to_none=True)
         batch_indices = rng.choice(train_idx, size=batch_pdes, replace=True)
 
@@ -149,16 +158,18 @@ def main() -> None:
         loss.backward()
         opt.step()
 
-        if step % 200 == 0 or step == 1:
+        if epoch % 10 == 0 or epoch == 1:
             print(
-                f"[PINN] step {step:5d} | total={loss.item():.3e} | "
+                f"[PINN] epoch {epoch:5d}/{epochs} | total={loss.item():.3e} | "
                 f"res={loss_res.item():.3e} | init={loss_init.item():.3e} | bc={loss_bc.item():.3e}"
             )
 
     save_path = Path(pinn_cfg["save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), save_path)
+    elapsed = time.perf_counter() - start_time
     print(f"Saved PINN checkpoint to {save_path}")
+    print(f"[PINN] Training time: {elapsed:.2f}s")
 
 
 if __name__ == "__main__":

@@ -3,27 +3,29 @@ device: cuda
 
 data:
   path: hyperbolic_pde/data/hyperbolic_dataset.npz
-  nx: 64
-  nt: 64
+  test_path: hyperbolic_pde/data/hyperbolic_test_superres.npz
+  nx: 256
+  nt: 256
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
-  cfl: 0.1
-  num_samples: 100
-  num_segments: 3 
+  cfl: 0.2
+  num_samples: 2000
+  test_num_samples: 200
+  num_segments: 2
   u_min: 0.0
   u_max: 1.0
-  ic_points: 64
+  ic_points: 128
   boundary: ghost
   train_fraction: 0.8
 
 pinn:
-  hidden_layers: 5
+  hidden_layers: 4
   hidden_width: 64
   activation: tanh
-  steps: 2000
+  epochs: 150
   lr: 1.0e-3
-  batch_pdes: 4
+  batch_pdes: 1000
   interior_samples: 256
   initial_samples: 256
   boundary_samples: 128
@@ -36,20 +38,40 @@ pinn:
   eval_plots: 3
   plot_dir: hyperbolic_pde/runs/plots/pinn
 
-fno:
-  modes_x: 16
-  modes_t: 16
-  width: 32
+fno: # ~40 epochs for default data/batch config
+  modes_x: 24
+  modes_t: 24
+  width: 64
   layers: 4
-  steps: 2000
+  epochs: 700
+  lr: 1.0e-3
+  weight_decay: 0.0
+  grad_clip: null   
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  lr_step: 5000
+  lr_gamma: 0.5
+  batch_size: 16
+  save_path: hyperbolic_pde/runs/fno.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/fno
+
+deeponet:
+  branch_layers: 3
+  trunk_layers: 3
+  hidden_width: 64
+  latent_dim: 64
+  activation: tanh
+  use_bias: true
+  epochs: 500
   lr: 1.0e-3
   weight_decay: 0.0
   grad_clip: null
-  lr_schedule: null
-  lr_min: 1.0e-5
-  lr_step: 500
+  lr_schedule: cosine
+  lr_min: 5.0e-6
+  lr_step: 5000
   lr_gamma: 0.5
-  batch_size: 64
-  save_path: hyperbolic_pde/runs/fno.pt
-  eval_plots: 3
-  plot_dir: hyperbolic_pde/runs/plots/fno
+  batch_size: 16
+  save_path: hyperbolic_pde/runs/deeponet.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/deeponet

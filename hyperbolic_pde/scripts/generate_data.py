@@ -59,6 +59,11 @@ def main() -> None:
         ic_points=int(data_cfg["ic_points"]),
         boundary=str(data_cfg.get("boundary", "periodic")),
         seed=int(cfg.get("seed", 42)),
+        num_workers=(
+            int(data_cfg["num_workers"])
+            if data_cfg.get("num_workers", None) is not None
+            else None
+        ),
     )
 
     out_path = Path(data_cfg["path"])

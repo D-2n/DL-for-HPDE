@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from hyperbolic_pde.models.deeponet import DeepONet
 from hyperbolic_pde.models.fno import FNO2d
 from hyperbolic_pde.models.pinn import UniversalPINN, hyperbolic_residual
 
@@ -23,3 +24,11 @@ def test_fno_forward() -> None:
     x = torch.rand(2, 3, 16, 8)
     y = model(x)
     assert y.shape == (2, 1, 16, 8)
+
+
+def test_deeponet_forward() -> None:
+    model = DeepONet(branch_in=8, trunk_in=2, hidden_width=16, branch_layers=2, trunk_layers=2, latent_dim=8)
+    branch = torch.rand(4, 8)
+    trunk = torch.rand(10, 2)
+    out = model(branch, trunk)
+    assert out.shape == (4, 10)

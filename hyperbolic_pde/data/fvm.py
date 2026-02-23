@@ -19,9 +19,8 @@ def flux_prime(u: np.ndarray) -> np.ndarray:
 
 def godunov_flux(u_left: np.ndarray, u_right: np.ndarray) -> np.ndarray:
     """
-    Godunov flux for f(u)=u(1-u).
+    Godunov flux for f(u)=u(1-u) LWR traffic pde.
 
-    Uses min/max characterization over the interval between states.
     """
     f_left = flux(u_left)
     f_right = flux(u_right)
@@ -117,7 +116,7 @@ def solve_conservation_fvm(
             u_new[-1] = u[-1]
             u = u_new
         else:
-            raise ValueError("boundary must be 'periodic', 'ghost', or 'fixed'")
+            raise ValueError("boundary must be 'periodic', 'ghost', or 'fixed'!!!")
 
         t += dt
         while k < nt_out and t >= t_out[k] - 1e-12:
@@ -145,6 +144,28 @@ class DatasetBundle:
     ic: np.ndarray
 
 
+def _solve_one_sample(
+    index: int,
+    u0: np.ndarray,
+    x_min: float,
+    x_max: float,
+    t_max: float,
+    nt_out: int,
+    cfl: float,
+    boundary: str,
+) -> Tuple[int, np.ndarray]:
+    _, _, u_hist = solve_conservation_fvm(
+        u0=u0,
+        x_min=x_min,
+        x_max=x_max,
+        t_max=t_max,
+        nt_out=nt_out,
+        cfl=cfl,
+        boundary=boundary,
+    )
+    return index, u_hist
+
+
 def generate_dataset(
     num_samples: int,
     nx: int,
@@ -159,6 +180,7 @@ def generate_dataset(
     ic_points: int,
     boundary: str,
     seed: int = 42,
+    num_workers: int | None = None,
 ) -> DatasetBundle:
     rng = np.random.default_rng(seed)
     x = np.linspace(x_min, x_max, nx, dtype=np.float32)
@@ -169,18 +191,43 @@ def generate_dataset(
 
     for i in range(num_samples):
         u0 = piecewise_constant_ic(x, num_segments, u_min, u_max, rng)
-        _, _, u_hist = solve_conservation_fvm(
-            u0=u0,
-            x_min=x_min,
-            x_max=x_max,
-            t_max=t_max,
-            nt_out=nt,
-            cfl=cfl,
-            boundary=boundary,
-        )
-        u[i] = u_hist
         u0_all[i] = u0
         ic_all[i] = encode_ic(u0, x, ic_points)
+
+    if not num_workers or num_workers <= 1:
+        for i in range(num_samples):
+            _, _, u_hist = solve_conservation_fvm(
+                u0=u0_all[i],
+                x_min=x_min,
+                x_max=x_max,
+                t_max=t_max,
+                nt_out=nt,
+                cfl=cfl,
+                boundary=boundary,
+            )
+            u[i] = u_hist
+        return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = [
+            executor.submit(
+                _solve_one_sample,
+                i,
+                u0_all[i],
+                x_min,
+                x_max,
+                t_max,
+                nt,
+                cfl,
+                boundary,
+            )
+            for i in range(num_samples)
+        ]
+        for future in as_completed(futures):
+            index, u_hist = future.result()
+            u[index] = u_hist
 
     return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
 

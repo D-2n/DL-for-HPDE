@@ -47,8 +47,10 @@ class FNO2d(nn.Module):
     ) -> None:
         super().__init__()
         self.lift = nn.Conv2d(in_channels, width, 1)
+        
         self.spectral_layers = nn.ModuleList()
         self.pointwise_layers = nn.ModuleList()
+
         for _ in range(layers):
             self.spectral_layers.append(SpectralConv2d(width, width, modes_x, modes_t))
             self.pointwise_layers.append(nn.Conv2d(width, width, 1))

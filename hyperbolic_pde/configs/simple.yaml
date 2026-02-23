@@ -4,6 +4,6 @@ data:
 
 
 fno:
-  steps: 5000
+  epochs: 313
   lr: 1.0e-3
   batch_size: 1

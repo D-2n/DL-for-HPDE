@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -97,21 +99,35 @@ def main() -> None:
         layers=int(fno_cfg["layers"]),
     ).to(device)
 
+    epochs = fno_cfg.get("epochs")
+    if epochs is None:
+        if "steps" in fno_cfg:
+            steps = int(fno_cfg["steps"])
+            steps_per_epoch = max(1, len(loader))
+            epochs = max(1, math.ceil(steps / steps_per_epoch))
+            print(
+                f"[FNO] config uses steps={steps}; converting to epochs={epochs} "
+                f"(steps/epoch={steps_per_epoch})."
+            )
+        else:
+            raise KeyError("fno config must define 'epochs' (or legacy 'steps')")
+    epochs = int(epochs)
     weight_decay = float(fno_cfg.get("weight_decay", 0.0))
     opt = torch.optim.Adam(model.parameters(), lr=float(fno_cfg["lr"]), weight_decay=weight_decay)
     scheduler = None
     schedule = fno_cfg.get("lr_schedule")
+    total_steps = epochs * max(1, len(loader))
     if schedule == "cosine":
         lr_min = float(fno_cfg.get("lr_min", 1.0e-5))
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=lr_min)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
     elif schedule == "step":
         lr_step = int(fno_cfg.get("lr_step", 1000))
         lr_gamma = float(fno_cfg.get("lr_gamma", 0.5))
         scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step, gamma=lr_gamma)
-    steps = int(fno_cfg["steps"])
     step = 0
     model.train()
-    while step < steps:
+    start_time = time.perf_counter()
+    for epoch in range(1, epochs + 1):
         for inp, out in loader:
             step += 1
             inp = inp.to(device)
@@ -129,15 +145,17 @@ def main() -> None:
 
             if step % 100 == 0 or step == 1:
                 lr_now = opt.param_groups[0]["lr"]
-                print(f"[FNO] step {step:5d} | mse={loss.item():.3e} | lr={lr_now:.2e}")
-
-            if step >= steps:
-                break
+                print(
+                    f"[FNO] epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
+                    f"mse={loss.item():.3e} | lr={lr_now:.2e}"
+                )
 
     save_path = Path(fno_cfg["save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), save_path)
+    elapsed = time.perf_counter() - start_time
     print(f"Saved FNO checkpoint to {save_path}")
+    print(f"[FNO] Training time: {elapsed:.2f}s")
 
 
 if __name__ == "__main__":
