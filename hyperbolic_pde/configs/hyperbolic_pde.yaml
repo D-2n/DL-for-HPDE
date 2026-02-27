@@ -18,10 +18,9 @@ data:
   ic_points: 128
   boundary: ghost
   train_fraction: 0.8
-
 pinn:
   hidden_layers: 4
-  hidden_width: 64
+  hidden_width: 128
   activation: tanh
   epochs: 150
   lr: 1.0e-3
@@ -31,7 +30,7 @@ pinn:
   boundary_samples: 128
   lambda_res: 1.0
   lambda_init: 1.0
-  lambda_bc: 0.1
+  lambda_bc: 1.0
   hard_boundary: false
   save_path: hyperbolic_pde/runs/pinn.pt
   eval_samples: 5
