@@ -15,6 +15,10 @@ hyperbolic_pde/runs/
 *.jpeg
 *.gif
 
+# Checkpoints
+*.pt
+*.pth
+
 # Python caches
 __pycache__/
 *.pyc
