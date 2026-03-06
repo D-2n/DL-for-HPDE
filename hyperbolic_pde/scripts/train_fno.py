@@ -66,6 +66,15 @@ def split_indices(n: int, train_fraction: float, seed: int) -> tuple[np.ndarray,
     return idx[:n_train], idx[n_train:]
 
 
+def split_train_val(train_idx: np.ndarray, val_fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    if val_fraction <= 0.0:
+        return train_idx, np.array([], dtype=train_idx.dtype)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(train_idx)
+    n_val = max(1, int(len(train_idx) * val_fraction))
+    return perm[n_val:], perm[:n_val]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train FNO on hyperbolic PDE dataset.")
     parser.add_argument(
@@ -86,9 +95,15 @@ def main() -> None:
 
     dataset = load_dataset(Path(data_cfg["path"]))
     train_idx, _ = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
+    val_fraction = float(data_cfg.get("val_fraction", 0.1))
+    train_idx, val_idx = split_train_val(train_idx, val_fraction, int(cfg.get("seed", 42)))
 
     train_data = FNODataset(dataset.x, dataset.t, dataset.u0[train_idx], dataset.u[train_idx])
     loader = DataLoader(train_data, batch_size=int(fno_cfg["batch_size"]), shuffle=True)
+    val_loader = None
+    if val_idx.size > 0:
+        val_data = FNODataset(dataset.x, dataset.t, dataset.u0[val_idx], dataset.u[val_idx])
+        val_loader = DataLoader(val_data, batch_size=int(fno_cfg["batch_size"]), shuffle=False)
 
     model = FNO2d(
         in_channels=3,
@@ -127,6 +142,7 @@ def main() -> None:
     step = 0
     model.train()
     start_time = time.perf_counter()
+    checkpoint_every = int(fno_cfg.get("checkpoint_every", 20))
     for epoch in range(1, epochs + 1):
         for inp, out in loader:
             step += 1
@@ -149,6 +165,29 @@ def main() -> None:
                     f"[FNO] epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
                     f"mse={loss.item():.3e} | lr={lr_now:.2e}"
                 )
+
+        if val_loader is not None:
+            model.eval()
+            val_loss = 0.0
+            val_count = 0
+            with torch.no_grad():
+                for v_inp, v_out in val_loader:
+                    v_inp = v_inp.to(device)
+                    v_out = v_out.to(device)
+                    v_pred = model(v_inp)
+                    v_loss = (v_pred - v_out).pow(2).mean().item()
+                    val_loss += v_loss * v_inp.size(0)
+                    val_count += v_inp.size(0)
+            val_mse = val_loss / max(1, val_count)
+            print(f"[FNO] epoch {epoch:3d}/{epochs} | val_mse={val_mse:.3e}")
+            model.train()
+
+        if checkpoint_every > 0 and epoch % checkpoint_every == 0:
+            save_path = Path(fno_cfg["save_path"])
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            ckpt_path = save_path.with_name(f"{save_path.stem}_epoch{epoch}{save_path.suffix}")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"[FNO] Saved checkpoint to {ckpt_path}")
 
     save_path = Path(fno_cfg["save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)

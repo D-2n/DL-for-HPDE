@@ -1,0 +1,20 @@
+# Logs
+logs/
+*.log
+
+# Datasets / artifacts
+*.npz
+
+# Runs, plots
+hyperbolic_pde/runs/
+**/plots/
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Python caches
+__pycache__/
+*.pyc

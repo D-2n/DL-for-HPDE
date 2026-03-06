@@ -127,25 +127,25 @@ def main() -> None:
 
                     fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
                     im0 = axes[0].pcolormesh(
-                        dataset.t, dataset.x, pred_np, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+                        dataset.x, dataset.t, pred_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
                     )
                     axes[0].set_title("FNO prediction")
-                    axes[0].set_xlabel("t")
-                    axes[0].set_ylabel("x")
+                    axes[0].set_xlabel("x")
+                    axes[0].set_ylabel("t")
                     fig.colorbar(im0, ax=axes[0])
 
                     im1 = axes[1].pcolormesh(
-                        dataset.t, dataset.x, truth_np, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+                        dataset.x, dataset.t, truth_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
                     )
                     axes[1].set_title("Godunov FVM truth")
-                    axes[1].set_xlabel("t")
-                    axes[1].set_ylabel("x")
+                    axes[1].set_xlabel("x")
+                    axes[1].set_ylabel("t")
                     fig.colorbar(im1, ax=axes[1])
 
-                    im2 = axes[2].pcolormesh(dataset.t, dataset.x, err_np, shading="auto", cmap="magma")
+                    im2 = axes[2].pcolormesh(dataset.x, dataset.t, err_np.T, shading="auto", cmap="magma")
                     axes[2].set_title("Absolute error")
-                    axes[2].set_xlabel("t")
-                    axes[2].set_ylabel("x")
+                    axes[2].set_xlabel("x")
+                    axes[2].set_ylabel("t")
                     fig.colorbar(im2, ax=axes[2])
 
                     out_path = plot_dir / f"fno_sample_{plots_made}.png"

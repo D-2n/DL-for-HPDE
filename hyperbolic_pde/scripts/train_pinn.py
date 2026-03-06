@@ -50,6 +50,15 @@ def split_indices(n: int, train_fraction: float, seed: int) -> tuple[np.ndarray,
     return idx[:n_train], idx[n_train:]
 
 
+def split_train_val(train_idx: np.ndarray, val_fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    if val_fraction <= 0.0:
+        return train_idx, np.array([], dtype=train_idx.dtype)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(train_idx)
+    n_val = max(1, int(len(train_idx) * val_fraction))
+    return perm[n_val:], perm[:n_val]
+
+
 def sample_u0_at(
     x: torch.Tensor,
     u0_grid: torch.Tensor,
@@ -80,6 +89,8 @@ def main() -> None:
 
     dataset = load_dataset(Path(data_cfg["path"]))
     train_idx, _ = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
+    val_fraction = float(data_cfg.get("val_fraction", 0.1))
+    train_idx, val_idx = split_train_val(train_idx, val_fraction, int(cfg.get("seed", 42)))
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
     u0_all = torch.tensor(dataset.u0, dtype=torch.float32, device=device)
@@ -106,6 +117,7 @@ def main() -> None:
             raise KeyError("pinn config must define 'epochs' (or legacy 'steps')")
     epochs = int(epochs)
     batch_pdes = int(pinn_cfg["batch_pdes"])
+    val_batch_pdes = int(pinn_cfg.get("val_batch_pdes", batch_pdes))
     n_int = int(pinn_cfg["interior_samples"])
     n_init = int(pinn_cfg["initial_samples"])
     n_bc = int(pinn_cfg["boundary_samples"])
@@ -163,6 +175,44 @@ def main() -> None:
                 f"[PINN] epoch {epoch:5d}/{epochs} | total={loss.item():.3e} | "
                 f"res={loss_res.item():.3e} | init={loss_init.item():.3e} | bc={loss_bc.item():.3e}"
             )
+
+        if val_idx.size > 0:
+            model.eval()
+            val_indices = rng.choice(val_idx, size=val_batch_pdes, replace=True)
+            val_loss_res = torch.tensor(0.0, device=device)
+            val_loss_init = torch.tensor(0.0, device=device)
+            val_loss_bc = torch.tensor(0.0, device=device)
+
+            for idx in val_indices:
+                cond = ic_all[idx]
+                cond_int = repeat_cond(cond, n_int)
+                cond_init = repeat_cond(cond, n_init)
+                cond_bc = repeat_cond(cond, n_bc)
+
+                x_i, t_i = sample_uniform(n_int, x_min, x_max, t_min, t_max, device)
+                res = hyperbolic_residual(model, x_i, t_i, cond_int)
+                val_loss_res = val_loss_res + res.pow(2).mean()
+
+                x0, t0 = sample_initial(n_init, x_min, x_max, t_min, device)
+                u0_target = sample_u0_at(x0, u0_all[idx], x_grid)
+                u0_pred = model(x0, t0, cond_init)
+                val_loss_init = val_loss_init + (u0_pred - u0_target).pow(2).mean()
+
+                x_l, t_l, x_r, t_r = sample_boundary(n_bc, x_min, x_max, t_min, t_max, device)
+                u_l = model(x_l, t_l, cond_bc)
+                u_r = model(x_r, t_r, cond_bc)
+                val_loss_bc = val_loss_bc + (u_l - u_r).pow(2).mean()
+
+            val_loss_res = val_loss_res / val_batch_pdes
+            val_loss_init = val_loss_init / val_batch_pdes
+            val_loss_bc = val_loss_bc / val_batch_pdes
+            val_loss = lam_res * val_loss_res + lam_init * val_loss_init + lam_bc * val_loss_bc
+            print(
+                f"[PINN] epoch {epoch:5d}/{epochs} | val_total={val_loss.item():.3e} | "
+                f"val_res={val_loss_res.item():.3e} | val_init={val_loss_init.item():.3e} | "
+                f"val_bc={val_loss_bc.item():.3e}"
+            )
+            model.train()
 
     save_path = Path(pinn_cfg["save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)

@@ -9,15 +9,18 @@ data:
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
-  cfl: 0.2
-  num_samples: 2000
+  cfl: 0.1
+  num_samples: 1500
   test_num_samples: 200
+  test_sine_pieces: 20
   num_segments: 2
   u_min: 0.0
   u_max: 1.0
   ic_points: 128
   boundary: ghost
   train_fraction: 0.8
+  val_fraction: 0.1
+  compare_samples: 10
 pinn:
   hidden_layers: 4
   hidden_width: 128
@@ -40,29 +43,50 @@ pinn:
 fno: # ~40 epochs for default data/batch config
   modes_x: 24
   modes_t: 24
-  width: 64
-  layers: 4
-  epochs: 700
+  width: 128
+  layers: 6
+  epochs: 150
   lr: 1.0e-3
   weight_decay: 0.0
   grad_clip: null   
   lr_schedule: cosine
-  lr_min: 1.0e-5
+  lr_min: 5.0e-5
   lr_step: 5000
   lr_gamma: 0.5
-  batch_size: 16
+  batch_size: 8
+  checkpoint_every: 20
   save_path: hyperbolic_pde/runs/fno.pt
-  eval_plots: 10
+  eval_plots: 8
   plot_dir: hyperbolic_pde/runs/plots/fno
 
+fno_experiment:
+  modes_x: 32
+  modes_t: 32
+  width: 64
+  layers: 6
+  band_start: 25
+  epochs: 200
+  lr: 1.0e-3
+  weight_decay: 0.0
+  grad_clip: null
+  lr_schedule: cosine
+  lr_min: 5.0e-5
+  lr_step: 5000
+  lr_gamma: 0.5
+  batch_size: 8
+  checkpoint_every: 20
+  save_path: hyperbolic_pde\runs\fno_experiment_epoch160_epoch60.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/fno_experiment
+
 deeponet:
-  branch_layers: 3
-  trunk_layers: 3
-  hidden_width: 64
-  latent_dim: 64
+  branch_layers: 6
+  trunk_layers: 6
+  hidden_width: 128
+  latent_dim: 128
   activation: tanh
   use_bias: true
-  epochs: 500
+  epochs: 150
   lr: 1.0e-3
   weight_decay: 0.0
   grad_clip: null
@@ -74,3 +98,35 @@ deeponet:
   save_path: hyperbolic_pde/runs/deeponet.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/deeponet
+
+vpinn:
+  hidden_layers: 6
+  hidden_width: 128
+  activation: tanh
+  epochs: 150
+  lr: 1.0e-3
+  batch_pdes: 8
+  val_batch_pdes: 8
+  interior_samples: 256
+  initial_samples: 256
+  boundary_samples: 128
+  n_test: 2
+  lambda_weak: 1.0
+  lambda_init: 1.0
+  lambda_bc: 0.1
+  hard_boundary: false
+  save_path: hyperbolic_pde/runs/vpinn.pt
+
+gnn:
+  hidden: 64
+  layers: 4
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 0.0
+  grad_clip: null
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  lr_step: 5000
+  lr_gamma: 0.5
+  batch_size: 16
+  save_path: hyperbolic_pde/runs/gnn.pt

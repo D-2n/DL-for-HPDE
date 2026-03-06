@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
@@ -33,13 +34,24 @@ def load_config(path: Path) -> dict:
     return _deep_update(cfg, override or {})
 
 
-def sample_piecewise_constant(
+def piecewise_sine_ic(
     x: np.ndarray,
-    cuts: np.ndarray,
-    values: np.ndarray,
+    x_min: float,
+    x_max: float,
+    pieces: int,
+    u_min: float,
+    u_max: float,
+    phase: float,
 ) -> np.ndarray:
-    idx = np.searchsorted(cuts, x, side="right")
-    return values[idx].astype(np.float32)
+    if pieces < 1:
+        raise ValueError("pieces must be >= 1")
+    edges = np.linspace(x_min, x_max, pieces + 1, dtype=np.float32)
+    mids = 0.5 * (edges[:-1] + edges[1:])
+    arg = 2.0 * np.pi * (mids - x_min) / (x_max - x_min) + phase
+    vals = 0.5 * (np.sin(arg) + 1.0)  # in [0, 1]
+    vals = u_min + (u_max - u_min) * vals
+    idx = np.searchsorted(edges[1:-1], x, side="right")
+    return vals[idx].astype(np.float32)
 
 
 def main() -> None:
@@ -66,7 +78,7 @@ def main() -> None:
     x_max = float(data_cfg["x_max"])
     t_max = float(data_cfg["t_max"])
     cfl = float(data_cfg["cfl"])
-    num_segments = int(data_cfg["num_segments"])
+    num_segments = int(data_cfg.get("test_sine_pieces", 20))
     u_min = float(data_cfg["u_min"])
     u_max = float(data_cfg["u_max"])
     ic_points = int(data_cfg["ic_points"])
@@ -87,12 +99,9 @@ def main() -> None:
     ic_2 = np.zeros((num_samples, ic_points), dtype=np.float32)
 
     for i in range(num_samples):
-        cuts = rng.uniform(x_min, x_max, size=max(0, num_segments - 1))
-        cuts.sort()
-        values = rng.uniform(u_min, u_max, size=num_segments).astype(np.float32)
-
-        u0_coarse = sample_piecewise_constant(x1, cuts, values)
-        u0_fine = sample_piecewise_constant(x2, cuts, values)
+        phase = float(rng.uniform(0.0, 2.0 * np.pi))
+        u0_coarse = piecewise_sine_ic(x1, x_min, x_max, num_segments, u_min, u_max, phase)
+        u0_fine = piecewise_sine_ic(x2, x_min, x_max, num_segments, u_min, u_max, phase)
 
         u0_1[i] = u0_coarse
         u0_2[i] = u0_fine
@@ -137,6 +146,41 @@ def main() -> None:
     )
     print(f"Saved paired test dataset to {out_path}")
     print(f"u_1x shape: {u1.shape}, u_2x shape: {u2.shape}")
+
+    plot_dir = Path("hyperbolic_pde/runs/plots/test_superres")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plot_count = min(3, num_samples)
+    sample_idx = rng.choice(num_samples, size=plot_count, replace=False)
+    for j, idx in enumerate(sample_idx):
+        fig, axes = plt.subplots(2, 2, figsize=(10, 6), constrained_layout=True)
+
+        axes[0, 0].plot(x1, u0_1[idx], color="black")
+        axes[0, 0].set_title("IC (1x)")
+        axes[0, 0].set_xlabel("x")
+        axes[0, 0].set_ylabel("u0")
+
+        im01 = axes[0, 1].pcolormesh(x1, t1, u1[idx], shading="auto", cmap="jet")
+        axes[0, 1].set_title("FVM solution (1x)")
+        axes[0, 1].set_xlabel("x")
+        axes[0, 1].set_ylabel("t")
+        fig.colorbar(im01, ax=axes[0, 1])
+
+        axes[1, 0].plot(x2, u0_2[idx], color="black")
+        axes[1, 0].set_title("IC (2x)")
+        axes[1, 0].set_xlabel("x")
+        axes[1, 0].set_ylabel("u0")
+
+        im11 = axes[1, 1].pcolormesh(x2, t2, u2[idx], shading="auto", cmap="jet")
+        axes[1, 1].set_title("FVM solution (2x)")
+        axes[1, 1].set_xlabel("x")
+        axes[1, 1].set_ylabel("t")
+        fig.colorbar(im11, ax=axes[1, 1])
+
+        out_plot = plot_dir / f"test_superres_sample_{j}.png"
+        fig.savefig(out_plot, dpi=150)
+        plt.close(fig)
+
+    print(f"Saved {plot_count} test preview plots to {plot_dir}")
 
 
 if __name__ == "__main__":

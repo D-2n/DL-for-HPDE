@@ -178,52 +178,60 @@ def main() -> None:
             #vmax_2 = 0.5
 
             fig, axes = plt.subplots(2, 4, figsize=(16, 7), constrained_layout=True)
-            im00 = axes[0, 0].pcolormesh(t1, x1, pred_1_np, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1)
+            im00 = axes[0, 0].pcolormesh(
+                x1, t1, pred_1_np.T, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1
+            )
             axes[0, 0].set_title("FNO prediction (1x)")
-            axes[0, 0].set_xlabel("t")
-            axes[0, 0].set_ylabel("x")
+            axes[0, 0].set_xlabel("x")
+            axes[0, 0].set_ylabel("t")
             fig.colorbar(im00, ax=axes[0, 0])
 
-            im01 = axes[0, 1].pcolormesh(t1, x1, truth_1_np, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1)
+            im01 = axes[0, 1].pcolormesh(
+                x1, t1, truth_1_np.T, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1
+            )
             axes[0, 1].set_title("Godunov FVM truth (1x)")
-            axes[0, 1].set_xlabel("t")
-            axes[0, 1].set_ylabel("x")
+            axes[0, 1].set_xlabel("x")
+            axes[0, 1].set_ylabel("t")
             fig.colorbar(im01, ax=axes[0, 1])
 
-            im02 = axes[0, 2].pcolormesh(t1, x1, err_1, shading="auto", cmap="magma")
+            im02 = axes[0, 2].pcolormesh(x1, t1, err_1.T, shading="auto", cmap="magma")
             axes[0, 2].set_title("Abs error (1x)")
-            axes[0, 2].set_xlabel("t")
-            axes[0, 2].set_ylabel("x")
+            axes[0, 2].set_xlabel("x")
+            axes[0, 2].set_ylabel("t")
             fig.colorbar(im02, ax=axes[0, 2])
 
-            im03 = axes[0, 3].pcolormesh(t1, x1, tv_1, shading="auto", cmap="viridis")
+            im03 = axes[0, 3].pcolormesh(x1, t1, tv_1.T, shading="auto", cmap="viridis")
             axes[0, 3].set_title("Total variation (1x)")
-            axes[0, 3].set_xlabel("t")
-            axes[0, 3].set_ylabel("x")
+            axes[0, 3].set_xlabel("x")
+            axes[0, 3].set_ylabel("t")
             fig.colorbar(im03, ax=axes[0, 3])
 
-            im10 = axes[1, 0].pcolormesh(t2, x2, pred_2_np, shading="auto", cmap="jet", vmin=vmin_2, vmax=vmax_2)
+            im10 = axes[1, 0].pcolormesh(
+                x2, t2, pred_2_np.T, shading="auto", cmap="jet", vmin=vmin_2, vmax=vmax_2
+            )
             axes[1, 0].set_title("FNO prediction (2x)")
-            axes[1, 0].set_xlabel("t")
-            axes[1, 0].set_ylabel("x")
+            axes[1, 0].set_xlabel("x")
+            axes[1, 0].set_ylabel("t")
             fig.colorbar(im10, ax=axes[1, 0])
 
-            im11 = axes[1, 1].pcolormesh(t2, x2, truth_2_np, shading="auto", cmap="jet", vmin=vmin_2, vmax=vmax_2)
+            im11 = axes[1, 1].pcolormesh(
+                x2, t2, truth_2_np.T, shading="auto", cmap="jet", vmin=vmin_2, vmax=vmax_2
+            )
             axes[1, 1].set_title("Godunov FVM truth (2x)")
-            axes[1, 1].set_xlabel("t")
-            axes[1, 1].set_ylabel("x")
+            axes[1, 1].set_xlabel("x")
+            axes[1, 1].set_ylabel("t")
             fig.colorbar(im11, ax=axes[1, 1])
 
-            im12 = axes[1, 2].pcolormesh(t2, x2, err_2, shading="auto", cmap="magma")
+            im12 = axes[1, 2].pcolormesh(x2, t2, err_2.T, shading="auto", cmap="magma")
             axes[1, 2].set_title("Abs error (2x)")
-            axes[1, 2].set_xlabel("t")
-            axes[1, 2].set_ylabel("x")
+            axes[1, 2].set_xlabel("x")
+            axes[1, 2].set_ylabel("t")
             fig.colorbar(im12, ax=axes[1, 2])
 
-            im13 = axes[1, 3].pcolormesh(t2, x2, tv_2, shading="auto", cmap="viridis")
+            im13 = axes[1, 3].pcolormesh(x2, t2, tv_2.T, shading="auto", cmap="viridis")
             axes[1, 3].set_title("Total variation (2x)")
-            axes[1, 3].set_xlabel("t")
-            axes[1, 3].set_ylabel("x")
+            axes[1, 3].set_xlabel("x")
+            axes[1, 3].set_ylabel("t")
             fig.colorbar(im13, ax=axes[1, 3])
 
             out_path = plot_dir / f"fno_superres_{plots_made}.png"

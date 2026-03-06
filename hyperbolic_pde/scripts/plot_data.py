@@ -65,10 +65,10 @@ def main() -> None:
         axes[0].set_xlabel("x")
         axes[0].set_ylabel("u")
 
-        im = axes[1].pcolormesh(dataset.t, dataset.x, dataset.u[i].T, shading="auto", cmap="jet")
+        im = axes[1].pcolormesh(dataset.x, dataset.t, dataset.u[i], shading="auto", cmap="jet")
         axes[1].set_title(f"u(x,t) sample {i}")
-        axes[1].set_xlabel("t")
-        axes[1].set_ylabel("x")
+        axes[1].set_xlabel("x")
+        axes[1].set_ylabel("t")
         fig.colorbar(im, ax=axes[1], label="u")
 
         out_path = out_dir / f"pde_sample_{i}.png"
