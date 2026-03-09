@@ -100,12 +100,12 @@ deeponet:
   plot_dir: hyperbolic_pde/runs/plots/deeponet
 
 vpinn:
-  hidden_layers: 6
-  hidden_width: 64
+  hidden_layers: 8
+  hidden_width: 256
   activation: tanh
   epochs: 150
   lr: 1.0e-3
-  batch_pdes: 16
+  batch_pdes: 1000
   val_batch_pdes: 16
   interior_samples: 256
   initial_samples: 256
