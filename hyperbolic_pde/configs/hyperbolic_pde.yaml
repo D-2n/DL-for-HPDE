@@ -130,3 +130,24 @@ gnn:
   lr_gamma: 0.5
   batch_size: 16
   save_path: hyperbolic_pde/runs/gnn.pt
+
+fluxgnn:
+  hidden: 64
+  layers: 3
+  activation: gelu
+  use_base_flux: false
+  base_flux_weight: 0.5
+  flux_scale: 0.25
+  epochs: 50
+  lr: 1.0e-3
+  weight_decay: 0.0
+  grad_clip: null
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  lr_step: 5000
+  lr_gamma: 0.5
+  batch_size: 64
+  checkpoint_every: 20
+  save_path: hyperbolic_pde/runs/fluxgnn.pt
+  eval_plots: 3
+  plot_dir: hyperbolic_pde/runs/plots/fluxgnn

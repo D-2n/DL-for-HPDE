@@ -129,8 +129,28 @@ def main() -> None:
                 total_count += inp.size(0)
         return total_loss / max(1, total_count)
 
+    def eval_metrics(loader: DataLoader) -> dict[str, list[float]]:
+        metrics = {"mse": [], "mae": [], "rel_l2": []}
+        with torch.no_grad():
+            for inp, out in loader:
+                inp = inp.to(device)
+                out = out.to(device)
+                pred = model(inp)
+                for b in range(pred.size(0)):
+                    err = pred[b] - out[b]
+                    mse = err.pow(2).mean().item()
+                    mae = err.abs().mean().item()
+                    denom = out[b].norm().item()
+                    rel = err.norm().item() if denom == 0.0 else err.norm().item() / denom
+                    metrics["mse"].append(mse)
+                    metrics["mae"].append(mae)
+                    metrics["rel_l2"].append(rel)
+        return metrics
+
     mse_1x = eval_loader(loader_1x)
     mse_2x = eval_loader(loader_2x)
+    metrics_1x = eval_metrics(loader_1x)
+    metrics_2x = eval_metrics(loader_2x)
 
     x1_t = torch.tensor(x1, dtype=torch.float32, device=device)
     t1_t = torch.tensor(t1, dtype=torch.float32, device=device)
@@ -242,6 +262,29 @@ def main() -> None:
     print(f"[FNO SuperRes] Test MSE 1x: {mse_1x:.6e}")
     print(f"[FNO SuperRes] Test MSE 2x: {mse_2x:.6e}")
     print(f"[FNO SuperRes] Saved {plots_made} plots to {plot_dir}")
+
+    # Metrics plots
+    mean_1x = {k: float(np.mean(v)) for k, v in metrics_1x.items()}
+    mean_2x = {k: float(np.mean(v)) for k, v in metrics_2x.items()}
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    metrics_order = ["mse", "mae", "rel_l2"]
+    labels = ["MSE", "MAE", "Rel L2"]
+    for i, key in enumerate(metrics_order):
+        axes[i].bar(["1x", "2x"], [mean_1x[key], mean_2x[key]])
+        axes[i].set_title(labels[i])
+        axes[i].set_yscale("log")
+        axes[i].set_ylabel(labels[i])
+    fig.savefig(plot_dir / "fno_superres_metrics.png", dpi=150)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    for i, key in enumerate(metrics_order):
+        axes[i].boxplot([metrics_1x[key], metrics_2x[key]], labels=["1x", "2x"], showfliers=False)
+        axes[i].set_title(f"{labels[i]} distribution")
+        axes[i].set_yscale("log")
+    fig.savefig(plot_dir / "fno_superres_metrics_boxplot.png", dpi=150)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

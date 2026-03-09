@@ -22,6 +22,9 @@ hyperbolic_pde/runs/
 # Python caches
 __pycache__/
 *.pyc
+
+# Local reference clones
+_fluxgnn_ref/
 hyperbolic_pde/runs/fno.pt
 hyperbolic_pde/runs/pinn.pt
 hyperbolic_pde/runs/fno.pt
