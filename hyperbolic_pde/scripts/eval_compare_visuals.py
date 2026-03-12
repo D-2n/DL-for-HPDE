@@ -15,6 +15,7 @@ sys.path.append(str(ROOT.parent))
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.models.deeponet import DeepONet
 from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.fluxgnn import FluxGNN1D
 from hyperbolic_pde.models.pinn import UniversalPINN
 from hyperbolic_pde.models.vpinn import VPINN
 
@@ -201,6 +202,31 @@ def main() -> None:
         preds["VPINN"] = pred.detach().cpu().numpy()
     else:
         print("[Compare] VPINN checkpoint missing, skipping.")
+
+    # FluxGNN
+    if "fluxgnn" in cfg and Path(cfg["fluxgnn"]["save_path"]).exists():
+        g_cfg = cfg["fluxgnn"]
+        model = FluxGNN1D(
+            hidden=int(g_cfg["hidden"]),
+            layers=int(g_cfg["layers"]),
+            activation=str(g_cfg.get("activation", "gelu")),
+            latent_dim=g_cfg.get("latent_dim"),
+            flux_hidden=g_cfg.get("flux_hidden"),
+            use_base_flux=bool(g_cfg.get("use_base_flux", True)),
+            base_flux_weight=float(g_cfg.get("base_flux_weight", 0.5)),
+            flux_scale=float(g_cfg.get("flux_scale", 0.25)),
+        ).to(device)
+        model.load_state_dict(torch.load(Path(g_cfg["save_path"]), map_location=device))
+        model.eval()
+        dx = float(x_np[1] - x_np[0])
+        dt = float(t_np[1] - t_np[0])
+        n_steps = int(u_np.shape[1])
+        boundary = str(data_cfg.get("boundary", "ghost"))
+        with torch.no_grad():
+            pred = model(u0.unsqueeze(0), dt, dx, n_steps, boundary)[0]
+        preds["FluxGNN"] = pred.detach().cpu().numpy().T
+    else:
+        print("[Compare] FluxGNN checkpoint missing, skipping.")
 
     if not preds:
         print("[Compare] No checkpoints found. Nothing to plot.")

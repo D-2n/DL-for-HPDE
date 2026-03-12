@@ -132,13 +132,15 @@ gnn:
   save_path: hyperbolic_pde/runs/gnn.pt
 
 fluxgnn:
-  hidden: 64
-  layers: 3
+  hidden: 96
+  layers: 4
   activation: gelu
+  latent_dim: 96
+  flux_hidden: 96
   use_base_flux: false
-  base_flux_weight: 0.5
+  base_flux_weight: 0.0
   flux_scale: 0.25
-  epochs: 50
+  epochs: 70
   lr: 1.0e-3
   weight_decay: 0.0
   grad_clip: null

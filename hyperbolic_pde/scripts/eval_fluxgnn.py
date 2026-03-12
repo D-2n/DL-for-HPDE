@@ -90,6 +90,8 @@ def main() -> None:
         hidden=int(flux_cfg["hidden"]),
         layers=int(flux_cfg["layers"]),
         activation=str(flux_cfg.get("activation", "gelu")),
+        latent_dim=flux_cfg.get("latent_dim"),
+        flux_hidden=flux_cfg.get("flux_hidden"),
         use_base_flux=bool(flux_cfg.get("use_base_flux", True)),
         base_flux_weight=float(flux_cfg.get("base_flux_weight", 0.5)),
         flux_scale=float(flux_cfg.get("flux_scale", 0.25)),

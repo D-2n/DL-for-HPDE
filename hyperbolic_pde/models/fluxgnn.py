@@ -37,10 +37,12 @@ def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: s
 
 class FluxGNN1D(nn.Module):
     """
-    Minimal FluxGNN-style model for 1D conservation laws.
+    FluxGNN-style model for 1D conservation laws with encode-process-decode.
 
-    It learns a numerical flux on cell interfaces and updates cell averages
-    by a conservative finite-volume step.
+    This mirrors the paper's conservation condition:
+    - linear encoder
+    - locally conservative flux-based process
+    - decoder as the (left) pseudoinverse of the encoder
     """
 
     def __init__(
@@ -48,54 +50,83 @@ class FluxGNN1D(nn.Module):
         hidden: int = 64,
         layers: int = 3,
         activation: str = "gelu",
-        use_base_flux: bool = True,
-        base_flux_weight: float = 0.5,
+        latent_dim: int | None = None,
+        flux_hidden: int | None = None,
+        in_dim: int = 1,
+        use_base_flux: bool = False,
+        base_flux_weight: float = 0.0,
         flux_scale: float = 0.25,
+        eps: float = 1e-8,
     ) -> None:
         super().__init__()
-        self.flux_mlp = _make_mlp(2, hidden, 1, layers, activation)
-        self.use_base_flux = use_base_flux
+        self.in_dim = int(in_dim)
+        self.latent_dim = int(latent_dim or hidden)
+        self.flux_hidden = int(flux_hidden or hidden)
+        self.encoder = nn.Linear(self.in_dim, self.latent_dim, bias=False)
+        self.flux_mlp = _make_mlp(2 * self.latent_dim, self.flux_hidden, self.latent_dim, layers, activation)
+        self.use_base_flux = bool(use_base_flux)
         self.base_flux_weight = float(base_flux_weight)
         self.flux_scale = float(flux_scale)
+        self.eps = float(eps)
 
-    def compute_flux(self, u_left: torch.Tensor, u_right: torch.Tensor) -> torch.Tensor:
-        edge = torch.stack([u_left, u_right], dim=-1)
-        flat = edge.reshape(-1, 2)
-        flux_learned = self.flux_mlp(flat).reshape_as(u_left)
-        flux_learned = torch.tanh(flux_learned) * self.flux_scale
-        if self.use_base_flux: # for training stability, exclude by default
+    def _decoder_weight(self) -> torch.Tensor:
+        w = self.encoder.weight  # (latent_dim, in_dim)
+        if self.in_dim == 1:
+            denom = torch.sum(w * w) + self.eps
+            return w.t() / denom  # (in_dim, latent_dim)
+        return torch.linalg.pinv(w)
+
+    def encode(self, u: torch.Tensor) -> torch.Tensor:
+        return torch.matmul(u, self.encoder.weight.t())
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        w_dec = self._decoder_weight()
+        return torch.matmul(z, w_dec.t())
+
+    def compute_flux(self, z_left: torch.Tensor, z_right: torch.Tensor) -> torch.Tensor:
+        # Symmetric (permutation-invariant) flux function in line with Theorem 3.4.
+        sym = torch.cat([z_left + z_right, torch.abs(z_left - z_right)], dim=-1)
+        flat = sym.reshape(-1, sym.size(-1))
+        flux_learned = self.flux_mlp(flat).reshape_as(z_left)
+        if self.flux_scale > 0:
+            flux_learned = torch.tanh(flux_learned) * self.flux_scale
+        if self.use_base_flux:
+            u_left = self.decode(z_left)
+            u_right = self.decode(z_right)
             flux_base = godunov_flux(u_left, u_right)
+            flux_base = self.encode(flux_base)
             w = self.base_flux_weight
             return (1.0 - w) * flux_base + w * flux_learned
         return flux_learned
 
-    def step(self, u: torch.Tensor, dt: float, dx: float, boundary: str) -> torch.Tensor:
+    def step(self, z: torch.Tensor, dt: float, dx: float, boundary: str) -> torch.Tensor:
         if boundary == "periodic":
-            u_right = torch.roll(u, shifts=-1, dims=1)
-            flux = self.compute_flux(u, u_right)
-            return u - (dt / dx) * (flux - torch.roll(flux, shifts=1, dims=1))
+            z_right = torch.roll(z, shifts=-1, dims=1)
+            flux = self.compute_flux(z, z_right)
+            return z - (dt / dx) * (flux - torch.roll(flux, shifts=1, dims=1))
         if boundary == "ghost":
-            u_ext = torch.empty(u.size(0), u.size(1) + 2, device=u.device, dtype=u.dtype)
-            u_ext[:, 1:-1] = u
-            u_ext[:, 0] = u[:, 0]
-            u_ext[:, -1] = u[:, -1]
-            flux = self.compute_flux(u_ext[:, :-1], u_ext[:, 1:])
-            return u - (dt / dx) * (flux[:, 1:] - flux[:, :-1])
+            z_ext = torch.empty(z.size(0), z.size(1) + 2, z.size(2), device=z.device, dtype=z.dtype)
+            z_ext[:, 1:-1] = z
+            z_ext[:, 0] = z[:, 0]
+            z_ext[:, -1] = z[:, -1]
+            flux = self.compute_flux(z_ext[:, :-1], z_ext[:, 1:])
+            return z - (dt / dx) * (flux[:, 1:] - flux[:, :-1])
         if boundary == "fixed":
-            u_left = u[:, :-1]
-            u_right = u[:, 1:]
-            flux = self.compute_flux(u_left, u_right)
-            u_new = u.clone()
-            u_new[:, 1:-1] = u[:, 1:-1] - (dt / dx) * (flux[:, 1:] - flux[:, :-1])
-            u_new[:, 0] = u[:, 0]
-            u_new[:, -1] = u[:, -1]
-            return u_new
+            z_left = z[:, :-1]
+            z_right = z[:, 1:]
+            flux = self.compute_flux(z_left, z_right)
+            z_new = z.clone()
+            z_new[:, 1:-1] = z[:, 1:-1] - (dt / dx) * (flux[:, 1:] - flux[:, :-1])
+            z_new[:, 0] = z[:, 0]
+            z_new[:, -1] = z[:, -1]
+            return z_new
         raise ValueError("boundary must be 'periodic', 'ghost', or 'fixed'")
 
     def forward(self, u0: torch.Tensor, dt: float, dx: float, n_steps: int, boundary: str) -> torch.Tensor:
-        u = u0
-        outputs = [u]
+        u0 = u0.unsqueeze(-1) if u0.dim() == 2 else u0
+        z = self.encode(u0)
+        outputs = [self.decode(z).squeeze(-1)]
         for _ in range(1, n_steps):
-            u = self.step(u, dt, dx, boundary)
-            outputs.append(u)
+            z = self.step(z, dt, dx, boundary)
+            outputs.append(self.decode(z).squeeze(-1))
         return torch.stack(outputs, dim=1)

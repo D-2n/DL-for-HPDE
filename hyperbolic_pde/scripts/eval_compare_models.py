@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ sys.path.append(str(ROOT.parent))
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.models.deeponet import DeepONet
 from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.fluxgnn import FluxGNN1D
 from hyperbolic_pde.models.pinn import UniversalPINN
 from hyperbolic_pde.models.vpinn import VPINN
 
@@ -126,6 +128,16 @@ def main() -> None:
     sample_maps: dict[str, dict[str, np.ndarray]] = {}
     sample_idx = int(eval_idx[0])
 
+    def _time_forward(fn) -> float:
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        out = fn()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t1 = time.perf_counter()
+        return t1 - t0, out
+
     # FNO
     if "fno" in cfg and Path(cfg["fno"]["save_path"]).exists():
         fno_cfg = cfg["fno"]
@@ -143,18 +155,21 @@ def main() -> None:
         mse_list: list[float] = []
         mae_list: list[float] = []
         rel_list: list[float] = []
+        time_list: list[float] = []
         with torch.no_grad():
             for idx in eval_idx:
                 u0 = torch.tensor(u0_np[idx], dtype=torch.float32, device=device)
                 u0_grid = u0.unsqueeze(1).repeat(1, t.numel())
                 inp = torch.stack([X, T, u0_grid], dim=0).unsqueeze(0)
-                pred = model(inp)[0, 0]
+                dt, pred_out = _time_forward(lambda: model(inp))
+                pred = pred_out[0, 0]
                 truth = torch.tensor(u_np[idx].T, dtype=torch.float32, device=device)
                 mse, mae = mse_mae(pred, truth)
                 rel = rel_l2(pred, truth)
                 mse_list.append(mse)
                 mae_list.append(mae)
                 rel_list.append(rel)
+                time_list.append(dt)
                 if idx == sample_idx:
                     sample_maps["FNO"] = {
                         "pred": pred.detach().cpu().numpy(),
@@ -164,6 +179,7 @@ def main() -> None:
             "mse": float(np.mean(mse_list)),
             "mae": float(np.mean(mae_list)),
             "rel_l2": float(np.mean(rel_list)),
+            "time_ms": float(np.mean(time_list) * 1000.0),
         }
         per_sample["FNO"] = {"mse": mse_list, "mae": mae_list, "rel_l2": rel_list}
     else:
@@ -189,16 +205,19 @@ def main() -> None:
         mse_list = []
         mae_list = []
         rel_list = []
+        time_list = []
         with torch.no_grad():
             for idx in eval_idx:
                 branch = ic_all[idx]
-                pred = model(branch, trunk_in).reshape(x.numel(), t.numel())
+                dt, pred_out = _time_forward(lambda: model(branch, trunk_in))
+                pred = pred_out.reshape(x.numel(), t.numel())
                 truth = torch.tensor(u_np[idx].T, dtype=torch.float32, device=device)
                 mse, mae = mse_mae(pred, truth)
                 rel = rel_l2(pred, truth)
                 mse_list.append(mse)
                 mae_list.append(mae)
                 rel_list.append(rel)
+                time_list.append(dt)
                 if idx == sample_idx:
                     sample_maps["DeepONet"] = {
                         "pred": pred.detach().cpu().numpy(),
@@ -208,6 +227,7 @@ def main() -> None:
             "mse": float(np.mean(mse_list)),
             "mae": float(np.mean(mae_list)),
             "rel_l2": float(np.mean(rel_list)),
+            "time_ms": float(np.mean(time_list) * 1000.0),
         }
         per_sample["DeepONet"] = {"mse": mse_list, "mae": mae_list, "rel_l2": rel_list}
     else:
@@ -231,17 +251,20 @@ def main() -> None:
         mse_list = []
         mae_list = []
         rel_list = []
+        time_list = []
         with torch.no_grad():
             for idx in eval_idx:
                 cond = ic_all[idx]
                 cond_rep = cond.unsqueeze(0).repeat(Xf.size(0), 1)
-                pred = model(Xf, Tf, cond_rep).reshape(x.numel(), t.numel())
+                dt, pred_out = _time_forward(lambda: model(Xf, Tf, cond_rep))
+                pred = pred_out.reshape(x.numel(), t.numel())
                 truth = torch.tensor(u_np[idx].T, dtype=torch.float32, device=device)
                 mse, mae = mse_mae(pred, truth)
                 rel = rel_l2(pred, truth)
                 mse_list.append(mse)
                 mae_list.append(mae)
                 rel_list.append(rel)
+                time_list.append(dt)
                 if idx == sample_idx:
                     sample_maps["PINN"] = {
                         "pred": pred.detach().cpu().numpy(),
@@ -251,6 +274,7 @@ def main() -> None:
             "mse": float(np.mean(mse_list)),
             "mae": float(np.mean(mae_list)),
             "rel_l2": float(np.mean(rel_list)),
+            "time_ms": float(np.mean(time_list) * 1000.0),
         }
         per_sample["PINN"] = {"mse": mse_list, "mae": mae_list, "rel_l2": rel_list}
     else:
@@ -277,17 +301,20 @@ def main() -> None:
         mse_list = []
         mae_list = []
         rel_list = []
+        time_list = []
         with torch.no_grad():
             for idx in eval_idx:
                 cond = ic_all[idx]
                 cond_rep = cond.unsqueeze(0).repeat(Xf.size(0), 1)
-                pred = model(Xf, Tf, cond_rep).reshape(x.numel(), t.numel())
+                dt, pred_out = _time_forward(lambda: model(Xf, Tf, cond_rep))
+                pred = pred_out.reshape(x.numel(), t.numel())
                 truth = torch.tensor(u_np[idx].T, dtype=torch.float32, device=device)
                 mse, mae = mse_mae(pred, truth)
                 rel = rel_l2(pred, truth)
                 mse_list.append(mse)
                 mae_list.append(mae)
                 rel_list.append(rel)
+                time_list.append(dt)
                 if idx == sample_idx:
                     sample_maps["VPINN"] = {
                         "pred": pred.detach().cpu().numpy(),
@@ -297,10 +324,63 @@ def main() -> None:
             "mse": float(np.mean(mse_list)),
             "mae": float(np.mean(mae_list)),
             "rel_l2": float(np.mean(rel_list)),
+            "time_ms": float(np.mean(time_list) * 1000.0),
         }
         per_sample["VPINN"] = {"mse": mse_list, "mae": mae_list, "rel_l2": rel_list}
     else:
         print("[Compare] VPINN checkpoint missing, skipping.")
+
+    # FluxGNN
+    if "fluxgnn" in cfg and Path(cfg["fluxgnn"]["save_path"]).exists():
+        g_cfg = cfg["fluxgnn"]
+        model = FluxGNN1D(
+            hidden=int(g_cfg["hidden"]),
+            layers=int(g_cfg["layers"]),
+            activation=str(g_cfg.get("activation", "gelu")),
+            latent_dim=g_cfg.get("latent_dim"),
+            flux_hidden=g_cfg.get("flux_hidden"),
+            use_base_flux=bool(g_cfg.get("use_base_flux", True)),
+            base_flux_weight=float(g_cfg.get("base_flux_weight", 0.5)),
+            flux_scale=float(g_cfg.get("flux_scale", 0.25)),
+        ).to(device)
+        model.load_state_dict(torch.load(Path(g_cfg["save_path"]), map_location=device))
+        model.eval()
+
+        dx = float(x_np[1] - x_np[0])
+        dt = float(t_np[1] - t_np[0])
+        n_steps = int(u_np.shape[1])
+        boundary = str(data_cfg.get("boundary", "ghost"))
+
+        mse_list = []
+        mae_list = []
+        rel_list = []
+        time_list = []
+        with torch.no_grad():
+            for idx in eval_idx:
+                u0 = torch.tensor(u0_np[idx], dtype=torch.float32, device=device).unsqueeze(0)
+                truth = torch.tensor(u_np[idx], dtype=torch.float32, device=device)
+                dt_eval, pred_out = _time_forward(lambda: model(u0, dt, dx, n_steps, boundary))
+                pred = pred_out[0]
+                mse, mae = mse_mae(pred, truth)
+                rel = rel_l2(pred, truth)
+                mse_list.append(mse)
+                mae_list.append(mae)
+                rel_list.append(rel)
+                time_list.append(dt_eval)
+                if idx == sample_idx:
+                    sample_maps["FluxGNN"] = {
+                        "pred": pred.detach().cpu().numpy().T,
+                        "truth": truth.detach().cpu().numpy().T,
+                    }
+        metrics["FluxGNN"] = {
+            "mse": float(np.mean(mse_list)),
+            "mae": float(np.mean(mae_list)),
+            "rel_l2": float(np.mean(rel_list)),
+            "time_ms": float(np.mean(time_list) * 1000.0),
+        }
+        per_sample["FluxGNN"] = {"mse": mse_list, "mae": mae_list, "rel_l2": rel_list}
+    else:
+        print("[Compare] FluxGNN checkpoint missing, skipping.")
 
     print("[Compare] GNN excluded from comparison.")
 
@@ -312,6 +392,7 @@ def main() -> None:
     mse_vals = [metrics[k]["mse"] for k in labels]
     mae_vals = [metrics[k]["mae"] for k in labels]
     rel_vals = [metrics[k]["rel_l2"] for k in labels]
+    time_vals = [metrics[k]["time_ms"] for k in labels]
 
     plot_dir = Path("hyperbolic_pde/runs/plots")
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -356,6 +437,15 @@ def main() -> None:
     fig.savefig(box_path, dpi=150)
     plt.close(fig)
 
+    time_path = plot_dir / "model_comparison_timing.png"
+    fig, ax = plt.subplots(1, 1, figsize=(7, 4), constrained_layout=True)
+    ax.bar(labels, time_vals)
+    ax.set_title("Average inference time per sample")
+    ax.set_ylabel("Milliseconds")
+    ax.tick_params(axis="x", rotation=30)
+    fig.savefig(time_path, dpi=150)
+    plt.close(fig)
+
     for name, maps in sample_maps.items():
         pred_np = maps["pred"]
         truth_np = maps["truth"]
@@ -395,7 +485,8 @@ def main() -> None:
     print("[Compare] Metrics:")
     for name, stats in metrics.items():
         print(
-            f"  {name:8s} | MSE={stats['mse']:.3e} | MAE={stats['mae']:.3e} | RelL2={stats['rel_l2']:.3e}"
+            f"  {name:8s} | MSE={stats['mse']:.3e} | MAE={stats['mae']:.3e} | "
+            f"RelL2={stats['rel_l2']:.3e} | Time={stats['time_ms']:.2f} ms"
         )
     print(f"[Compare] Saved plots to {plot_dir}")
 
