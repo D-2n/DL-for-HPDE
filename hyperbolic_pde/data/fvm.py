@@ -174,7 +174,7 @@ def generate_dataset(
     x_max: float,
     t_max: float,
     cfl: float,
-    num_segments: int,
+    num_segments: int | tuple[int, ...] | list[int],
     u_min: float,
     u_max: float,
     ic_points: int,
@@ -189,8 +189,21 @@ def generate_dataset(
     u0_all = np.zeros((num_samples, nx), dtype=np.float32)
     ic_all = np.zeros((num_samples, ic_points), dtype=np.float32)
 
+    if isinstance(num_segments, (list, tuple, np.ndarray)):
+        if len(num_segments) == 0:
+            raise ValueError("num_segments list must be non-empty")
+        seg_choices = [int(s) for s in num_segments]
+        if any(s < 1 for s in seg_choices):
+            raise ValueError("num_segments values must be >= 1")
+    else:
+        seg_choices = None
+        num_segments = int(num_segments)
+        if num_segments < 1:
+            raise ValueError("num_segments must be >= 1")
+
     for i in range(num_samples):
-        u0 = piecewise_constant_ic(x, num_segments, u_min, u_max, rng)
+        seg = int(rng.choice(seg_choices)) if seg_choices is not None else num_segments
+        u0 = piecewise_constant_ic(x, seg, u_min, u_max, rng)
         u0_all[i] = u0
         ic_all[i] = encode_ic(u0, x, ic_points)
 

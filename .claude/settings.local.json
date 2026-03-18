@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /c/Users/dimit/Desktop/repos/DL-for-HPDE/hyperbolic_pde/scripts/*.py /c/Users/dimit/Desktop/repos/DL-for-HPDE/hyperbolic_pde/models/*.py)",
+      "Bash(xargs ls:*)",
+      "Bash(python -c \":*)",
+      "WebSearch",
+      "WebFetch(domain:openreview.net)",
+      "WebFetch(domain:zongyi-li.github.io)",
+      "WebFetch(domain:ar5iv.labs.arxiv.org)",
+      "WebFetch(domain:neuraloperator.github.io)",
+      "Bash(taskkill /F /PID 20464)",
+      "Bash(taskkill /F /PID 25084)",
+      "Bash(tasklist)",
+      "Bash(ls -lt hyperbolic_pde/runs/hypno*.pt)",
+      "Bash(ls -lt hyperbolic_pde/runs/*hypno*)",
+      "Bash(python -c \"from hyperbolic_pde.models.hypno_pinn import HypNO_PINN; m = HypNO_PINN\\(d_latent=32, d_hidden=32, n_layers=2\\); print\\(f''OK — {sum\\(p.numel\\(\\) for p in m.parameters\\(\\)\\):,} params''\\)\")",
+      "Bash(python hyperbolic_pde/scripts/train_hypno_pinn.py)",
+      "Read(//tmp/**)",
+      "Read(//c/Users/dimit/Desktop/repos/DL-for-HPDE/$LOCALAPPDATA/Temp/**)",
+      "WebFetch(domain:arxiv.org)"
+    ]
+  }
+}

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 from hyperbolic_pde.models.deeponet import DeepONet
 from hyperbolic_pde.models.fno import FNO2d
 from hyperbolic_pde.models.fluxgnn import FluxGNN1D
@@ -113,6 +114,7 @@ def main() -> None:
         u_np = dataset.u
         u0_np = dataset.u0
         ic_np = dataset.ic
+    cfl_metrics = print_cfl_report(data_cfg, x_np, t_np)
 
     compare_samples = int(min(len(eval_idx), int(data_cfg.get("compare_samples", len(eval_idx)))))
     x = torch.tensor(x_np, dtype=torch.float32, device=device)
@@ -399,6 +401,7 @@ def main() -> None:
     out_path = plot_dir / "model_comparison_metrics.png"
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_metrics)
     axes[0].bar(labels, mse_vals)
     axes[0].set_title("MSE (lower is better)")
     axes[0].set_yscale("log")
@@ -422,6 +425,7 @@ def main() -> None:
 
     box_path = plot_dir / "model_comparison_boxplot.png"
     fig, axes = plt.subplots(1, 3, figsize=(14, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_metrics)
     axes[0].boxplot([per_sample[k]["mse"] for k in labels], labels=labels, showfliers=False)
     axes[0].set_title("MSE distribution")
     axes[0].set_yscale("log")
@@ -439,6 +443,7 @@ def main() -> None:
 
     time_path = plot_dir / "model_comparison_timing.png"
     fig, ax = plt.subplots(1, 1, figsize=(7, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_metrics)
     ax.bar(labels, time_vals)
     ax.set_title("Average inference time per sample")
     ax.set_ylabel("Milliseconds")
@@ -455,6 +460,7 @@ def main() -> None:
         vmax = float(np.max(truth_np))
 
         fig, axes = plt.subplots(1, 4, figsize=(14, 4), constrained_layout=True)
+        annotate_cfl(fig, cfl_metrics)
         im0 = axes[0].pcolormesh(x_np, t_np, pred_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax)
         axes[0].set_title(f"{name} prediction")
         axes[0].set_xlabel("x")

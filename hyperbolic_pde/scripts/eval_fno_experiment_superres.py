@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.models.fno_experiment import FNO2d
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 
 
 class FNODataset(Dataset):
@@ -90,6 +91,8 @@ def main() -> None:
     t2 = data["t_2x"]
     u2 = data["u_2x"]
     u0_2 = data["u0_2x"]
+    cfl_1x = print_cfl_report(data_cfg, x1, t1, label="1x")
+    cfl_2x = print_cfl_report(data_cfg, x2, t2, label="2x")
 
     test_data_1x = FNODataset(x1, t1, u0_1, u1)
     test_data_2x = FNODataset(x2, t2, u0_2, u2)
@@ -174,6 +177,8 @@ def main() -> None:
             vmax_2 = float(np.max(truth_2_np))
 
             fig, axes = plt.subplots(2, 4, figsize=(16, 7), constrained_layout=True)
+            annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+            annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
             im00 = axes[0, 0].pcolormesh(
                 x1, t1, pred_1_np.T, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1
             )

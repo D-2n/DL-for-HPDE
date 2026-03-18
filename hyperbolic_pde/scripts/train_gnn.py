@@ -75,6 +75,25 @@ def split_train_val(train_idx: np.ndarray, val_fraction: float, seed: int) -> tu
     return perm[n_val:], perm[:n_val]
 
 
+def make_optimizer(params, cfg: dict) -> tuple[torch.optim.Optimizer, bool]:
+    name = str(cfg.get("optimizer", "lbfgs")).lower()
+    lr = float(cfg.get("lr", 1.0e-3))
+    if name == "lbfgs":
+        opt = torch.optim.LBFGS(
+            params,
+            lr=lr,
+            max_iter=int(cfg.get("lbfgs_max_iter", 1)),
+            history_size=int(cfg.get("lbfgs_history_size", 100)),
+            line_search_fn=cfg.get("lbfgs_line_search"),
+        )
+        return opt, True
+    if name == "adamw":
+        return torch.optim.AdamW(params, lr=lr, weight_decay=float(cfg.get("weight_decay", 0.0))), False
+    if name == "sgd":
+        return torch.optim.SGD(params, lr=lr, momentum=float(cfg.get("momentum", 0.0))), False
+    return torch.optim.Adam(params, lr=lr, weight_decay=float(cfg.get("weight_decay", 0.0))), False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train GridGNN on hyperbolic PDE dataset.")
     parser.add_argument(
@@ -112,20 +131,20 @@ def main() -> None:
         layers=int(gnn_cfg["layers"]),
     ).to(device)
 
-    weight_decay = float(gnn_cfg.get("weight_decay", 0.0))
-    opt = torch.optim.Adam(model.parameters(), lr=float(gnn_cfg["lr"]), weight_decay=weight_decay)
+    opt, use_lbfgs = make_optimizer(model.parameters(), gnn_cfg)
 
     epochs = int(gnn_cfg["epochs"])
     scheduler = None
     schedule = gnn_cfg.get("lr_schedule")
     total_steps = epochs * max(1, len(loader))
-    if schedule == "cosine":
-        lr_min = float(gnn_cfg.get("lr_min", 1.0e-5))
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
-    elif schedule == "step":
-        lr_step = int(gnn_cfg.get("lr_step", 1000))
-        lr_gamma = float(gnn_cfg.get("lr_gamma", 0.5))
-        scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step, gamma=lr_gamma)
+    if not use_lbfgs:
+        if schedule == "cosine":
+            lr_min = float(gnn_cfg.get("lr_min", 1.0e-5))
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
+        elif schedule == "step":
+            lr_step = int(gnn_cfg.get("lr_step", 1000))
+            lr_gamma = float(gnn_cfg.get("lr_gamma", 0.5))
+            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step, gamma=lr_gamma)
 
     step = 0
     model.train()
@@ -135,14 +154,21 @@ def main() -> None:
             step += 1
             inp = inp.to(device)
             out = out.to(device)
-            opt.zero_grad(set_to_none=True)
-            pred = model(inp)
-            loss = (pred - out).pow(2).mean()
-            loss.backward()
-            grad_clip = gnn_cfg.get("grad_clip")
-            if grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
-            opt.step()
+            def closure() -> torch.Tensor:
+                opt.zero_grad(set_to_none=True)
+                pred = model(inp)
+                loss = (pred - out).pow(2).mean()
+                loss.backward()
+                grad_clip = gnn_cfg.get("grad_clip")
+                if grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
+                return loss
+
+            if use_lbfgs:
+                loss = opt.step(closure)
+            else:
+                loss = closure()
+                opt.step()
             if scheduler is not None:
                 scheduler.step()
 

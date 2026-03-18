@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 from hyperbolic_pde.models.deeponet import DeepONet
 from hyperbolic_pde.models.fno import FNO2d
 from hyperbolic_pde.models.fluxgnn import FluxGNN1D
@@ -95,6 +96,7 @@ def main() -> None:
         u_np = dataset.u
         u0_np = dataset.u0
         ic_np = dataset.ic
+    cfl_metrics = print_cfl_report(data_cfg, x_np, t_np)
 
     if eval_idx.size == 0:
         print("[Compare] No samples available.")
@@ -238,6 +240,7 @@ def main() -> None:
 
     n_rows = len(preds)
     fig, axes = plt.subplots(n_rows, 4, figsize=(14, 3.5 * n_rows), constrained_layout=True)
+    annotate_cfl(fig, cfl_metrics)
     if n_rows == 1:
         axes = np.expand_dims(axes, axis=0)
 

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 from hyperbolic_pde.models.fno import FNO2d
 
 
@@ -84,6 +85,7 @@ def main() -> None:
     np.random.seed(int(cfg.get("seed", 42)))
 
     dataset = load_dataset(Path(data_cfg["path"]))
+    cfl_metrics = print_cfl_report(data_cfg, dataset.x, dataset.t)
     _, test_idx = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
 
     test_data = FNODataset(dataset.x, dataset.t, dataset.u0[test_idx], dataset.u[test_idx])
@@ -126,6 +128,7 @@ def main() -> None:
                     vmax = float(np.max(truth_np))
 
                     fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+                    annotate_cfl(fig, cfl_metrics)
                     im0 = axes[0].pcolormesh(
                         dataset.x, dataset.t, pred_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
                     )
