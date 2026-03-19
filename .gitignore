@@ -31,3 +31,9 @@ hyperbolic_pde/runs/fno.pt
 hyperbolic_pde/runs/pinn.pt
 hyperbolic_pde/runs/fno.pt
 hyperbolic_pde/runs/pinn.pt
+hyperbolic_pde/data/__pycache__/fvm.cpython-311.pyc
+hyperbolic_pde/data/hyperbolic_dataset.npz
+hyperbolic_pde/models/__pycache__/fno.cpython-311.pyc
+hyperbolic_pde/runs/deeponet.pt
+hyperbolic_pde/runs/fno.pt
+hyperbolic_pde/runs/pinn.pt
