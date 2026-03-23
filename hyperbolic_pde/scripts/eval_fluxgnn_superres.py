@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.models.fluxgnn import FluxGNN1D
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 
 
 def _deep_update(base: dict, override: dict) -> dict:
@@ -84,6 +85,8 @@ def main() -> None:
     t2 = data["t_2x"]
     u2 = data["u_2x"]
     u0_2 = data["u0_2x"]
+    cfl_1x = print_cfl_report(data_cfg, x1, t1, label="1x")
+    cfl_2x = print_cfl_report(data_cfg, x2, t2, label="2x")
 
     model = FluxGNN1D(
         hidden=int(flux_cfg["hidden"]),
@@ -140,6 +143,8 @@ def main() -> None:
 
     # Metrics plots
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+    annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
     metrics_order = ["mse", "mae", "rel_l2"]
     labels = ["MSE", "MAE", "Rel L2"]
     for i, key in enumerate(metrics_order):
@@ -151,6 +156,8 @@ def main() -> None:
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+    annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
     for i, key in enumerate(metrics_order):
         axes[i].boxplot([metrics_1[key], metrics_2[key]], labels=["1x", "2x"], showfliers=False)
         axes[i].set_title(f"{labels[i]} distribution")
@@ -183,6 +190,8 @@ def main() -> None:
             vmax_2 = float(np.max(truth_2_np))
 
             fig, axes = plt.subplots(2, 4, figsize=(16, 7), constrained_layout=True)
+            annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+            annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
             im00 = axes[0, 0].pcolormesh(
                 x1, t1, pred_1_np.T, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1
             )

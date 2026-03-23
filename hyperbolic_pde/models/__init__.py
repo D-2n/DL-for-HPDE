@@ -4,6 +4,9 @@ from .fno_experiment import FNO2d as FNO2dExperiment
 from .deeponet import DeepONet
 from .vpinn import VPINN
 from .fluxgnn import FluxGNN1D
+from .hypgno import HypGNO
+from .hypno import HypNO
+from .hypno_pinn import HypNO_PINN
 #from .gnn import GridGNN
 
 __all__ = [
@@ -15,5 +18,8 @@ __all__ = [
     "DeepONet",
     "VPINN",
     "FluxGNN1D",
+    "HypGNO",
+    "HypNO",
+    "HypNO_PINN",
     #"GridGNN",
 ]

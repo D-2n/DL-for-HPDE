@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
+from hyperbolic_pde.diagnostics import compare_one_step_update_sizes
 from hyperbolic_pde.models.fluxgnn import FluxGNN1D
 
 
@@ -56,6 +58,15 @@ def split_indices(n: int, train_fraction: float, seed: int) -> tuple[np.ndarray,
     return idx[:n_train], idx[n_train:]
 
 
+def split_train_val(train_idx: np.ndarray, val_fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    if val_fraction <= 0.0 or train_idx.size == 0:
+        return train_idx, np.array([], dtype=train_idx.dtype)
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(train_idx)
+    n_val = max(1, int(len(train_idx) * val_fraction))
+    return perm[n_val:], perm[:n_val]
+
+
 def total_variation_map(u: np.ndarray) -> np.ndarray:
     tv = np.zeros_like(u)
     tv[:-1, :] += np.abs(u[1:, :] - u[:-1, :])
@@ -71,6 +82,32 @@ def main() -> None:
         default="hyperbolic_pde/configs/hyperbolic_pde.yaml",
         help="Path to YAML config.",
     )
+    parser.add_argument(
+        "--diag_splits",
+        type=str,
+        default="test",
+        help="Comma-separated splits for one-step diagnostic: train,val,test.",
+    )
+    parser.add_argument(
+        "--diag_batch_size",
+        type=int,
+        default=32,
+        help="Batch size for one-step diagnostic.",
+    )
+    parser.add_argument(
+        "--diag_time_idx",
+        type=int,
+        default=0,
+        help="Time index to use for one-step diagnostic.",
+    )
+    parser.add_argument(
+        "--diag_riemann",
+        action="store_true",
+        help="Also run one-step diagnostic on a Riemann initial condition.",
+    )
+    parser.add_argument("--u_left", type=float, default=0.2)
+    parser.add_argument("--u_right", type=float, default=0.8)
+    parser.add_argument("--x0", type=float, default=0.0)
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -82,7 +119,14 @@ def main() -> None:
     np.random.seed(int(cfg.get("seed", 42)))
 
     dataset = load_dataset(Path(data_cfg["path"]))
-    _, test_idx = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
+    cfl_metrics = print_cfl_report(data_cfg, dataset.x, dataset.t)
+    train_idx, test_idx = split_indices(
+        dataset.u.shape[0],
+        float(data_cfg["train_fraction"]),
+        int(cfg.get("seed", 42)),
+    )
+    val_fraction = float(data_cfg.get("val_fraction", 0.0))
+    train_idx, val_idx = split_train_val(train_idx, val_fraction, int(cfg.get("seed", 42)))
     test_data = FluxGNNDataset(dataset.u0[test_idx], dataset.u[test_idx])
     loader = DataLoader(test_data, batch_size=int(flux_cfg["batch_size"]), shuffle=False)
 
@@ -133,8 +177,9 @@ def main() -> None:
                     vmax = float(np.max(truth_np))
 
                     fig, axes = plt.subplots(1, 4, figsize=(14, 4), constrained_layout=True)
+                    annotate_cfl(fig, cfl_metrics)
                     im0 = axes[0].pcolormesh(
-                        dataset.x, dataset.t, pred_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+                        dataset.x, dataset.t, pred_np, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
                     )
                     axes[0].set_title("FluxGNN prediction")
                     axes[0].set_xlabel("x")
@@ -142,20 +187,20 @@ def main() -> None:
                     fig.colorbar(im0, ax=axes[0])
 
                     im1 = axes[1].pcolormesh(
-                        dataset.x, dataset.t, truth_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+                        dataset.x, dataset.t, truth_np, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
                     )
                     axes[1].set_title("Godunov FVM truth")
                     axes[1].set_xlabel("x")
                     axes[1].set_ylabel("t")
                     fig.colorbar(im1, ax=axes[1])
 
-                    im2 = axes[2].pcolormesh(dataset.x, dataset.t, err_np.T, shading="auto", cmap="magma")
+                    im2 = axes[2].pcolormesh(dataset.x, dataset.t, err_np, shading="auto", cmap="magma")
                     axes[2].set_title("Absolute error")
                     axes[2].set_xlabel("x")
                     axes[2].set_ylabel("t")
                     fig.colorbar(im2, ax=axes[2])
 
-                    im3 = axes[3].pcolormesh(dataset.x, dataset.t, tv_np.T, shading="auto", cmap="viridis")
+                    im3 = axes[3].pcolormesh(dataset.x, dataset.t, tv_np, shading="auto", cmap="viridis")
                     axes[3].set_title("Total variation")
                     axes[3].set_xlabel("x")
                     axes[3].set_ylabel("t")
@@ -169,6 +214,50 @@ def main() -> None:
     mse = total_loss / max(1, total_count)
     print(f"[FluxGNN] Test MSE: {mse:.6e}")
     print(f"[FluxGNN] Saved {plots_made} plots to {plot_dir}")
+
+    # One-step update diagnostics
+    diag_splits = [s.strip().lower() for s in args.diag_splits.split(",") if s.strip()]
+    rng = np.random.default_rng(int(cfg.get("seed", 42)))
+    time_idx = int(np.clip(args.diag_time_idx, 0, dataset.u.shape[1] - 1))
+
+    def _run_diag(split_name: str, idx: np.ndarray) -> None:
+        if idx.size == 0:
+            print(f"[OneStep] split={split_name} skipped (empty).")
+            return
+        batch_size = int(min(args.diag_batch_size, idx.size))
+        chosen = rng.choice(idx, size=batch_size, replace=False)
+        u_batch = torch.tensor(dataset.u[chosen, time_idx], dtype=torch.float32, device=device)
+        compare_one_step_update_sizes(
+            model,
+            u_batch,
+            dt=dt,
+            dx=dx,
+            boundary=boundary,
+            label=f"{split_name}, t_idx={time_idx}",
+        )
+
+    for split in diag_splits:
+        if split == "train":
+            _run_diag("train", train_idx)
+        elif split == "val":
+            _run_diag("val", val_idx)
+        elif split == "test":
+            _run_diag("test", test_idx)
+        else:
+            print(f"[OneStep] Unknown split '{split}', skipping.")
+
+    if args.diag_riemann:
+        x = dataset.x
+        u0 = np.where(x <= float(args.x0), float(args.u_left), float(args.u_right)).astype(np.float32)
+        u_batch = torch.tensor(u0, dtype=torch.float32, device=device).unsqueeze(0)
+        compare_one_step_update_sizes(
+            model,
+            u_batch,
+            dt=dt,
+            dx=dx,
+            boundary=boundary,
+            label=f"riemann uL={args.u_left}, uR={args.u_right}",
+        )
 
 
 if __name__ == "__main__":

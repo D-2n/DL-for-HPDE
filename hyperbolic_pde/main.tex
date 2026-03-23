@@ -1,0 +1,344 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{placeins}
+
+\title{Deep Learning for HPDE's: notes and thoughts}
+\author{Dimitrije Zdrale \\
+soon to be ORAILIX intern\\
+Supervisor: Prof. Hossein Matin}
+\date{March - August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+:3
+\end{abstract}
+\section{Active thoughts}
+Graph features-
+
+Some other basis for the neural operator approach-
+
+Figure out where the shock will be, focus there in a sense (separate network, idk-)
+
+Total variation for smoothing the FNO prediction (still first check if you did everything correctly cuz the authors of the paper have very smooth graphs where the solution is supposed to be nice and clean)
+
+\section{Initial motivation}
+
+Before this internship project, I completed a "TER" during my second semester in M1 where we effectively developed PINN's for steady Navier-Stokes equations, specifically airflow around an airplane wing. It was almost a direct implementation of Raissi's PINN paper.~\cite{RAISSI}
+
+While informative, the project left me with two questions:
+
+\begin{itemize}
+    \item {What happens if I have a different configuration of initial conditions-}
+    \item {Is there a smart way to incorporate the physics in the network architecture, so we don't have to rely on losses enforcing the physics}
+\end{itemize}
+While the latter can be resolved for certain PDE's with hard-encoding the physics in the output (provided the PDE is simple enough), the first issue remains: re-training is required if the initial conditions or measurements change.
+\section{The hyperbolic problem}
+After further discussion with Prof. Matin, I've come to learn that PINNs don't perform well with hyperbolic PDE's
+
+""" INSERT PROPER JSUTIFICATION WHEN YOU COME UP WITH IT. In short: the loss enforces the strong form of the solution, and it does so by sampling collocation points"""
+
+This prompted me to conduct testing on some SOTA methods over several cases.
+\subsection{The baseline}
+
+To generate training and test data we solve the conservation law with a classical finite volume method (FVM). The spatial domain is split into cells of width $\Delta x$, and the solution is represented by one constant value per cell, i.e., the cell average
+\[
+u_i^n \approx \frac{1}{\Delta x} \int_{x_{i-1/2}}^{x_{i+1/2}} u(x,t^n)\,dx.
+\]
+The discrete update enforces conservation in each cell:
+\[
+u_i^{n+1} = u_i^n - \frac{\Delta t}{\Delta x}\left(F_{i+1/2}^n - F_{i-1/2}^n\right),
+\]
+where $F_{i\pm 1/2}^n$ are numerical fluxes through cell interfaces.
+
+We use the Godunov flux, which resolves the local Riemann problem at each interface using left and right states $u_i^n$ and $u_{i+1}^n$. We chose this method because it is a simple and easy-to-implement baseline.
+
+Boundary values are handled with ghost cells so the same flux update applies at the domain edges. The time step $\Delta t$ is chosen to satisfy a CFL condition, ensuring stability. This baseline yields a robust ground-truth dataset against which the learned models are compared.
+\subsection{1D Burgers's equation study}
+
+The point here is to show that PINN's can't capture the behaviour of a shock, because it is non-differentiable and tough to learn.
+
+The idea I had was to try and overfit the network on one single sample and show that even then it won't capture the shock
+
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\textwidth]{pinn_hyp.png}
+    \caption{Comparison of PINN performance on Burgers' equation. (Left) Predicted velocity field $u(t,x)$. (Center) Godunov FVM ground truth solution. (Right) Absolute error map $|u_{exact} - u_{pred}|$.}
+    \label{fig:PINNS}
+\end{figure}
+
+Several runs of this test were enough to visually confirm our hypothesis.
+
+\section{LWR model}
+
+To test operator learning and traditional methods on a nonlinear hyperbolic PDE with shock formation, we use the Lighthill--Whitham--Richards (LWR) traffic flow model. It describes the conservation of car density $\rho(x,t)$:
+\[
+\partial_t \rho + \partial_x f(\rho) = 0,
+\]
+with a concave flux function. The flux is defined as:
+\[
+f(\rho) = \rho(1-\rho),
+\]
+which implies a density-dependent wave speed $f'(\rho)=1-2\rho$. This nonlinearity causes characteristics to intersect and shocks to form even from smooth initial conditions.
+
+We restrict to a 1D spatial domain with periodic or outflow boundary conditions and generate reference solutions using a Godunov finite volume scheme. This provides shock-capturing ground truth while remaining computationally cheap. The initial condition is chosen as a sine wave approximated by a piecewise continuous function with 20 intervals, which deliberately introduces sharp transitions while preserving the large-scale structure. It also allows us to observe how the networks behave when the task of wave tracking is introduced.
+
+The LWR setting is a good stress test for learning-based solvers: it combines global transport, local steepening, and discontinuities, and exposes whether a model can generalize from smooth training signals to shock-dominated regimes.
+
+\section{FNO}
+
+FNO is the current SOTA for operator learning. The thing with the FNO is that it learns operator mapping, so we don't have to re-train the network.
+
+The biggest claim however is the super-resolution claim, which would in theory resolve the training time problems.
+"""NEED MATH WHY ITS BAD"""
+Here we show that, at least visually, it doesn't work very well on hyperbolic PDE's
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\hline
+Parameter & Value \\
+\hline
+modes\_x & 24 \\
+modes\_t & 24 \\
+width & 64 \\
+layers & 4 \\
+epochs & 700 \\
+learning\_rate & $1.0 \times 10^{-3}$ \\
+weight\_decay & 0.0 \\
+grad\_clip & \texttt{null} \\
+lr\_schedule & cosine \\
+lr\_min & $1.0 \times 10^{-5}$ \\
+lr\_step & 5000 \\
+lr\_gamma & 0.5 \\
+train time & 34015.48s \\
+batch\_size & 16 \\
+\hline
+\end{tabular}
+\caption{FNO training parameters.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\hline
+\end{tabular}
+\end{table}
+
+
+For these training params, I plot also the absolute error and total variation 
+
+These examples are on the LWR model with a piecewise constant function as an initial condition (to create a shock). 
+
+It is also imperative to note that there was virtually no difference in performance between 20-50 and 700 epochs for the FNO
+
+----------------- NOTE -----------------------
+
+At this point, having trained the FNO on 700 and 500 epochs, with this much data, we need to really curate our experiments.
+
+
+\section{Performance comparison}
+
+This section compares the performance of the tested models (FNO, DeepONet, PINN, VPINN; GNN is pending integration) on the LWR equation. The test set uses a sine initial condition approximated by a piecewise continuous function with 20 intervals, which intentionally introduces sharp transitions. All models are evaluated on the same samples and resolution.
+
+\subsection{Quantitative metrics}
+
+We report mean MSE, MAE, and relative $L_2$ error over the evaluation subset, along with the per-sample distributions. These metrics are sufficient for comparing average accuracy and stability across samples.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\textwidth]{evals/model_comparison_metrics.png}
+    \caption{Mean MSE, MAE, and relative $L_2$ error (log scale). Lower is better.}
+    \label{fig:model_metrics}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\textwidth]{evals/model_comparison_boxplot.png}
+    \caption{Per-sample error distributions for each model (log scale).}
+    \label{fig:model_boxplot}
+\end{figure}
+
+\subsection{Qualitative comparison}
+
+Quantitative metrics can hide localized failures around shocks. To inspect qualitative behavior, we visualize the same test sample for every model: prediction, absolute error, and total variation, alongside the FVM truth. This makes shock smearing, oscillations, and global structure errors visible at a glance. 
+
+Thanks to these plots, we can clearly see that DeepONet struggles with representing shocks, replacing them with rarefactions. The FNO, as expected, has the most accurate performance, only struggling around the most turbulent regions.
+The PINN and VPINN methods fail to learn the structure of the underlying PDE.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=\textwidth]{evals/model_compare_visual_sample_8.png}
+    \caption{Visual comparison on one test sample. Each row corresponds to a model and shows the FVM truth, model prediction, absolute error, and total variation.}
+    \label{fig:model_visuals}
+\end{figure}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\hline
+Model & Architecture hyperparameters \\
+\hline
+PINN &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{hidden\_layers}=4 \\
+\texttt{hidden\_width}=128 \\
+\texttt{activation}=tanh \\
+\texttt{hard\_boundary}=false
+\end{tabular} \\[2pt]
+FNO &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{modes\_x}=24,\ \texttt{modes\_t}=24 \\
+\texttt{width}=128,\ \texttt{layers}=6
+\end{tabular} \\[2pt]
+FNO-Exp &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{modes\_x}=32,\ \texttt{modes\_t}=32 \\
+\texttt{width}=64,\ \texttt{layers}=6 \\
+\texttt{band\_start}=25
+\end{tabular} \\[2pt]
+DeepONet &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{branch\_layers}=6,\ \texttt{trunk\_layers}=6 \\
+\texttt{hidden\_width}=128,\ \texttt{latent\_dim}=128 \\
+\texttt{activation}=tanh,\ \texttt{use\_bias}=true
+\end{tabular} \\[2pt]
+VPINN &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{hidden\_layers}=6,\ \texttt{hidden\_width}=128 \\
+\texttt{activation}=tanh,\ \texttt{hard\_boundary}=false \\
+\texttt{n\_test}=2
+\end{tabular} \\[2pt]
+GNN &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{hidden}=64,\ \texttt{layers}=4
+\end{tabular} \\
+\hline
+\end{tabular}
+\caption{Model architecture hyperparameters.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\hline
+Model & Epochs / Batch & Optimizer / LR & Schedule \\
+\hline
+PINN &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{epochs}=150 \\
+\texttt{batch\_pdes}=1000
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+Adam \\
+\texttt{lr}=1e{-}3
+\end{tabular} &
+-- \\[2pt]
+FNO &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{epochs}=150 \\
+\texttt{batch\_size}=8 \\
+\texttt{checkpoint\_every}=20
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+Adam \\
+\texttt{lr}=1e{-}3,\ \texttt{weight\_decay}=0 \\
+\texttt{grad\_clip}=null
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+cosine \\
+\texttt{lr\_min}=5e{-}5 \\
+\texttt{lr\_step}=5000,\ \texttt{lr\_gamma}=0.5
+\end{tabular} \\[2pt]
+FNO-Exp &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{epochs}=200 \\
+\texttt{batch\_size}=8 \\
+\texttt{checkpoint\_every}=20
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+Adam \\
+\texttt{lr}=1e{-}3,\ \texttt{weight\_decay}=0 \\
+\texttt{grad\_clip}=null
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+cosine \\
+\texttt{lr\_min}=5e{-}5 \\
+\texttt{lr\_step}=5000,\ \texttt{lr\_gamma}=0.5
+\end{tabular} \\[2pt]
+DeepONet &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{epochs}=150 \\
+\texttt{batch\_size}=16
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+Adam \\
+\texttt{lr}=1e{-}3,\ \texttt{weight\_decay}=0 \\
+\texttt{grad\_clip}=null
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+cosine \\
+\texttt{lr\_min}=5e{-}6 \\
+\texttt{lr\_step}=5000,\ \texttt{lr\_gamma}=0.5
+\end{tabular} \\[2pt]
+VPINN &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{epochs}=150 \\
+\texttt{batch\_pdes}=8
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+Adam \\
+\texttt{lr}=1e{-}3
+\end{tabular} &
+-- \\[2pt]
+GNN &
+\begin{tabular}[t]{@{}l@{}}
+\texttt{epochs}=150 \\
+\texttt{batch\_size}=16
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+Adam \\
+\texttt{lr}=1e{-}3,\ \texttt{weight\_decay}=0 \\
+\texttt{grad\_clip}=null
+\end{tabular} &
+\begin{tabular}[t]{@{}l@{}}
+cosine \\
+\texttt{lr\_min}=1e{-}5 \\
+\texttt{lr\_step}=5000,\ \texttt{lr\_gamma}=0.5
+\end{tabular} \\
+\hline
+\end{tabular}
+\caption{Training loop hyperparameters.}
+\end{table}
+
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccccc}
+\hline
+Model & \texttt{batch\_pdes} & \texttt{n\_int} & \texttt{n\_init} & \texttt{n\_bc} & $\lambda$ terms & \texttt{n\_test} \\
+\hline
+PINN & 1000 & 256 & 256 & 128 &
+$\lambda_{\text{res}}{=}1.0,\ \lambda_{\text{init}}{=}1.0,\ \lambda_{\text{bc}}{=}1.0$ & -- \\
+VPINN & 8 & 256 & 256 & 128 &
+$\lambda_{\text{weak}}{=}1.0,\ \lambda_{\text{init}}{=}1.0,\ \lambda_{\text{bc}}{=}0.1$ & 2 \\
+\hline
+\end{tabular}
+\caption{Physics-based sampling and loss weights (PINN / VPINN).}
+\end{table}
+
+
+
+\FloatBarrier
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

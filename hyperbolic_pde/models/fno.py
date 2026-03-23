@@ -39,6 +39,8 @@ class SpectralConv2d(nn.Module):
             x_ft[:, :, -self.modes_x :, : self.modes_t],
             self.weights2,
         )
+
+        
         x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1)))
         return x
 

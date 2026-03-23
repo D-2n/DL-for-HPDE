@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 
 
 class FNODataset(Dataset):
@@ -90,6 +91,8 @@ def main() -> None:
     t2 = data["t_2x"]
     u2 = data["u_2x"]
     u0_2 = data["u0_2x"]
+    cfl_1x = print_cfl_report(data_cfg, x1, t1, label="1x")
+    cfl_2x = print_cfl_report(data_cfg, x2, t2, label="2x")
 
     test_data_1x = FNODataset(x1, t1, u0_1, u1)
     test_data_2x = FNODataset(x2, t2, u0_2, u2)
@@ -198,6 +201,8 @@ def main() -> None:
             #vmax_2 = 0.5
 
             fig, axes = plt.subplots(2, 4, figsize=(16, 7), constrained_layout=True)
+            annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+            annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
             im00 = axes[0, 0].pcolormesh(
                 x1, t1, pred_1_np.T, shading="auto", cmap="jet", vmin=vmin_1, vmax=vmax_1
             )
@@ -268,6 +273,8 @@ def main() -> None:
     mean_2x = {k: float(np.mean(v)) for k, v in metrics_2x.items()}
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+    annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
     metrics_order = ["mse", "mae", "rel_l2"]
     labels = ["MSE", "MAE", "Rel L2"]
     for i, key in enumerate(metrics_order):
@@ -279,6 +286,8 @@ def main() -> None:
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    annotate_cfl(fig, cfl_1x, prefix="1x", y=0.02)
+    annotate_cfl(fig, cfl_2x, prefix="2x", y=0.005)
     for i, key in enumerate(metrics_order):
         axes[i].boxplot([metrics_1x[key], metrics_2x[key]], labels=["1x", "2x"], showfliers=False)
         axes[i].set_title(f"{labels[i]} distribution")

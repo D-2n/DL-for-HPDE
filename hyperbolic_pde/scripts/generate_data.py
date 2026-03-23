@@ -53,7 +53,7 @@ def main() -> None:
         x_max=float(data_cfg["x_max"]),
         t_max=float(data_cfg["t_max"]),
         cfl=float(data_cfg["cfl"]),
-        num_segments=int(data_cfg["num_segments"]),
+        num_segments=data_cfg["num_segments"],
         u_min=float(data_cfg["u_min"]),
         u_max=float(data_cfg["u_max"]),
         ic_points=int(data_cfg["ic_points"]),

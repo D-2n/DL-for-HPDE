@@ -4,16 +4,16 @@ device: cuda
 data:
   path: hyperbolic_pde/data/hyperbolic_dataset.npz
   test_path: hyperbolic_pde/data/hyperbolic_test_superres.npz
-  nx: 256
-  nt: 256
+  nx: 128
+  nt: 96
   x_min: -1.0
   x_max: 1.0
-  t_max: 1.0
-  cfl: 0.1
-  num_samples: 1500
-  test_num_samples: 200
+  t_max: 2.0
+  cfl: 0.2
+  num_samples: 6000
+  test_num_samples: 10
   test_sine_pieces: 20
-  num_segments: 2
+  num_segments:  [2, 5, 7, 10, 20, 30]
   u_min: 0.0
   u_max: 1.0
   ic_points: 128
@@ -26,7 +26,7 @@ pinn:
   hidden_width: 128
   activation: tanh
   epochs: 150
-  lr: 1.0e-3
+  lr: 5.0e-4
   batch_pdes: 1000
   interior_samples: 256
   initial_samples: 256
@@ -64,7 +64,7 @@ fno_experiment:
   modes_t: 32
   width: 64
   layers: 6
-  band_start: 25
+  band_start: 125
   epochs: 200
   lr: 1.0e-3
   weight_decay: 0.0
@@ -119,8 +119,8 @@ vpinn:
 
 gnn:
   hidden: 64
-  layers: 4
-  epochs: 150
+  layers: 5
+  epochs: 250
   lr: 1.0e-3
   weight_decay: 0.0
   grad_clip: null
@@ -131,25 +131,112 @@ gnn:
   batch_size: 16
   save_path: hyperbolic_pde/runs/gnn.pt
 
-fluxgnn:
-  hidden: 96
-  layers: 4
+hypgno:
+  stencil_k: 3
+  d_latent: 128
+  d_hidden: 128
+  d_time: 32
+  n_layers: 8
   activation: gelu
-  latent_dim: 96
-  flux_hidden: 96
-  use_base_flux: false
-  base_flux_weight: 0.0
-  flux_scale: 0.25
-  epochs: 70
+  optimizer: adamw
+  epochs: 500
   lr: 1.0e-3
-  weight_decay: 0.0
-  grad_clip: null
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 1.0e-5
-  lr_step: 5000
-  lr_gamma: 0.5
-  batch_size: 64
+  batch_size: 32
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.0
   checkpoint_every: 20
-  save_path: hyperbolic_pde/runs/fluxgnn.pt
-  eval_plots: 3
+  save_path: hyperbolic_pde/runs/hypgno_epoch40.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypgno
+
+hypno:
+  resume_from: hyperbolic_pde/runs/hypn.pt
+  stencil_k_x: 7
+  stencil_k_t: 3
+  d_latent: 64
+  d_hidden: 64
+  d_time: 32
+  n_layers: 4
+  activation: gelu
+  optimizer: adamw
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 2
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.5
+  shock_weighted: true
+  shock_alpha: 5.0
+  checkpoint_every: 20
+  save_path: hyperbolic_pde/runs/hypno_tv.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypno
+
+hypno_pinn:
+  stencil_k_x: 7
+  stencil_k_t: 3
+  d_latent: 64
+  d_hidden: 64
+  d_time: 32
+  n_layers: 4
+  activation: gelu
+  shock_delta: 0.1
+  shock_threshold: 0.3
+  causal_temporal: true
+  radius_x: 0.25
+  radius_t: 0.1
+  optimizer: adamw
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 2
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.0
+  lambda_pinn: 0.01
+  shock_weighted: false
+  shock_alpha: 5.0
+  checkpoint_every: 20
+  save_path: hyperbolic_pde/runs/hypno_pinn.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypno_pinn
+
+fluxgnn:
+  hidden: 196
+  layers: 4
+  activation: gelu
+  optimizer: adamw
+  #lbfgs_max_iter: 20
+  latent_dim: 196
+  flux_hidden: 196
+  interface_hidden: 196
+  use_base_flux: false
+
+  base_flux_weight: 0.0
+  flux_scale: 1.0
+  epochs: 350
+  lr: 5.0e-4
+  weight_decay: 5e-5
+  grad_clip: 0.6
+  lr_schedule: cosine
+  lr_min: 5.0e-7
+  lr_step: 700
+  lr_gamma: 0.5
+  batch_size: 32
+  checkpoint_every: 1000
+  save_path: hyperbolic_pde\runs\fluxgnn.pt
+  eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/fluxgnn
+

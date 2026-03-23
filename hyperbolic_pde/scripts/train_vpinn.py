@@ -58,6 +58,25 @@ def split_train_val(train_idx: np.ndarray, val_fraction: float, seed: int) -> tu
     return perm[n_val:], perm[:n_val]
 
 
+def make_optimizer(params, cfg: dict) -> tuple[torch.optim.Optimizer, bool]:
+    name = str(cfg.get("optimizer", "lbfgs")).lower()
+    lr = float(cfg.get("lr", 1.0e-3))
+    if name == "lbfgs":
+        opt = torch.optim.LBFGS(
+            params,
+            lr=lr,
+            max_iter=int(cfg.get("lbfgs_max_iter", 1)),
+            history_size=int(cfg.get("lbfgs_history_size", 100)),
+            line_search_fn=cfg.get("lbfgs_line_search"),
+        )
+        return opt, True
+    if name == "adamw":
+        return torch.optim.AdamW(params, lr=lr, weight_decay=float(cfg.get("weight_decay", 0.0))), False
+    if name == "sgd":
+        return torch.optim.SGD(params, lr=lr, momentum=float(cfg.get("momentum", 0.0))), False
+    return torch.optim.Adam(params, lr=lr, weight_decay=float(cfg.get("weight_decay", 0.0))), False
+
+
 def sample_u0_at(
     x: torch.Tensor,
     u0_grid: torch.Tensor,
@@ -108,7 +127,7 @@ def main() -> None:
         n_test=int(vpinn_cfg.get("n_test", 2)),
     ).to(device)
 
-    opt = torch.optim.Adam(model.parameters(), lr=float(vpinn_cfg["lr"]))
+    opt, use_lbfgs = make_optimizer(model.parameters(), vpinn_cfg)
 
     epochs = int(vpinn_cfg["epochs"])
     batch_pdes = int(vpinn_cfg["batch_pdes"])
@@ -130,39 +149,66 @@ def main() -> None:
 
     start_time = time.perf_counter()
     for epoch in range(1, epochs + 1):
-        opt.zero_grad(set_to_none=True)
         batch_indices = rng.choice(train_idx, size=batch_pdes, replace=True)
 
-        loss_weak = torch.tensor(0.0, device=device)
-        loss_init = torch.tensor(0.0, device=device)
-        loss_bc = torch.tensor(0.0, device=device)
-
+        samples = []
         for idx in batch_indices:
-            cond = ic_all[idx]
-            cond_int = repeat_cond(cond, n_int)
-            cond_init = repeat_cond(cond, n_init)
-            cond_bc = repeat_cond(cond, n_bc)
-
             x_i, t_i = sample_uniform(n_int, x_min, x_max, t_min, t_max, device)
-            loss_weak = loss_weak + model.weak_residual_loss(x_i, t_i, cond_int)
-
             x0, t0 = sample_initial(n_init, x_min, x_max, t_min, device)
-            u0_target = sample_u0_at(x0, u0_all[idx], x_grid)
-            u0_pred = model(x0, t0, cond_init)
-            loss_init = loss_init + (u0_pred - u0_target).pow(2).mean()
-
             x_l, t_l, x_r, t_r = sample_boundary(n_bc, x_min, x_max, t_min, t_max, device)
-            u_l = model(x_l, t_l, cond_bc)
-            u_r = model(x_r, t_r, cond_bc)
-            loss_bc = loss_bc + (u_l - u_r).pow(2).mean()
+            samples.append((idx, x_i, t_i, x0, t0, x_l, t_l, x_r, t_r))
 
-        loss_weak = loss_weak / batch_pdes
-        loss_init = loss_init / batch_pdes
-        loss_bc = loss_bc / batch_pdes
+        def compute_losses() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            loss_weak = torch.tensor(0.0, device=device)
+            loss_init = torch.tensor(0.0, device=device)
+            loss_bc = torch.tensor(0.0, device=device)
 
-        loss = lam_weak * loss_weak + lam_init * loss_init + lam_bc * loss_bc
-        loss.backward()
-        opt.step()
+            for idx, x_i, t_i, x0, t0, x_l, t_l, x_r, t_r in samples:
+                cond = ic_all[idx]
+                cond_int = repeat_cond(cond, n_int)
+                cond_init = repeat_cond(cond, n_init)
+                cond_bc = repeat_cond(cond, n_bc)
+
+                loss_weak = loss_weak + model.weak_residual_loss(x_i, t_i, cond_int)
+
+                u0_target = sample_u0_at(x0, u0_all[idx], x_grid)
+                u0_pred = model(x0, t0, cond_init)
+                loss_init = loss_init + (u0_pred - u0_target).pow(2).mean()
+
+                u_l = model(x_l, t_l, cond_bc)
+                u_r = model(x_r, t_r, cond_bc)
+                loss_bc = loss_bc + (u_l - u_r).pow(2).mean()
+
+            loss_weak = loss_weak / batch_pdes
+            loss_init = loss_init / batch_pdes
+            loss_bc = loss_bc / batch_pdes
+
+            loss = lam_weak * loss_weak + lam_init * loss_init + lam_bc * loss_bc
+            return loss, loss_weak, loss_init, loss_bc
+
+        loss_parts: dict[str, torch.Tensor] = {}
+
+        def closure() -> torch.Tensor:
+            opt.zero_grad(set_to_none=True)
+            loss, loss_weak, loss_init, loss_bc = compute_losses()
+            loss.backward()
+            loss_parts["loss"] = loss
+            loss_parts["loss_weak"] = loss_weak
+            loss_parts["loss_init"] = loss_init
+            loss_parts["loss_bc"] = loss_bc
+            return loss
+
+        if use_lbfgs:
+            opt.step(closure)
+            loss = loss_parts["loss"]
+            loss_weak = loss_parts["loss_weak"]
+            loss_init = loss_parts["loss_init"]
+            loss_bc = loss_parts["loss_bc"]
+        else:
+            opt.zero_grad(set_to_none=True)
+            loss, loss_weak, loss_init, loss_bc = compute_losses()
+            loss.backward()
+            opt.step()
 
         print(
             f"[VPINN] epoch {epoch:5d}/{epochs} | total={loss.item():.3e} | "
