@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import sys
 import time
@@ -181,6 +182,47 @@ def hypno_pinn_loss(
 
 
 # --------------------------------------------------------------------------- #
+# logging + GPU monitoring
+# --------------------------------------------------------------------------- #
+def setup_logging(run_dir: Path) -> logging.Logger:
+    """File + console logger that survives crashes."""
+    log = logging.getLogger("hypno_pinn")
+    log.setLevel(logging.DEBUG)
+    log.handlers.clear()
+
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    fh = logging.FileHandler(run_dir / "train.log", mode="a", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    log.addHandler(ch)
+
+    return log
+
+
+def gpu_status() -> str:
+    """Return GPU temp, memory, utilization as a string."""
+    if not torch.cuda.is_available():
+        return "no-gpu"
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=temperature.gpu,memory.used,memory.total,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            text=True, timeout=5,
+        ).strip()
+        temp, mem_used, mem_total, util = out.split(", ")
+        return f"temp={temp}C  mem={mem_used}/{mem_total}MB  util={util}%"
+    except Exception:
+        return "nvidia-smi-failed"
+
+
+# --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
 def main() -> None:
@@ -196,13 +238,15 @@ def main() -> None:
     model_cfg = cfg["hypno_pinn"]
 
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
-    print(f"Training HypNO-PINN on device: {device}")
     torch.manual_seed(int(cfg.get("seed", 42)))
     np.random.seed(int(cfg.get("seed", 42)))
 
     # create organized run directory
     run_dir = create_run_dir()
-    print(f"[HypNO-PINN] Run directory: {run_dir}")
+    log = setup_logging(run_dir)
+    log.info(f"Run directory: {run_dir}")
+    log.info(f"Device: {device}")
+    log.info(f"GPU: {gpu_status()}")
 
     dataset = load_dataset(Path(data_cfg["path"]))
     train_idx, _ = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
@@ -234,6 +278,12 @@ def main() -> None:
         causal_temporal=bool(model_cfg.get("causal_temporal", True)),
         radius_x=radius_x,
         radius_t=radius_t,
+        shock_mode=str(model_cfg.get("shock_mode", "pinn")),
+        weno_eps=float(model_cfg.get("weno_eps", 1e-6)),
+        weno_p=float(model_cfg.get("weno_p", 2.0)),
+        unified_mp=bool(model_cfg.get("unified_mp", False)),
+        detector_path=model_cfg.get("detector_path", None),
+        detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
@@ -244,10 +294,10 @@ def main() -> None:
     if resume_path and Path(resume_path).exists():
         ckpt = torch.load(resume_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt)
-        print(f"[HypNO-PINN] Resumed weights from {resume_path}")
+        log.info(f"Resumed weights from {resume_path}")
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[HypNO-PINN] {n_params:,} trainable parameters")
+    log.info(f"{n_params:,} trainable parameters")
 
     # save run metadata
     save_run_metadata(run_dir, cfg, model, args.config)
@@ -315,11 +365,18 @@ def main() -> None:
                         lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
                         shock_weighted, shock_alpha,
                     )
-                print(
-                    f"[HypNO-PINN] epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
+                gpu = gpu_status() if step % 200 == 0 or step == 1 else ""
+                msg = (
+                    f"epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
                     f"L={info['total']:.3e}  state={info['state']:.3e}  mass={info['mass']:.3e}  "
                     f"tv={info['tv']:.3e}  pinn={info['pinn']:.3e} | lr={lr_now:.2e}"
                 )
+                if gpu:
+                    msg += f" | {gpu}"
+                log.info(msg)
+                # flush to disk immediately so we see last line before crash
+                for h in log.handlers:
+                    h.flush()
 
         train_losses.append(epoch_loss_sum / max(1, epoch_count))
 
@@ -342,7 +399,9 @@ def main() -> None:
                     val_count += v_u0.size(0)
             val_avg = val_loss / max(1, val_count)
             val_losses.append(val_avg)
-            print(f"[HypNO-PINN] epoch {epoch:3d}/{epochs} | val_loss={val_avg:.3e}")
+            log.info(f"epoch {epoch:3d}/{epochs} | val_loss={val_avg:.3e} | {gpu_status()}")
+            for h in log.handlers:
+                h.flush()
             model.train()
         else:
             val_losses.append(float("nan"))
@@ -350,7 +409,7 @@ def main() -> None:
         if checkpoint_every > 0 and epoch % checkpoint_every == 0:
             ckpt_path = run_dir / f"checkpoint_epoch{epoch}.pt"
             torch.save(model.state_dict(), ckpt_path)
-            print(f"[HypNO-PINN] Saved checkpoint to {ckpt_path}")
+            log.info(f"Saved checkpoint to {ckpt_path}")
 
     # save final model to run dir and to the configured save_path
     final_path = run_dir / "model_final.pt"
@@ -359,8 +418,8 @@ def main() -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), save_path)
     elapsed = time.perf_counter() - start_time
-    print(f"[HypNO-PINN] Saved final model to {final_path}")
-    print(f"[HypNO-PINN] Training time: {elapsed:.2f}s")
+    log.info(f"Saved final model to {final_path}")
+    log.info(f"Training time: {elapsed:.2f}s")
 
     # --- plot train/val loss curves ---
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -377,13 +436,13 @@ def main() -> None:
     curve_path = run_dir / "loss_curves.png"
     fig.savefig(curve_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"[HypNO-PINN] Saved loss curves to {curve_path}")
+    log.info(f"Saved loss curves to {curve_path}")
 
     # write run_dir path so eval script can find it
     latest_path = Path("hyperbolic_pde/runs/hypno_pinn/latest_run.txt")
     latest_path.parent.mkdir(parents=True, exist_ok=True)
     latest_path.write_text(str(run_dir), encoding="utf-8")
-    print(f"[HypNO-PINN] Run complete: {run_dir}")
+    log.info(f"Run complete: {run_dir}")
 
 
 if __name__ == "__main__":

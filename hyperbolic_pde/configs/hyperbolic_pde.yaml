@@ -5,18 +5,20 @@ data:
   path: hyperbolic_pde/data/hyperbolic_dataset.npz
   test_path: hyperbolic_pde/data/hyperbolic_test_superres.npz
   nx: 128
-  nt: 96
+  nt: 48
   x_min: -1.0
   x_max: 1.0
-  t_max: 2.0
+  t_max: 1.0
   cfl: 0.2
-  num_samples: 6000
+  num_samples: 2000
   test_num_samples: 10
   test_sine_pieces: 20
-  num_segments:  [2, 5, 7, 10, 20, 30]
+  ic_types: [piecewise_constant]
+  num_segments:  [2, 3]
   u_min: 0.0
   u_max: 1.0
   ic_points: 128
+  method: muscl              # "godunov" (1st order) or "muscl" (2nd order MUSCL-Hancock)
   boundary: ghost
   train_fraction: 0.8
   val_fraction: 0.1
@@ -182,36 +184,62 @@ hypno:
   plot_dir: hyperbolic_pde/runs/plots/hypno
 
 hypno_pinn:
+  #resume_from: hyperbolic_pde/runs/hypno_pinn/run_20260325_101403/model_final.pt
   stencil_k_x: 7
   stencil_k_t: 3
-  d_latent: 64
-  d_hidden: 64
-  d_time: 32
+  d_latent: 48
+  d_hidden: 48
+  d_time: 48
   n_layers: 4
   activation: gelu
-  shock_delta: 0.1
-  shock_threshold: 0.3
+  shock_mode: weno          # "pinn" or "weno" (weno with p=0 = raw MP)
+  shock_delta: 0.1          # pinn mode only
+  shock_threshold: 0.3      # pinn mode only
+  weno_eps: 1.0e-6          # weno mode only
+  weno_p: 2.0             # 0 = no WENO weighting (raw MP)
+  unified_mp: true           # true = single MLP for space+time, false = separate MLPs
+  detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
-  radius_x: 0.25
+  radius_x: 0.2
   radius_t: 0.1
   optimizer: adamw
-  epochs: 150
+  epochs: 300
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 1.0e-5
-  batch_size: 2
+  batch_size: 10
   lambda_state: 1.0
   lambda_conservation: 1.0
-  lambda_tv: 0.0
-  lambda_pinn: 0.01
+  lambda_tv: 0.05
+  lambda_pinn: 0.0
   shock_weighted: false
-  shock_alpha: 5.0
+  shock_alpha: 3.0
   checkpoint_every: 20
   save_path: hyperbolic_pde/runs/hypno_pinn.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno_pinn
+
+shock_detector:
+  d_latent: 64
+  d_hidden: 128
+  n_layers: 6
+  activation: tanh              # tanh is standard for PINNs (smooth)
+  epochs: 300
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_min: 1.0e-5
+  batch_size: 16
+  lambda_pde: 1.0               # PDE residual at collocation points
+  lambda_ic: 10.0               # IC enforcement: u(x,0) = u0(x)
+  lambda_data: 1.5              # supervised loss on FVM ground truth
+  n_collocation: 2048           # random (x,t) points per batch for PDE loss
+  checkpoint_every: 20
+  save_path: hyperbolic_pde/runs/shock_detector.pt
+  eval_plots: 8
+  plot_dir: hyperbolic_pde/runs/plots/shock_detector
 
 fluxgnn:
   hidden: 196

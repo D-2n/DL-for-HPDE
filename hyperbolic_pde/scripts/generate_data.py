@@ -45,6 +45,10 @@ def main() -> None:
     cfg = load_config(Path(args.config))
     data_cfg = cfg["data"]
 
+    ic_types = data_cfg.get("ic_types", ["piecewise_constant"])
+    if isinstance(ic_types, str):
+        ic_types = [ic_types]
+
     bundle = generate_dataset(
         num_samples=int(data_cfg["num_samples"]),
         nx=int(data_cfg["nx"]),
@@ -64,6 +68,8 @@ def main() -> None:
             if data_cfg.get("num_workers", None) is not None
             else None
         ),
+        ic_types=ic_types,
+        method=str(data_cfg.get("method", "godunov")),
     )
 
     out_path = Path(data_cfg["path"])
