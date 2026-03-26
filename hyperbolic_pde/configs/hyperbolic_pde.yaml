@@ -2,8 +2,8 @@ seed: 42
 device: cuda
 
 data:
-  path: hyperbolic_pde/data/hyperbolic_dataset.npz
-  test_path: hyperbolic_pde/data/hyperbolic_test_superres.npz
+  path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
+  test_path: /work/work_dzdrale/lwr_1d/hyperbolic_test_superres.npz
   nx: 128
   nt: 48
   x_min: -1.0
@@ -77,7 +77,7 @@ fno_experiment:
   lr_gamma: 0.5
   batch_size: 8
   checkpoint_every: 20
-  save_path: hyperbolic_pde\runs\fno_experiment_epoch160_epoch60.pt
+  save_path: hyperbolic_pde/runs/fno_experiment_epoch160_epoch60.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/fno_experiment
 
@@ -198,6 +198,7 @@ hypno_pinn:
   weno_eps: 1.0e-6          # weno mode only
   weno_p: 2.0             # 0 = no WENO weighting (raw MP)
   unified_mp: true           # true = single MLP for space+time, false = separate MLPs
+  readout: relu              # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth)
   detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
   radius_x: 0.2
@@ -264,7 +265,7 @@ fluxgnn:
   lr_gamma: 0.5
   batch_size: 32
   checkpoint_every: 1000
-  save_path: hyperbolic_pde\runs\fluxgnn.pt
+  save_path: hyperbolic_pde/runs/fluxgnn.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/fluxgnn
 
