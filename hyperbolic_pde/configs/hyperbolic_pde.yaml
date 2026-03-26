@@ -2,8 +2,8 @@ seed: 42
 device: cuda
 
 data:
-  path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
-  test_path: /work/work_dzdrale/lwr_1d/hyperbolic_test_superres.npz
+  path: hyperbolic_pde/data/hyperbolic_dataset.npz
+  test_path: hyperbolic_pde/data/hyperbolic_test_superres.npz
   nx: 128
   nt: 48
   x_min: -1.0

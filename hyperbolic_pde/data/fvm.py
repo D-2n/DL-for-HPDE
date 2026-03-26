@@ -401,6 +401,8 @@ def generate_dataset(
 
 
 def save_dataset(bundle: DatasetBundle, path: Path) -> None:
+    from hyperbolic_pde import resolve_data_path
+    path = resolve_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -413,6 +415,8 @@ def save_dataset(bundle: DatasetBundle, path: Path) -> None:
 
 
 def load_dataset(path: Path) -> DatasetBundle:
+    from hyperbolic_pde import resolve_data_path
+    path = resolve_data_path(path)
     data = np.load(path)
     return DatasetBundle(
         x=data["x"],

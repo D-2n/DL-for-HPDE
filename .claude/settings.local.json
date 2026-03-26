@@ -23,7 +23,8 @@
       "Bash(curl -s \"https://api.semanticscholar.org/graph/v1/paper/search?query=neural+operator+hyperbolic+PDE+conservation+laws+shocks&limit=20&fields=title,authors,year,abstract,citationCount\")",
       "WebFetch(domain:www.sciencedirect.com)",
       "Bash(python -m hyperbolic_pde.scripts.train_hypno_pinn)",
-      "Bash(python -m hyperbolic_pde.scripts.train_shock_detector)"
+      "Bash(python -m hyperbolic_pde.scripts.train_shock_detector)",
+      "Bash(curl -s \"https://arxiv.org/abs/2111.03794\")"
     ]
   }
 }
