@@ -2,19 +2,19 @@ seed: 42
 device: cuda
 
 data:
-  path: hyperbolic_pde/data/hyperbolic_dataset.npz
-  test_path: hyperbolic_pde/data/hyperbolic_test_superres.npz
+  path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
+  test_path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
   nx: 128
-  nt: 48
+  nt: 64
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
   cfl: 0.2
-  num_samples: 2000
+  num_samples: 5000
   test_num_samples: 10
   test_sine_pieces: 20
-  ic_types: [piecewise_constant]
-  num_segments:  [2, 3]
+  ic_types: [piecewise_constant, piecewise_sine, riemann]
+  num_segments:  [2, 5, 15, 20, 7]
   u_min: 0.0
   u_max: 1.0
   ic_points: 128
@@ -187,51 +187,51 @@ hypno_pinn:
   #resume_from: hyperbolic_pde/runs/hypno_pinn/run_20260325_101403/model_final.pt
   stencil_k_x: 7
   stencil_k_t: 3
-  d_latent: 48
-  d_hidden: 48
-  d_time: 48
+  d_latent: 64
+  d_hidden: 64
+  d_time: 64
   n_layers: 4
-  activation: gelu
+  activation: relu
   shock_mode: weno          # "pinn" or "weno" (weno with p=0 = raw MP)
   shock_delta: 0.1          # pinn mode only
   shock_threshold: 0.3      # pinn mode only
   weno_eps: 1.0e-6          # weno mode only
-  weno_p: 2.0             # 0 = no WENO weighting (raw MP)
+  weno_p: 0.0             # 0 = no WENO weighting (raw MP)
   unified_mp: true           # true = single MLP for space+time, false = separate MLPs
   detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
   radius_x: 0.2
   radius_t: 0.1
   optimizer: adamw
-  epochs: 300
+  epochs: 150
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
-  lr_min: 1.0e-5
-  batch_size: 10
+  lr_min: 1.0e-6
+  batch_size: 16
   lambda_state: 1.0
   lambda_conservation: 1.0
   lambda_tv: 0.05
   lambda_pinn: 0.0
   shock_weighted: false
   shock_alpha: 3.0
-  checkpoint_every: 20
+  checkpoint_every: 100
   save_path: hyperbolic_pde/runs/hypno_pinn.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno_pinn
 
 shock_detector:
-  d_latent: 64
+  d_latent: 128
   d_hidden: 128
-  n_layers: 6
+  n_layers: 7
   activation: tanh              # tanh is standard for PINNs (smooth)
   epochs: 300
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_min: 1.0e-5
-  batch_size: 16
+  batch_size: 64
   lambda_pde: 1.0               # PDE residual at collocation points
   lambda_ic: 10.0               # IC enforcement: u(x,0) = u0(x)
   lambda_data: 1.5              # supervised loss on FVM ground truth
