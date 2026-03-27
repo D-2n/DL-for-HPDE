@@ -182,7 +182,7 @@ hypno:
   save_path: hyperbolic_pde/runs/hypno_tv.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno
-
+#dumb comment
 hypno_pinn:
   #resume_from: hyperbolic_pde/runs/hypno_pinn/run_20260325_101403/model_final.pt
   stencil_k_x: 7
@@ -191,7 +191,7 @@ hypno_pinn:
   d_hidden: 64
   d_time: 64
   n_layers: 4
-  activation: relu
+  activation: gelu
   shock_mode: weno          # "pinn" or "weno" (weno with p=0 = raw MP)
   shock_delta: 0.1          # pinn mode only
   shock_threshold: 0.3      # pinn mode only
@@ -201,7 +201,7 @@ hypno_pinn:
   readout: relu              # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth)
   detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
-  radius_x: 0.25
+  radius_x: 0.2
   radius_t: 0.15
   optimizer: adamw
   epochs: 150
@@ -209,7 +209,7 @@ hypno_pinn:
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
-  lr_min: 1.0e-6
+  lr_min: 5.0e-6
   batch_size: 16
   lambda_state: 1.0
   lambda_conservation: 1.0
