@@ -571,6 +571,7 @@ class HypNO_PINN(nn.Module):
         unified_mp: bool = False,
         detector_path: str | None = None,
         detector_cfg: dict | None = None,
+        readout: str = "gelu",
     ) -> None:
         super().__init__()
         self.stencil_k_x = stencil_k_x
@@ -628,8 +629,8 @@ class HypNO_PINN(nn.Module):
                 for _ in range(n_layers)
             ])
 
-        # Q: decoder
-        self.decoder = _make_mlp(d_latent, d_hidden, 1, 3, activation)
+        # Q: decoder (readout activation can differ from internal activation)
+        self.decoder = _make_mlp(d_latent, d_hidden, 1, 3, readout)
 
         # external pre-trained PINN shock detector (frozen)
         if detector_path is not None:
