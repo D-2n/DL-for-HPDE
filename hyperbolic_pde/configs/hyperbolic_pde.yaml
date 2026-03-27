@@ -201,8 +201,8 @@ hypno_pinn:
   readout: relu              # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth)
   detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
-  radius_x: 0.2
-  radius_t: 0.1
+  radius_x: 0.25
+  radius_t: 0.15
   optimizer: adamw
   epochs: 150
   lr: 1.0e-3
@@ -213,7 +213,7 @@ hypno_pinn:
   batch_size: 16
   lambda_state: 1.0
   lambda_conservation: 1.0
-  lambda_tv: 0.05
+  lambda_tv: 0.01
   lambda_pinn: 0.0
   shock_weighted: false
   shock_alpha: 3.0
