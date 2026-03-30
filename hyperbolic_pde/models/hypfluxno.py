@@ -166,8 +166,12 @@ class _FluxSpaceMPLayer(nn.Module):
             )  # [BT, nx+2, d]
             diff_bwd = F_pad[:, 1:-1, :] - F_pad[:, :-2, :]             # F_{i+1/2} - F_{i-1/2}
             diff_fwd = F_pad[:, 2:,   :] - F_pad[:, 1:-1, :]            # F_{i+3/2} - F_{i+1/2}
-            beta = (diff_bwd ** 2 + diff_fwd ** 2).sum(dim=-1)          # [BT, nx]
+            # Use mean over channels to keep beta scale reasonable, then normalise per sample.
+            beta = (diff_bwd ** 2 + diff_fwd ** 2).mean(dim=-1)         # [BT, nx]
+            beta_scale = beta.median(dim=1, keepdim=True).values.detach().clamp(min=1e-6)
+            beta = beta / beta_scale
             omega = 1.0 / (self.weno_eps + beta).pow(self.weno_p)       # [BT, nx]
+            omega = omega.clamp(max=1.0)
             F_gated = omega.unsqueeze(-1) * F_half                      # [BT, nx, d]
             beta_map = beta.reshape(B, nt, nx)
         else:
