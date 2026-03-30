@@ -200,7 +200,7 @@ hypno_pinn:
   weno_eps: 1.0e-6          # weno mode only
   weno_p: 2.0             # 0 = no WENO weighting (raw MP)
   unified_mp: true           # true = single MLP for space+time, false = separate MLPs
-  readout: gelu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
+  readout: relu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
   detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
   radius_x: 0.2
@@ -212,7 +212,7 @@ hypno_pinn:
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 5.0e-6
-  batch_size: 16
+  batch_size: 4
   lambda_state: 1.0
   lambda_conservation: 1.0
   lambda_tv: 0.01
@@ -271,3 +271,35 @@ fluxgnn:
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/fluxgnn
 
+hypfluxno:
+  stencil_k_x: 3          # only used by LiftingLayer
+  stencil_k_t: 2
+  d_latent: 64
+  d_hidden: 64
+  d_time: 32
+  n_layers: 4
+  activation: gelu
+  weno_eps: 1.0e-6
+  weno_p: 2.0              # 0.0 = no WENO gating (raw flux divergence)
+  causal_temporal: true
+  radius_x: 0.25
+  radius_t: 0.15
+  readout: gelu
+  optimizer: adamw
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-6
+  batch_size: 16
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.01
+  lambda_entropy: 0.1
+  shock_weighted: false
+  shock_alpha: 3.0
+  checkpoint_every: 50
+  save_path: hyperbolic_pde/runs/hypfluxno.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypfluxno
