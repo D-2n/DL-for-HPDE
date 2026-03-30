@@ -9,6 +9,10 @@ logs/
 hyperbolic_pde/runs/
 **/plots/
 
+# Local configs
+hyperbolic_pde/configs/*.yaml
+hyperbolic_pde/configs/*.yml
+
 # Images
 *.png
 *.jpg
