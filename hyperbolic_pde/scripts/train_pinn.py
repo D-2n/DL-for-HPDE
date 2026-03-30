@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
@@ -99,6 +100,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
+    cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg["data"]
     pinn_cfg = cfg["pinn"]
 

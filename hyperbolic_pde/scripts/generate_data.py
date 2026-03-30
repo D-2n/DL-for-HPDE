@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
@@ -43,6 +44,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
+    cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg["data"]
 
     ic_types = data_cfg.get("ic_types", ["piecewise_constant"])

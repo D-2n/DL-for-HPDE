@@ -4,6 +4,8 @@ device: cuda
 data:
   path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
   test_path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
+  path_local: /data/hyperbolic_dataset.npz
+  test_path_local: /data/hyperbolic_dataset.npz
   nx: 128
   nt: 64
   x_min: -1.0

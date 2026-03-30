@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 
@@ -111,6 +112,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
+    cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg["data"]
     flux_cfg = cfg["fluxgnn"]
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +82,7 @@ def main() -> None:
         print(f"[HypNO-PINN] Using config from {run_dir / 'config.yaml'}")
     else:
         cfg = load_config(Path(args.config))
+    cfg = apply_runtime_overrides(cfg)
 
     data_cfg = cfg["data"]
     model_cfg = cfg["hypno_pinn"]

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
+    cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg["data"]
 
     num_samples = int(data_cfg.get("test_num_samples", data_cfg["num_samples"]))
