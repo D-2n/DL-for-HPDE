@@ -196,9 +196,9 @@ hypno_pinn:
   shock_delta: 0.1          # pinn mode only
   shock_threshold: 0.3      # pinn mode only
   weno_eps: 1.0e-6          # weno mode only
-  weno_p: 0.0             # 0 = no WENO weighting (raw MP)
+  weno_p: 2.0             # 0 = no WENO weighting (raw MP)
   unified_mp: true           # true = single MLP for space+time, false = separate MLPs
-  readout: relu              # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth)
+  readout: gelu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
   detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
   causal_temporal: true
   radius_x: 0.2
