@@ -25,3 +25,6 @@ __pycache__/
 
 # Local reference clones
 _fluxgnn_ref/
+
+# LaTeX main doc
+main.tex
