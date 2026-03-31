@@ -5,6 +5,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+import argparse
+import sys
+from datetime import datetime
+from pathlib import Path
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides
+import yaml
+def load_config(path: Path) -> dict:
+    base_path = ROOT / "configs" / "hyperbolic_pde.yaml"
+    with base_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if path.resolve() == base_path.resolve():
+        return cfg
+    with path.open("r", encoding="utf-8") as f:
+        override = yaml.safe_load(f)
+    return _deep_update(cfg, override or {})
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT.parent))
+parser = argparse.ArgumentParser(description="Instantiate HypNO PINN")
+parser.add_argument("--config", type=str, default="hyperbolic_pde/configs/hyperbolic_pde.yaml")
+args = parser.parse_args()
+cfg = load_config(Path(args.config))
+cfg = apply_runtime_overrides(cfg)
 def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: str) -> nn.Sequential:
     if layers < 1:
         raise ValueError("layers must be >= 1")
@@ -324,7 +348,7 @@ class _WENOSpaceTimeMPLayer(nn.Module):
         self.causal = causal_temporal
         self.unified_mp = unified_mp
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
-
+        
         if unified_mp:
             # unified message: (h_i, h_j, pos_i, pos_j, rel_pos, feat1, feat2, is_spatial)
             uni_in = 2 * d_latent + 6
@@ -635,7 +659,7 @@ class HypNO_PINN(nn.Module):
         # external pre-trained PINN shock detector (frozen)
         if detector_path is not None:
             from hyperbolic_pde.models.shock_detector import ShockDetector
-            det_cfg = detector_cfg or {}
+            det_cfg = cfg.get("shock_detector", {})
             self.external_detector = ShockDetector(
                 d_latent=int(det_cfg.get("d_latent", 64)),
                 d_hidden=int(det_cfg.get("d_hidden", 128)),
@@ -644,6 +668,7 @@ class HypNO_PINN(nn.Module):
                 ic_points=int(det_cfg.get("ic_points", 128)),
             )
             ckpt = torch.load(detector_path, map_location="cpu", weights_only=True)
+            print(f'Loading detector from: {detector_path}')
             self.external_detector.load_state_dict(ckpt)
             self.external_detector.requires_grad_(False)
             self.external_detector.eval()

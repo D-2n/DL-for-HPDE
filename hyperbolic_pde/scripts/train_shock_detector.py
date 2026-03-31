@@ -166,7 +166,7 @@ def main() -> None:
         d_hidden=int(det_cfg.get("d_hidden", 128)),
         n_layers=int(det_cfg.get("n_layers", 6)),
         activation=str(det_cfg.get("activation", "tanh")),
-        ic_points=nx,
+        ic_points=int(det_cfg.get("ic_points", nx)),
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -19,7 +19,7 @@ data:
   num_segments:  [2, 5, 7, 10]
   u_min: 0.0
   u_max: 1.0
-  ic_points: 128
+  ic_points: 256
   method: muscl              # "godunov" (1st order) or "muscl" (2nd order MUSCL-Hancock)
   boundary: ghost
   train_fraction: 0.8
@@ -212,7 +212,7 @@ hypno_pinn:
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 5.0e-6
-  batch_size: 4
+  batch_size: 2
   lambda_state: 1.0
   lambda_conservation: 1.0
   lambda_tv: 0.01
@@ -225,6 +225,7 @@ hypno_pinn:
   plot_dir: hyperbolic_pde/runs/plots/hypno_pinn
 
 shock_detector:
+  ic_points: 256
   d_latent: 128
   d_hidden: 128
   n_layers: 7
