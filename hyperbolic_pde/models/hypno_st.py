@@ -374,7 +374,7 @@ class _PINNSpaceTimeMPLayer(nn.Module):
             k_t = self.k_t
 
         # signed attenuation: 1 in smooth regions, 0 at shocks
-        alpha = (1.0 - shock_indicator).unsqueeze(-1)           # [B, nt, nx, 1]
+        alpha = (1.05 - shock_indicator).unsqueeze(-1)           # [B, nt, nx, 1]
 
         # decode provisional scalar state from latent field
         u_hat = torch.sigmoid(self.state_probe(h)).squeeze(-1)  # [B, nt, nx]
@@ -483,7 +483,141 @@ class _PINNSpaceTimeMPLayer(nn.Module):
 
         return self.act(h_nonlocal + h_local)
 
+class _ClassicSpaceTimeMPLayer(nn.Module):
+    """Factored space-time MP with no weighing."""
 
+    def __init__(
+        self,
+        d_latent: int,
+        d_hidden: int,
+        k_x: int,
+        k_t: int,
+        activation: str,
+        radius_x: float | None = None,
+        radius_t: float | None = None,
+        causal_temporal: bool = True,
+        unified_mp: bool = False,
+    ) -> None:
+        super().__init__()
+        self.k_x = k_x
+        self.k_t = k_t
+        self.radius_x = radius_x
+        self.radius_t = radius_t
+        self.causal = causal_temporal
+        self.unified_mp = unified_mp
+        self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
+
+        if unified_mp:
+            uni_in = 2 * d_latent + 6
+            self.uni_msg = _make_mlp(uni_in, d_hidden, d_latent, 3, activation)
+        else:
+            sp_in = 2 * d_latent + 5
+            tp_in = 2 * d_latent + 4
+            self.sp_msg = _make_mlp(sp_in, d_hidden, d_latent, 3, activation)
+            self.tp_msg = _make_mlp(tp_in, d_hidden, d_latent, 3, activation)
+
+        self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
+        self.W = nn.Linear(d_latent, d_latent)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        u0: torch.Tensor,
+        shock_indicator: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        B, nt, nx, d = h.shape
+
+        if self.radius_x is not None:
+            dx_val = (x[0, 1] - x[0, 0]).abs().item()
+            k_x = max(1, int(self.radius_x / dx_val + 0.5))
+        else:
+            k_x = self.k_x
+
+        if self.radius_t is not None:
+            dt_val = (t[1] - t[0]).abs().item()
+            k_t = max(1, int(self.radius_t / dt_val + 0.5))
+        else:
+            k_t = self.k_t
+
+        # ---- spatial MP ----
+        h_flat = h.reshape(B * nt, nx, d).permute(0, 2, 1)
+        h_xp = F.pad(h_flat, (k_x, k_x), mode="replicate")
+        h_xp = h_xp.permute(0, 2, 1).reshape(B, nt, nx + 2 * k_x, d)
+
+        x_pad = F.pad(x.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)
+        u0_pad = F.pad(u0.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)
+
+        x_i = x.unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+
+        sp_agg = h.new_zeros(B, nt, nx, d)
+        for j in range(-k_x, k_x + 1):
+            h_j = h_xp[:, :, k_x + j : k_x + j + nx, :]
+            x_j_val = x_pad[:, k_x + j : k_x + j + nx].unsqueeze(1).unsqueeze(-1)
+            rel_x = (x_j_val - x_i)
+            du0 = (u0 - u0_pad[:, k_x + j : k_x + j + nx]).unsqueeze(1).unsqueeze(-1)
+            abs_du0 = du0.abs()
+
+            x_j_val = x_j_val.expand_as(h[:, :, :, :1])
+            x_i_exp = x_i.expand_as(x_j_val)
+            rel_x = rel_x.expand_as(x_j_val)
+            du0 = du0.expand_as(rel_x)
+            abs_du0 = abs_du0.expand_as(rel_x)
+
+            if self.unified_mp:
+                is_sp = h.new_ones(B, nt, nx, 1)
+                msg_in = torch.cat([h, h_j, x_i_exp, x_j_val, rel_x, du0, abs_du0, is_sp], dim=-1)
+                msg = self.uni_msg(msg_in)
+            else:
+                msg_in = torch.cat([h, h_j, x_i_exp, x_j_val, rel_x, du0, abs_du0], dim=-1)
+                msg = self.sp_msg(msg_in)
+
+            contrib = msg
+            if self.radius_x is not None:
+                contrib = contrib * (rel_x.abs() <= self.radius_x)
+
+            sp_agg = sp_agg + contrib
+
+        # ---- temporal MP ----
+        h_flat_t = h.permute(0, 2, 1, 3).reshape(B * nx, nt, d).permute(0, 2, 1)
+        h_tp = F.pad(h_flat_t, (k_t, k_t), mode="replicate")
+        h_tp = h_tp.permute(0, 2, 1).reshape(B, nx, nt + 2 * k_t, d)
+        h_tp = h_tp.permute(0, 2, 1, 3)
+
+        t_pad = F.pad(t.unsqueeze(0).unsqueeze(0), (k_t, k_t), mode="replicate").squeeze(0).squeeze(0)
+        t_range = range(-k_t, 1) if self.causal else range(-k_t, k_t + 1)
+
+        t_i_abs = t.view(1, nt, 1, 1).expand(B, nt, nx, 1)
+        x_over_t = x.unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1) / t_i_abs.clamp(min=1e-6)
+
+        tp_agg = h.new_zeros(B, nt, nx, d)
+        for j in t_range:
+            h_j = h_tp[:, k_t + j : k_t + j + nt, :, :]
+            t_j = t_pad[k_t + j : k_t + j + nt]
+            t_j_abs = t_j.view(1, nt, 1, 1).expand(B, nt, nx, 1)
+            rel_t = (t_j - t).view(1, nt, 1, 1).expand(B, nt, nx, 1)
+
+            if self.unified_mp:
+                zeros = h.new_zeros(B, nt, nx, 1)
+                is_sp = zeros
+                msg_in = torch.cat([h, h_j, t_i_abs, t_j_abs, rel_t, x_over_t, zeros, is_sp], dim=-1)
+                msg = self.uni_msg(msg_in)
+            else:
+                msg_in = torch.cat([h, h_j, t_i_abs, t_j_abs, rel_t, x_over_t], dim=-1)
+                msg = self.tp_msg(msg_in)
+
+            contrib = msg
+            if self.radius_t is not None:
+                contrib = contrib * (rel_t.abs() <= self.radius_t)
+
+            tp_agg = tp_agg + contrib
+
+        upd_in = torch.cat([h, sp_agg + tp_agg], dim=-1)
+        h_nonlocal = self.update_net(upd_in)
+        h_local = self.W(h)
+
+        return self.act(h_nonlocal + h_local)
 # --------------------------------------------------------------------------- #
 # space-time MP layer with WENO smoothness-weighted messages + causal temporal
 # --------------------------------------------------------------------------- #
@@ -886,6 +1020,17 @@ class HypNO_ST(nn.Module):
                 )
                 for _ in range(n_layers)
             ])
+        elif shock_mode == "classic":
+            self.mp_layers = nn.ModuleList([
+                _ClassicSpaceTimeMPLayer(
+                    d_latent, d_hidden, stencil_k_x, stencil_k_t, activation,
+                    radius_x=radius_x,
+                    radius_t=radius_t,
+                    causal_temporal=causal_temporal,
+                    unified_mp=unified_mp,
+                )
+                for _ in range(n_layers)
+            ])
         else:
             self.mp_layers = nn.ModuleList([
                 _PINNSpaceTimeMPLayer(
@@ -957,24 +1102,32 @@ class HypNO_ST(nn.Module):
             ext_indicator = ext_indicator.detach()
 
         if self.shock_mode == "pinn":
-            # --- PINN shock detection ---
             dx_val = (x[0, 1] - x[0, 0]).abs().item()
             dt_val = (t[1] - t[0]).abs().item()
             shock_indicator, u_coarse = self.shock_detector(h, dx_val, dt_val)
             shock_indicator_detached = shock_indicator.detach()
-            # prefer external detector if available
             si_for_mp = ext_indicator if ext_indicator is not None else shock_indicator_detached
 
             for layer in self.mp_layers:
                 h = layer(h, x, t, u0, si_for_mp)
+
+        elif self.shock_mode == "classic":
+            u_coarse = torch.zeros(B, nt, nx, device=h.device)
+
+            for layer in self.mp_layers:
+                h = layer(h, x, t, u0, shock_indicator=None)
+
+            if ext_indicator is not None:
+                shock_indicator = ext_indicator
+            else:
+                shock_indicator = torch.zeros(B, nt, nx, device=h.device)
+
         else:
-            # --- WENO mode ---
             u_coarse = torch.zeros(B, nt, nx, device=h.device)
 
             for layer in self.mp_layers:
                 h = layer(h, x, t, u0, shock_indicator=ext_indicator)
 
-            # return shock indicator for visualisation
             if ext_indicator is not None:
                 shock_indicator = ext_indicator
             else:
