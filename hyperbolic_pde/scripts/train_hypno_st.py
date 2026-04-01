@@ -20,24 +20,42 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
-from hyperbolic_pde.models.hypno_st import HypNO_ST
+from hyperbolic_pde.models.hypno_st import HypNO_ST, precompute_lwr_edge_features
 
 
 # --------------------------------------------------------------------------- #
 # dataset
 # --------------------------------------------------------------------------- #
 class HypNODataset(Dataset):
-    """Each __getitem__ returns (u0, u_full) — IC and full trajectory."""
+    """Each __getitem__ returns (u0, u_full, edge_feats).
 
-    def __init__(self, u0: np.ndarray, u: np.ndarray) -> None:
+    ``edge_feats`` contains the 15 static LWR edge features precomputed once
+    at construction time so the lifting layer can skip recomputing them every
+    forward pass.  Shape per sample: ``[nx, 2k+1, 15]``.
+    """
+
+    def __init__(
+        self,
+        u0: np.ndarray,
+        u: np.ndarray,
+        x: np.ndarray,
+        stencil_k: int,
+        radius_x: float | None = None,
+    ) -> None:
         self.u0 = torch.tensor(u0, dtype=torch.float32)
         self.u = torch.tensor(u, dtype=torch.float32)
+        self.edge_feats = precompute_lwr_edge_features(
+            self.u0,
+            torch.tensor(x, dtype=torch.float32),
+            stencil_k,
+            radius_x=radius_x,
+        )
 
     def __len__(self) -> int:
         return self.u0.shape[0]
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.u0[idx], self.u[idx]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.u0[idx], self.u[idx], self.edge_feats[idx]
 
 
 # --------------------------------------------------------------------------- #
@@ -255,20 +273,27 @@ def main() -> None:
     val_fraction = float(data_cfg.get("val_fraction", 0.1))
     train_idx, val_idx = split_train_val(train_idx, val_fraction, int(cfg.get("seed", 42)))
 
-    train_data = HypNODataset(dataset.u0[train_idx], dataset.u[train_idx])
-    loader = DataLoader(train_data, batch_size=int(model_cfg["batch_size"]), shuffle=True)
-    val_loader = None
-    if val_idx.size > 0:
-        val_data = HypNODataset(dataset.u0[val_idx], dataset.u[val_idx])
-        val_loader = DataLoader(val_data, batch_size=int(model_cfg["batch_size"]), shuffle=False)
-
     _rx = model_cfg.get("radius_x", None)
     _rt = model_cfg.get("radius_t", None)
     radius_x = float(_rx) if _rx is not None else None
     radius_t = float(_rt) if _rt is not None else None
+    stencil_k_x = int(model_cfg.get("stencil_k_x", 3))
+
+    train_data = HypNODataset(
+        dataset.u0[train_idx], dataset.u[train_idx],
+        dataset.x, stencil_k_x, radius_x=radius_x,
+    )
+    loader = DataLoader(train_data, batch_size=int(model_cfg["batch_size"]), shuffle=True)
+    val_loader = None
+    if val_idx.size > 0:
+        val_data = HypNODataset(
+            dataset.u0[val_idx], dataset.u[val_idx],
+            dataset.x, stencil_k_x, radius_x=radius_x,
+        )
+        val_loader = DataLoader(val_data, batch_size=int(model_cfg["batch_size"]), shuffle=False)
 
     model = HypNO_ST(
-        stencil_k_x=int(model_cfg.get("stencil_k_x", 3)),
+        stencil_k_x=stencil_k_x,
         stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
         d_latent=int(model_cfg.get("d_latent", 128)),
         d_hidden=int(model_cfg.get("d_hidden", 128)),
@@ -335,13 +360,14 @@ def main() -> None:
     for epoch in range(1, epochs + 1):
         epoch_loss_sum = 0.0
         epoch_count = 0
-        for u0, u_full in loader:
+        for u0, u_full, edge_feats in loader:
             step += 1
             u0 = u0.to(device)
             u_full = u_full.to(device)
+            edge_feats = edge_feats.to(device)
 
             opt.zero_grad(set_to_none=True)
-            pred, u_coarse, _ = model(u0, x_grid, t_grid)
+            pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=edge_feats)
             loss, _ = hypno_pinn_loss(
                 pred, u_full, u_coarse,
                 lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
@@ -361,7 +387,7 @@ def main() -> None:
             if step % 50 == 0 or step == 1:
                 lr_now = opt.param_groups[0]["lr"]
                 with torch.no_grad():
-                    pred, u_coarse, _ = model(u0, x_grid, t_grid)
+                    pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=edge_feats)
                     _, info = hypno_pinn_loss(
                         pred, u_full, u_coarse,
                         lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
@@ -388,10 +414,11 @@ def main() -> None:
             val_loss = 0.0
             val_count = 0
             with torch.no_grad():
-                for v_u0, v_u in val_loader:
+                for v_u0, v_u, v_ef in val_loader:
                     v_u0 = v_u0.to(device)
                     v_u = v_u.to(device)
-                    v_pred, v_coarse, _ = model(v_u0, x_grid, t_grid)
+                    v_ef = v_ef.to(device)
+                    v_pred, v_coarse, _ = model(v_u0, x_grid, t_grid, edge_feats_pre=v_ef)
                     v_l, _ = hypno_pinn_loss(
                         v_pred, v_u, v_coarse,
                         lambda_state, lambda_conservation, lambda_tv, lambda_pinn,

@@ -11,6 +11,14 @@ from datetime import datetime
 from pathlib import Path
 from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 import yaml
+def _deep_update(base: dict, override: dict) -> dict:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
 def load_config(path: Path) -> dict:
     base_path = ROOT / "configs" / "hyperbolic_pde.yaml"
     with base_path.open("r", encoding="utf-8") as f:
