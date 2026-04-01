@@ -24,7 +24,11 @@
       "WebFetch(domain:www.sciencedirect.com)",
       "Bash(python -m hyperbolic_pde.scripts.train_hypno_pinn)",
       "Bash(python -m hyperbolic_pde.scripts.train_shock_detector)",
-      "Bash(curl -s \"https://arxiv.org/abs/2111.03794\")"
+      "Bash(curl -s \"https://arxiv.org/abs/2111.03794\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('hyperbolic_pde/models/hypno_st.py'\\).read\\(\\)\\); print\\('hypno_st.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('hyperbolic_pde/scripts/train_hypno_st.py'\\).read\\(\\)\\); print\\('train_hypno_st.py: OK'\\)\")",
+      "Bash(python -c \"from hyperbolic_pde.models.hypno_st import precompute_lwr_edge_features; print\\('import OK'\\)\")",
+      "Bash(python -c \"from hyperbolic_pde.models.hypno_st import precompute_lwr_edge_features, HypNO_ST; print\\('import OK'\\)\")"
     ]
   }
 }
