@@ -374,8 +374,12 @@ class _PINNSpaceTimeMPLayer(nn.Module):
             k_t = self.k_t
 
         # signed attenuation: 1 in smooth regions, 0 at shocks
-        alpha = (1.05 - shock_indicator).unsqueeze(-1)           # [B, nt, nx, 1]
+        s = shock_indicator.unsqueeze(-1)
+        tau = 0.2
+        p = 3.0
 
+        s_eff = ((s - tau) / (1.0 - tau)).clamp(0.0, 1.0)
+        alpha = (1.0 - s_eff).pow(p)
         # decode provisional scalar state from latent field
         u_hat = torch.sigmoid(self.state_probe(h)).squeeze(-1)  # [B, nt, nx]
         u_hat_i = u_hat.unsqueeze(-1)                           # [B, nt, nx, 1]
