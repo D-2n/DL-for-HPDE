@@ -81,3 +81,37 @@ def apply_runtime_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
     resolve_data_paths(cfg)
     cfg["device"] = resolve_device(cfg)
     return cfg
+
+
+# ── machine-aware config resolution ──────────────────────────────────── #
+
+# Hostnames (substrings) that indicate a remote/HPC machine
+_REMOTE_HOSTS: set[str] = {"dragon"}
+
+
+def resolve_config_path(configs_dir: Path) -> Path:
+    """Return the config file to use for this machine.
+
+    Priority:
+      1. HPDE_CONFIG environment variable (explicit override, must be a valid path)
+      2. Hostname contains a key from _REMOTE_HOSTS → hyperbolic_pde_remote.yaml
+      3. Default → hyperbolic_pde_local.yaml
+      4. Fallback → hyperbolic_pde.yaml  (original monolithic config)
+    """
+    env = os.getenv("HPDE_CONFIG")
+    if env and Path(env).exists():
+        return Path(env)
+
+    host = socket.gethostname().lower()
+    for key in _REMOTE_HOSTS:
+        if key in host:
+            candidate = configs_dir / "hyperbolic_pde_remote.yaml"
+            if candidate.exists():
+                return candidate
+            break
+
+    candidate = configs_dir / "hyperbolic_pde_local.yaml"
+    if candidate.exists():
+        return candidate
+
+    return configs_dir / "hyperbolic_pde.yaml"

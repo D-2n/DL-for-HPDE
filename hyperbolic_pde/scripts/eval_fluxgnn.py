@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from hyperbolic_pde.utils.runtime import apply_runtime_overrides
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 
@@ -80,7 +80,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="hyperbolic_pde/configs/hyperbolic_pde.yaml",
+        default=str(resolve_config_path(ROOT / "configs")),
         help="Path to YAML config.",
     )
     parser.add_argument(

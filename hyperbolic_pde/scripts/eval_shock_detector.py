@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 import yaml
-from hyperbolic_pde.utils.runtime import apply_runtime_overrides
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
@@ -85,7 +85,7 @@ def threshold_metrics(pred_indicator, true_indicator, pred_threshold, true_thres
 # --------------------------------------------------------------------------- #
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate PINN shock detector.")
-    parser.add_argument("--config", type=str, default="hyperbolic_pde/configs/hyperbolic_pde.yaml")
+    parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
     parser.add_argument("--run-dir", type=str, default=None)
     args = parser.parse_args()
 

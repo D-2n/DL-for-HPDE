@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from hyperbolic_pde.utils.runtime import apply_runtime_overrides
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +56,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate HypNO-ST on test set.")
     parser.add_argument(
         "--config", type=str,
-        default="hyperbolic_pde/configs/hyperbolic_pde.yaml",
+        default=str(resolve_config_path(ROOT / "configs")),
     )
     parser.add_argument(
         "--run-dir", type=str, default=None,

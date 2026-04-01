@@ -9,7 +9,7 @@ from typing import Iterable
 import numpy as np
 import torch
 import yaml
-from hyperbolic_pde.utils.runtime import apply_runtime_overrides
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
@@ -312,7 +312,7 @@ def load_model(model_name: str, cfg: dict, data_cfg: dict, device: torch.device)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Riemann shock/rarefaction evaluation across nt.")
-    parser.add_argument("--config", type=str, default="hyperbolic_pde/configs/hyperbolic_pde.yaml")
+    parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
     parser.add_argument(
         "--model",
         type=str,

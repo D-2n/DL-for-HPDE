@@ -6,7 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import yaml
-from hyperbolic_pde.utils.runtime import apply_runtime_overrides
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
@@ -39,7 +39,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="hyperbolic_pde/configs/hyperbolic_pde.yaml",
+        default=str(resolve_config_path(ROOT / "configs")),
         help="Path to YAML config.",
     )
     parser.add_argument("--num", type=int, default=3, help="Number of samples to plot.")
