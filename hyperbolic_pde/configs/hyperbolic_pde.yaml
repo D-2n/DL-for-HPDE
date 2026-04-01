@@ -224,6 +224,44 @@ hypno_pinn:
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno_pinn
 
+# HypNO with joint space-time lifting (no separate time embedding)
+hypno_st:
+  stencil_k_x: 7
+  stencil_k_t: 3
+  d_latent: 64
+  d_hidden: 64
+  n_layers: 4
+  activation: gelu
+  shock_mode: weno          # "pinn" or "weno" (weno with p=0 = raw MP)
+  shock_delta: 0.1          # pinn mode only
+  shock_threshold: 0.3      # pinn mode only
+  weno_eps: 1.0e-6          # weno mode only
+  weno_p: 0.5             # 0 = no WENO weighting (raw MP)
+  unified_mp: true           # true = single MLP for space+time, false = separate MLPs
+  readout: relu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
+  detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
+  causal_temporal: true
+  radius_x: 0.2
+  radius_t: 0.15
+  optimizer: adamw
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 5.0e-6
+  batch_size: 2
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.01
+  lambda_pinn: 0.0
+  shock_weighted: false
+  shock_alpha: 3.0
+  checkpoint_every: 100
+  save_path: hyperbolic_pde/runs/hypno_st.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypno_st
+
 shock_detector:
   ic_points: 256
   d_latent: 128

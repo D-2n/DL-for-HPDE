@@ -7,6 +7,7 @@ from .fluxgnn import FluxGNN1D
 from .hypgno import HypGNO
 from .hypno import HypNO
 from .hypno_pinn import HypNO_PINN
+from .hypno_st import HypNO_ST
 #from .gnn import GridGNN
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "HypGNO",
     "HypNO",
     "HypNO_PINN",
+    "HypNO_ST",
     #"GridGNN",
 ]
