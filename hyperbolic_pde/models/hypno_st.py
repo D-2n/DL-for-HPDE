@@ -142,7 +142,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.radius_x = radius_x
         self.node_mlp  = _make_mlp(3, d_hidden, d_latent, 2, activation)   # [u0_i, x_i, t_j]
         self.edge_mlp  = _make_mlp(16, d_hidden, d_latent, 2, activation)   # 15 LWR edge feats + t
-        #self.gate_net  = _make_mlp(16, d_hidden, 1,       2, activation)
+        self.gate_net  = _make_mlp(16, d_hidden, 1,       2, activation)
         self.combine   = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
 
     def _get_max_k(self, x: torch.Tensor) -> int:
@@ -179,10 +179,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
             t_exp = t_bc.unsqueeze(3).expand(B, nt, nx, n_neighbors, 1)
             ef = torch.cat([ef, t_exp], dim=-1)
 
-            contrib  = self.edge_mlp(ef)                        # [B, nt, nx, 2k+1, d_latent]
-           # gate = torch.sigmoid(self.gate_net(ef))         # [B, nt, nx, 2k+1, 1]
-            #contrib = gate * msg                            # [B, nt, nx, 2k+1, d_latent]
-            #contrib = msg
+            msg  = self.edge_mlp(ef)                        # [B, nt, nx, 2k+1, d_latent]
+            gate = torch.sigmoid(self.gate_net(ef))         # [B, nt, nx, 2k+1, 1]
+            contrib = gate * msg                            # [B, nt, nx, 2k+1, d_latent]
+            contrib = msg
             if self.radius_x is not None:
                 rel_x = ef[..., 5:6]                        # feature index 5 = rel_x
                 contrib = contrib * (rel_x.abs() <= self.radius_x)
@@ -230,9 +230,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     sign_a, upwind,
                     t_bc
                 ], dim=-1)
-                contrib  = self.edge_mlp(edge_in)
-                #gate = torch.sigmoid(self.gate_net(edge_in))
-                #contrib = gate * msg
+                msg  = self.edge_mlp(edge_in)
+                gate = torch.sigmoid(self.gate_net(edge_in))
+                contrib = gate * msg
 
                 if self.radius_x is not None:
                     contrib = contrib * (rel_x.abs() <= self.radius_x)
