@@ -232,7 +232,9 @@ hypno_st:
   d_hidden: 64
   n_layers: 4
   activation: gelu
+  encoder_scaling: gate_net  # "gate_net" (learned MLP gate) or "upwind" (physics-informed upwind weighting)
   shock_mode: weno          # "pinn" or "weno" (weno with p=0 = raw MP)
+  message_scaling: true     # false = no PINN/WENO weighting (raw MP)
   shock_delta: 0.1          # pinn mode only
   shock_threshold: 0.3      # pinn mode only
   weno_eps: 1.0e-6          # weno mode only

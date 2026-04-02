@@ -136,13 +136,20 @@ class _SpaceTimeLiftingLayer(nn.Module):
     """
 
     def __init__(self, d_latent: int, d_hidden: int, stencil_k: int, activation: str,
-                 radius_x: float | None = None) -> None:
+                 radius_x: float | None = None,
+                 encoder_scaling: str = "gate_net") -> None:
         super().__init__()
         self.k = stencil_k
         self.radius_x = radius_x
+        self.encoder_scaling = encoder_scaling
         self.node_mlp  = _make_mlp(3, d_hidden, d_latent, 2, activation)   # [u0_i, x_i, t_j]
         self.edge_mlp  = _make_mlp(16, d_hidden, d_latent, 2, activation)   # 15 LWR edge feats + t
-        self.gate_net  = _make_mlp(16, d_hidden, 1,       2, activation)
+        if encoder_scaling == "gate_net":
+            self.gate_net  = _make_mlp(16, d_hidden, 1,       2, activation)
+        elif encoder_scaling == "upwind":
+            self.upwind_alpha = nn.Parameter(torch.tensor(0.1))  # learnable downwind attenuation
+        else:
+            raise ValueError(f"Unknown encoder_scaling: {encoder_scaling!r}")
         self.combine   = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
 
     def _get_max_k(self, x: torch.Tensor) -> int:
@@ -180,9 +187,13 @@ class _SpaceTimeLiftingLayer(nn.Module):
             ef = torch.cat([ef, t_exp], dim=-1)
 
             msg  = self.edge_mlp(ef)                        # [B, nt, nx, 2k+1, d_latent]
-            gate = torch.sigmoid(self.gate_net(ef))         # [B, nt, nx, 2k+1, 1]
+            if self.encoder_scaling == "gate_net":
+                gate = torch.sigmoid(self.gate_net(ef))     # [B, nt, nx, 2k+1, 1]
+            else:  # upwind
+                upwind = ef[..., 14:15]                     # precomputed upwind flag
+                alpha = torch.sigmoid(self.upwind_alpha)    # clamp to (0,1)
+                gate = upwind + alpha * (1.0 - upwind)      # upwind=1, downwind=alpha
             contrib = gate * msg                            # [B, nt, nx, 2k+1, d_latent]
-            contrib = msg
             if self.radius_x is not None:
                 rel_x = ef[..., 5:6]                        # feature index 5 = rel_x
                 contrib = contrib * (rel_x.abs() <= self.radius_x)
@@ -230,8 +241,12 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     sign_a, upwind,
                     t_bc
                 ], dim=-1)
-                msg  = self.edge_mlp(edge_in)
-                gate = torch.sigmoid(self.gate_net(edge_in))
+                msg = self.edge_mlp(edge_in)
+                if self.encoder_scaling == "gate_net":
+                    gate = torch.sigmoid(self.gate_net(edge_in))
+                else:  # upwind
+                    alpha = torch.sigmoid(self.upwind_alpha)
+                    gate = upwind + alpha * (1.0 - upwind)  # upwind already computed above
                 contrib = gate * msg
 
                 if self.radius_x is not None:
@@ -988,6 +1003,7 @@ class HypNO_ST(nn.Module):
         detector_path: str | None = None,
         detector_cfg: dict | None = None,
         readout: str = "gelu",
+        encoder_scaling: str = "gate_net",
     ) -> None:
         super().__init__()
         self.stencil_k_x = stencil_k_x
@@ -1000,7 +1016,8 @@ class HypNO_ST(nn.Module):
 
         # P: joint space-time lifting (produces [B, nt, nx, d_latent] directly)
         self.lifting = _SpaceTimeLiftingLayer(
-            d_latent, d_hidden, stencil_k_x, activation, radius_x=radius_x
+            d_latent, d_hidden, stencil_k_x, activation, radius_x=radius_x,
+            encoder_scaling=encoder_scaling,
         )
 
         # PINN shock detector (only created for pinn mode, but kept as optional
