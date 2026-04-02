@@ -148,9 +148,61 @@ class _SpaceTimeLiftingLayer(nn.Module):
             self.gate_net  = _make_mlp(16, d_hidden, 1,       2, activation)
         elif encoder_scaling == "upwind":
             self.upwind_alpha = nn.Parameter(torch.tensor(0.1))  # learnable downwind attenuation
+        elif encoder_scaling == "physics":
+            # Composite physics gate: soft upwind + entropy + shock atten + char cone
+            # All learnable params are scalars mapped to positive range in forward
+            self.phys_temperature = nn.Parameter(torch.tensor(0.0))   # softplus -> controls upwind sharpness
+            self.phys_lambda_shock = nn.Parameter(torch.tensor(0.0))  # softplus -> shock attenuation strength
+            self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))  # sigmoid -> entropy-violation floor (~0.12)
+            self.phys_char_width = nn.Parameter(torch.tensor(0.0))    # softplus -> char cone width multiplier
         else:
             raise ValueError(f"Unknown encoder_scaling: {encoder_scaling!r}")
         self.combine   = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
+
+    def _physics_gate(
+        self, u_i: torch.Tensor, u_j: torch.Tensor,
+        rel_x: torch.Tensor, a_i: torch.Tensor, a_j: torch.Tensor,
+        a_ij: torch.Tensor, du: torch.Tensor, t_val: torch.Tensor,
+        dx_grid: float,
+    ) -> torch.Tensor:
+        """Composite physics-informed gate (no MLP).
+
+        Components (all differentiable, only 4 learnable scalars):
+          1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature)
+          2. Oleinik entropy:  penalise entropy-violating shock directions
+          3. Shock attenuation:  1 / (1 + λ * |Δu| * |a_i - a_j|)
+          4. Characteristic cone:  Gaussian centred on char foot from j
+        """
+        temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
+        lambda_s    = F.softplus(self.phys_lambda_shock)
+        gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
+        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
+
+        # 1. Soft upwind — generalises the hard upwind flag
+        g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+
+        # 2. Oleinik entropy condition (concave LWR flux)
+        #    Physical shock requires a_L >= s >= a_R
+        u_L = torch.where(rel_x > 0, u_i, u_j)
+        u_R = torch.where(rel_x > 0, u_j, u_i)
+        a_L = 1.0 - 2.0 * u_L
+        a_R = 1.0 - 2.0 * u_R
+        is_shock = (u_L > u_R).float()
+        entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
+        g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
+
+        # 3. Shock attenuation — strong discontinuities get smaller gate
+        wave_strength = du.abs() * (a_i - a_j).abs()
+        g_shock = 1.0 / (1.0 + lambda_s * wave_strength)
+
+        # 4. Characteristic cone — does j's characteristic reach i by time t?
+        #    char from x_j at t=0 with speed a_j arrives at x_j + a_j*t
+        #    relative to x_i: (x_j - x_i) + a_j*t = rel_x + a_j*t
+        char_miss = (rel_x + a_j * t_val).abs()
+        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
+        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+
+        return g_upwind * g_entropy * g_shock * g_char
 
     def _get_max_k(self, x: torch.Tensor) -> int:
         dx = (x[0, 1] - x[0, 0]).abs().item()
@@ -189,10 +241,18 @@ class _SpaceTimeLiftingLayer(nn.Module):
             msg  = self.edge_mlp(ef)                        # [B, nt, nx, 2k+1, d_latent]
             if self.encoder_scaling == "gate_net":
                 gate = torch.sigmoid(self.gate_net(ef))     # [B, nt, nx, 2k+1, 1]
-            else:  # upwind
+            elif self.encoder_scaling == "upwind":
                 upwind = ef[..., 14:15]                     # precomputed upwind flag
                 alpha = torch.sigmoid(self.upwind_alpha)    # clamp to (0,1)
                 gate = upwind + alpha * (1.0 - upwind)      # upwind=1, downwind=alpha
+            else:  # physics
+                dx_grid = (x[0, 1] - x[0, 0]).abs().item()
+                gate = self._physics_gate(
+                    u_i=ef[..., 0:1], u_j=ef[..., 1:2],
+                    rel_x=ef[..., 5:6], a_i=ef[..., 10:11], a_j=ef[..., 11:12],
+                    a_ij=ef[..., 12:13], du=ef[..., 2:3], t_val=ef[..., 15:16],
+                    dx_grid=dx_grid,
+                )
             contrib = gate * msg                            # [B, nt, nx, 2k+1, d_latent]
             if self.radius_x is not None:
                 rel_x = ef[..., 5:6]                        # feature index 5 = rel_x
@@ -244,9 +304,17 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 msg = self.edge_mlp(edge_in)
                 if self.encoder_scaling == "gate_net":
                     gate = torch.sigmoid(self.gate_net(edge_in))
-                else:  # upwind
+                elif self.encoder_scaling == "upwind":
                     alpha = torch.sigmoid(self.upwind_alpha)
                     gate = upwind + alpha * (1.0 - upwind)  # upwind already computed above
+                else:  # physics
+                    dx_grid = (x[0, 1] - x[0, 0]).abs().item()
+                    gate = self._physics_gate(
+                        u_i=u0_bc, u_j=u_k_bc,
+                        rel_x=rel_x, a_i=a_i, a_j=a_k,
+                        a_ij=a_ik, du=du, t_val=t_bc,
+                        dx_grid=dx_grid,
+                    )
                 contrib = gate * msg
 
                 if self.radius_x is not None:
@@ -955,6 +1023,280 @@ class _WENOSpaceTimeMPLayer(nn.Module):
 
 
 # --------------------------------------------------------------------------- #
+# space-time MP layer with physics-informed gating (no black-box gate MLP)
+# --------------------------------------------------------------------------- #
+class _PhysicsSpaceTimeMPLayer(nn.Module):
+    """Factored space-time MP with analytical physics gate.
+
+    Same LWR-aware edge features as the WENO layer, but messages are weighted
+    by a composite physics gate instead of WENO smoothness indicators:
+      1. Soft upwind  — sigmoid(-a_ij * rel_x / τ)
+      2. Oleinik entropy — penalise entropy-violating shock directions
+      3. Shock attenuation — 1 / (1 + λ |Δu| |a_i - a_j|)
+      4. Characteristic cone — Gaussian centred on char foot from j
+
+    For temporal messages a CFL-based gate is used:
+      g_temporal = exp(-0.5 * max(0, CFL - 1)^2)
+
+    Only 5 learnable scalars (mapped to positive range via softplus/sigmoid).
+    """
+
+    def __init__(
+        self,
+        d_latent: int,
+        d_hidden: int,
+        k_x: int,
+        k_t: int,
+        activation: str,
+        radius_x: float | None = None,
+        radius_t: float | None = None,
+        causal_temporal: bool = True,
+        unified_mp: bool = False,
+    ) -> None:
+        super().__init__()
+        self.k_x = k_x
+        self.k_t = k_t
+        self.radius_x = radius_x
+        self.radius_t = radius_t
+        self.causal = causal_temporal
+        self.unified_mp = unified_mp
+        self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
+
+        # decode provisional scalar state from latent field
+        self.state_probe = nn.Linear(d_latent, 1)
+
+        # physics gate learnable scalars (shared across spatial & temporal)
+        self.phys_temperature = nn.Parameter(torch.tensor(0.0))    # softplus -> upwind sharpness
+        self.phys_lambda_shock = nn.Parameter(torch.tensor(0.0))   # softplus -> shock attenuation
+        self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0)) # sigmoid  -> entropy-violation floor
+        self.phys_char_width = nn.Parameter(torch.tensor(0.0))     # softplus -> char cone width
+        self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))      # softplus -> temporal CFL decay rate
+
+        if unified_mp:
+            uni_in = 2 * d_latent + 13
+            self.uni_msg = _make_mlp(uni_in, d_hidden, d_latent, 3, activation)
+        else:
+            sp_in = 2 * d_latent + 14
+            self.sp_msg = _make_mlp(sp_in, d_hidden, d_latent, 3, activation)
+            tp_in = 2 * d_latent + 7
+            self.tp_msg = _make_mlp(tp_in, d_hidden, d_latent, 3, activation)
+
+        self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
+        self.W = nn.Linear(d_latent, d_latent)
+
+    def _spatial_physics_gate(
+        self, u_i: torch.Tensor, u_j: torch.Tensor,
+        rel_x: torch.Tensor, a_i: torch.Tensor, a_j: torch.Tensor,
+        a_ij: torch.Tensor, du: torch.Tensor,
+        t_val: torch.Tensor, dx_grid: float,
+    ) -> torch.Tensor:
+        """Physics gate for spatial messages (same as encoder version)."""
+        temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
+        lambda_s    = F.softplus(self.phys_lambda_shock)
+        gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
+        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
+
+        g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+
+        u_L = torch.where(rel_x > 0, u_i, u_j)
+        u_R = torch.where(rel_x > 0, u_j, u_i)
+        a_L = 1.0 - 2.0 * u_L
+        a_R = 1.0 - 2.0 * u_R
+        is_shock = (u_L > u_R).float()
+        entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
+        g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
+
+        wave_strength = du.abs() * (a_i - a_j).abs()
+        g_shock = 1.0 / (1.0 + lambda_s * wave_strength)
+
+        char_miss = (rel_x + a_j * t_val).abs()
+        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
+        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+
+        return g_upwind * g_entropy * g_shock * g_char
+
+    def _temporal_physics_gate(
+        self, a_i: torch.Tensor, rel_t: torch.Tensor, dx_grid: float,
+    ) -> torch.Tensor:
+        """CFL-based gate for temporal messages.
+
+        When CFL <= 1, the characteristic from (x_i, t_j) hasn't left the cell
+        by time t_i — temporal info at the same x is fully valid.
+        When CFL > 1, the characteristic has drifted away — decay exponentially.
+        """
+        cfl_scale = F.softplus(self.phys_cfl_scale).clamp(min=1e-6)
+        cfl = a_i.abs() * rel_t.abs() / dx_grid
+        return torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        u0: torch.Tensor,
+        shock_indicator: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        B, nt, nx, d = h.shape
+
+        dx_val = (x[0, 1] - x[0, 0]).abs().item()
+        if self.radius_x is not None:
+            k_x = max(1, int(self.radius_x / dx_val + 0.5))
+        else:
+            k_x = self.k_x
+        if self.radius_t is not None:
+            dt_val = (t[1] - t[0]).abs().item()
+            k_t = max(1, int(self.radius_t / dt_val + 0.5))
+        else:
+            k_t = self.k_t
+
+        # decode provisional scalar state from latent field
+        u_hat = torch.sigmoid(self.state_probe(h)).squeeze(-1)   # [B, nt, nx]
+        u_hat_i = u_hat.unsqueeze(-1)                            # [B, nt, nx, 1]
+
+        # ---- spatial message passing ----
+        h_flat = h.reshape(B * nt, nx, d).permute(0, 2, 1)
+        h_xp = F.pad(h_flat, (k_x, k_x), mode="replicate")
+        h_xp = h_xp.permute(0, 2, 1).reshape(B, nt, nx + 2 * k_x, d)
+
+        u_hat_xp = F.pad(u_hat, (k_x, k_x), mode="replicate")
+        x_pad = F.pad(x.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)
+        x_i = x.unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+
+        # time broadcast for characteristic cone
+        t_i = t.view(1, nt, 1, 1).expand(B, nt, nx, 1)
+
+        sp_agg = h.new_zeros(B, nt, nx, d)
+        for j in range(-k_x, k_x + 1):
+            h_j = h_xp[:, :, k_x + j : k_x + j + nx, :]
+            x_j_val = x_pad[:, k_x + j : k_x + j + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+            u_hat_j = u_hat_xp[:, :, k_x + j : k_x + j + nx].unsqueeze(-1)
+
+            rel_x  = x_j_val - x_i
+            abs_dx = rel_x.abs()
+
+            du     = u_hat_j - u_hat_i
+            u_avg  = 0.5 * (u_hat_i + u_hat_j)
+            slope  = du / abs_dx.clamp(min=1e-6) * rel_x.sign()
+
+            f_i = u_hat_i * (1.0 - u_hat_i)
+            f_j = u_hat_j * (1.0 - u_hat_j)
+            a_i_val = 1.0 - 2.0 * u_hat_i
+            a_j_val = 1.0 - 2.0 * u_hat_j
+
+            du_safe = torch.where(du.abs() < 1e-6, torch.ones_like(du), du)
+            a_ij = torch.where(
+                du.abs() < 1e-6,
+                1.0 - 2.0 * u_avg,
+                (f_j - f_i) / du_safe,
+            )
+            sign_a = torch.sign(a_ij)
+            upwind = (a_ij * rel_x < 0).float()
+
+            if self.unified_mp:
+                cfl_sp = a_ij.abs() * (t[1] - t[0]).abs().item() / dx_val
+                msg_in = torch.cat([
+                    h, h_j,
+                    u_hat_i.expand_as(rel_x), u_hat_j,
+                    f_i, f_j, a_i_val, a_j_val, a_ij,
+                    sign_a, upwind,
+                    rel_x, abs_dx, cfl_sp,
+                    h.new_ones(B, nt, nx, 1),
+                ], dim=-1)
+                msg = self.uni_msg(msg_in)
+            else:
+                msg_in = torch.cat([
+                    h, h_j,
+                    rel_x, abs_dx,
+                    u_hat_i.expand_as(rel_x), u_hat_j,
+                    du, u_avg, slope,
+                    f_i, f_j, a_i_val, a_j_val, a_ij,
+                    sign_a, upwind,
+                ], dim=-1)
+                msg = self.sp_msg(msg_in)
+
+            gate = self._spatial_physics_gate(
+                u_i=u_hat_i, u_j=u_hat_j,
+                rel_x=rel_x, a_i=a_i_val, a_j=a_j_val,
+                a_ij=a_ij, du=du, t_val=t_i, dx_grid=dx_val,
+            )
+            contrib = msg * gate
+            if self.radius_x is not None:
+                contrib = contrib * (rel_x.abs() <= self.radius_x)
+
+            sp_agg = sp_agg + contrib
+
+        # ---- temporal message passing (causal: past only) ----
+        h_flat_t = h.permute(0, 2, 1, 3).reshape(B * nx, nt, d).permute(0, 2, 1)
+        h_tp = F.pad(h_flat_t, (k_t, k_t), mode="replicate")
+        h_tp = h_tp.permute(0, 2, 1).reshape(B, nx, nt + 2 * k_t, d)
+        h_tp = h_tp.permute(0, 2, 1, 3)
+
+        u_hat_tp = F.pad(
+            u_hat.permute(0, 2, 1), (k_t, k_t), mode="replicate"
+        ).permute(0, 2, 1)
+
+        t_pad = F.pad(
+            t.unsqueeze(0).unsqueeze(0), (k_t, k_t), mode="replicate"
+        ).squeeze(0).squeeze(0)
+
+        t_range = range(-k_t, 1) if self.causal else range(-k_t, k_t + 1)
+
+        t_i_abs = t.view(1, nt, 1, 1).expand(B, nt, nx, 1)
+        x_over_t = x.unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1) / t_i_abs.clamp(min=1e-6)
+
+        a_hat_i = 1.0 - 2.0 * u_hat_i
+
+        tp_agg = h.new_zeros(B, nt, nx, d)
+        for j in t_range:
+            h_j = h_tp[:, k_t + j : k_t + j + nt, :, :]
+            u_hat_j_t = u_hat_tp[:, k_t + j : k_t + j + nt, :].unsqueeze(-1)
+            rel_t = (t_pad[k_t + j : k_t + j + nt] - t).view(1, nt, 1, 1).expand(B, nt, nx, 1)
+
+            a_hat_j = 1.0 - 2.0 * u_hat_j_t
+            cfl = a_hat_i.abs() * rel_t.abs() / dx_val
+
+            if self.unified_mp:
+                a_avg_t = 0.5 * (a_hat_i + a_hat_j)
+                msg_in = torch.cat([
+                    h, h_j,
+                    u_hat_i.expand_as(rel_t), u_hat_j_t,
+                    u_hat_i * (1.0 - u_hat_i),
+                    u_hat_j_t * (1.0 - u_hat_j_t),
+                    a_hat_i.expand_as(rel_t), a_hat_j,
+                    a_avg_t,
+                    torch.sign(a_avg_t),
+                    h.new_zeros(B, nt, nx, 1),
+                    rel_t, rel_t.abs(), cfl,
+                    h.new_zeros(B, nt, nx, 1),
+                ], dim=-1)
+                msg = self.uni_msg(msg_in)
+            else:
+                msg_in = torch.cat([
+                    h, h_j,
+                    u_hat_i.expand_as(rel_t), u_hat_j_t,
+                    a_hat_i.expand_as(rel_t), a_hat_j,
+                    rel_t, cfl, x_over_t,
+                ], dim=-1)
+                msg = self.tp_msg(msg_in)
+
+            gate = self._temporal_physics_gate(
+                a_i=a_hat_i, rel_t=rel_t, dx_grid=dx_val,
+            )
+            contrib = msg * gate
+            if self.radius_t is not None:
+                contrib = contrib * (rel_t.abs() <= self.radius_t)
+
+            tp_agg = tp_agg + contrib
+
+        # ---- combine: σ(K(v) + W·v) ----
+        upd_in = torch.cat([h, sp_agg + tp_agg], dim=-1)
+        h_nonlocal = self.update_net(upd_in)
+        h_local = self.W(h)
+
+        return self.act(h_nonlocal + h_local)
+
+
+# --------------------------------------------------------------------------- #
 # main model
 # --------------------------------------------------------------------------- #
 class HypNO_ST(nn.Module):
@@ -1034,6 +1376,17 @@ class HypNO_ST(nn.Module):
                     d_latent, d_hidden, stencil_k_x, stencil_k_t, activation,
                     weno_eps=weno_eps,
                     weno_p=weno_p,
+                    radius_x=radius_x,
+                    radius_t=radius_t,
+                    causal_temporal=causal_temporal,
+                    unified_mp=unified_mp,
+                )
+                for _ in range(n_layers)
+            ])
+        elif shock_mode == "physics":
+            self.mp_layers = nn.ModuleList([
+                _PhysicsSpaceTimeMPLayer(
+                    d_latent, d_hidden, stencil_k_x, stencil_k_t, activation,
                     radius_x=radius_x,
                     radius_t=radius_t,
                     causal_temporal=causal_temporal,
