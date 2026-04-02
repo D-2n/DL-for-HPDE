@@ -394,29 +394,13 @@ def main() -> None:
             epoch_loss_sum += loss.item() * u0.size(0)
             epoch_count += u0.size(0)
 
-            if step % 50 == 0 or step == 1:
-                lr_now = opt.param_groups[0]["lr"]
-                with torch.no_grad():
-                    pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=ef)
-                    _, info = hypno_pinn_loss(
-                        pred, u_full, u_coarse,
-                        lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
-                        shock_weighted, shock_alpha,
-                    )
-                gpu = gpu_status() if step % 200 == 0 or step == 1 else ""
-                msg = (
-                    f"epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
-                    f"L={info['total']:.3e}  state={info['state']:.3e}  mass={info['mass']:.3e}  "
-                    f"tv={info['tv']:.3e}  pinn={info['pinn']:.3e} | lr={lr_now:.2e}"
-                )
-                if gpu:
-                    msg += f" | {gpu}"
-                log.info(msg)
-                # flush to disk immediately so we see last line before crash
-                for h in log.handlers:
-                    h.flush()
-
         train_losses.append(epoch_loss_sum / max(1, epoch_count))
+        lr_now = opt.param_groups[0]["lr"]
+        log.info(
+            f"epoch {epoch:3d}/{epochs} | train_loss={train_losses[-1]:.3e} | lr={lr_now:.2e} | {gpu_status()}"
+        )
+        for h in log.handlers:
+            h.flush()
 
         # validation
         if val_loader is not None:
