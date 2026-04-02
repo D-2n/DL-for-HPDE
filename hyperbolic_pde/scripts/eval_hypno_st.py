@@ -117,6 +117,7 @@ def main() -> None:
         weno_p=float(model_cfg.get("weno_p", 2.0)),
         unified_mp=bool(model_cfg.get("unified_mp", False)),
         readout=str(model_cfg.get("readout", "gelu")),
+        encoder_scaling=str(model_cfg.get("encoder_scaling", "gate_net")),
         detector_path=model_cfg.get("detector_path", None),
         detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)
