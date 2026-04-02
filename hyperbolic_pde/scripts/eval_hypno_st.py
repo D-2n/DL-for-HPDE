@@ -173,6 +173,19 @@ def main() -> None:
     print(f"[HypNO-ST] Test MAE:  {mae:.6e}")
     print(f"[HypNO-ST] Test rL2:  {rel_l2:.6e}")
 
+    # correction sign asymmetry diagnostic
+    u0_exp = u0_test.unsqueeze(1).expand_as(pred_full)
+    correction = pred_full - u0_exp
+    error = (pred_full - u_test).abs()
+    mask_pos = correction >= 0
+    mask_neg = correction < 0
+    if mask_pos.any() and mask_neg.any():
+        mae_pos = error[mask_pos].mean().item()
+        mae_neg = error[mask_neg].mean().item()
+        print(f"[HypNO-ST] MAE (correction >= 0): {mae_pos:.6e}")
+        print(f"[HypNO-ST] MAE (correction <  0): {mae_neg:.6e}")
+        print(f"[HypNO-ST] Ratio neg/pos:         {mae_neg / mae_pos:.3f}")
+
     # per-time-step error
     per_t_mse = (pred_full - u_test).pow(2).mean(dim=(0, 2))
     per_t_mae = (pred_full - u_test).abs().mean(dim=(0, 2))
