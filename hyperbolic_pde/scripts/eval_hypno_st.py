@@ -118,6 +118,8 @@ def main() -> None:
         unified_mp=bool(model_cfg.get("unified_mp", False)),
         readout=str(model_cfg.get("readout", "gelu")),
         encoder_scaling=str(model_cfg.get("encoder_scaling", "gate_net")),
+        encoder_type=str(model_cfg.get("encoder_type", "gnn")),
+        skip=bool(model_cfg.get("skip", True)),
         detector_path=model_cfg.get("detector_path", None),
         detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)

@@ -41,21 +41,26 @@ class HypNODataset(Dataset):
         x: np.ndarray,
         stencil_k: int,
         radius_x: float | None = None,
+        skip_edge_feats: bool = False,
     ) -> None:
         self.u0 = torch.tensor(u0, dtype=torch.float32)
         self.u = torch.tensor(u, dtype=torch.float32)
-        self.edge_feats = precompute_lwr_edge_features(
-            self.u0,
-            torch.tensor(x, dtype=torch.float32),
-            stencil_k,
-            radius_x=radius_x,
-        )
+        if skip_edge_feats:
+            self.edge_feats = None
+        else:
+            self.edge_feats = precompute_lwr_edge_features(
+                self.u0,
+                torch.tensor(x, dtype=torch.float32),
+                stencil_k,
+                radius_x=radius_x,
+            )
 
     def __len__(self) -> int:
         return self.u0.shape[0]
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self.u0[idx], self.u[idx], self.edge_feats[idx]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        ef = self.edge_feats[idx] if self.edge_feats is not None else torch.empty(0)
+        return self.u0[idx], self.u[idx], ef
 
 
 # --------------------------------------------------------------------------- #
@@ -278,17 +283,19 @@ def main() -> None:
     radius_x = float(_rx) if _rx is not None else None
     radius_t = float(_rt) if _rt is not None else None
     stencil_k_x = int(model_cfg.get("stencil_k_x", 3))
+    encoder_type = str(model_cfg.get("encoder_type", "gnn"))
+    skip_ef = encoder_type == "mlp"
 
     train_data = HypNODataset(
         dataset.u0[train_idx], dataset.u[train_idx],
-        dataset.x, stencil_k_x, radius_x=radius_x,
+        dataset.x, stencil_k_x, radius_x=radius_x, skip_edge_feats=skip_ef,
     )
     loader = DataLoader(train_data, batch_size=int(model_cfg["batch_size"]), shuffle=True)
     val_loader = None
     if val_idx.size > 0:
         val_data = HypNODataset(
             dataset.u0[val_idx], dataset.u[val_idx],
-            dataset.x, stencil_k_x, radius_x=radius_x,
+            dataset.x, stencil_k_x, radius_x=radius_x, skip_edge_feats=skip_ef,
         )
         val_loader = DataLoader(val_data, batch_size=int(model_cfg["batch_size"]), shuffle=False)
 
@@ -310,6 +317,8 @@ def main() -> None:
         unified_mp=bool(model_cfg.get("unified_mp", False)),
         readout=str(model_cfg.get("readout", "gelu")),
         encoder_scaling=str(model_cfg.get("encoder_scaling", "gate_net")),
+        encoder_type=encoder_type,
+        skip=bool(model_cfg.get("skip", True)),
         detector_path=model_cfg.get("detector_path", None),
         detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)
@@ -365,10 +374,10 @@ def main() -> None:
             step += 1
             u0 = u0.to(device)
             u_full = u_full.to(device)
-            edge_feats = edge_feats.to(device)
+            ef = edge_feats.to(device) if not skip_ef else None
 
             opt.zero_grad(set_to_none=True)
-            pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=edge_feats)
+            pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=ef)
             loss, _ = hypno_pinn_loss(
                 pred, u_full, u_coarse,
                 lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
@@ -388,7 +397,7 @@ def main() -> None:
             if step % 50 == 0 or step == 1:
                 lr_now = opt.param_groups[0]["lr"]
                 with torch.no_grad():
-                    pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=edge_feats)
+                    pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=ef)
                     _, info = hypno_pinn_loss(
                         pred, u_full, u_coarse,
                         lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
@@ -418,7 +427,7 @@ def main() -> None:
                 for v_u0, v_u, v_ef in val_loader:
                     v_u0 = v_u0.to(device)
                     v_u = v_u.to(device)
-                    v_ef = v_ef.to(device)
+                    v_ef = v_ef.to(device) if not skip_ef else None
                     v_pred, v_coarse, _ = model(v_u0, x_grid, t_grid, edge_feats_pre=v_ef)
                     v_l, _ = hypno_pinn_loss(
                         v_pred, v_u, v_coarse,

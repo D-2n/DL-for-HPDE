@@ -137,12 +137,16 @@ class _SpaceTimeLiftingLayer(nn.Module):
 
     def __init__(self, d_latent: int, d_hidden: int, stencil_k: int, activation: str,
                  radius_x: float | None = None,
-                 encoder_scaling: str = "gate_net") -> None:
+                 encoder_scaling: str = "gate_net",
+                 encoder_type: str = "gnn") -> None:
         super().__init__()
         self.k = stencil_k
         self.radius_x = radius_x
         self.encoder_scaling = encoder_scaling
+        self.encoder_type = encoder_type
         self.node_mlp  = _make_mlp(3, d_hidden, d_latent, 2, activation)   # [u0_i, x_i, t_j]
+        if encoder_type == "mlp":
+            return  # no edge processing needed
         self.edge_mlp  = _make_mlp(16, d_hidden, d_latent, 2, activation)   # 15 LWR edge feats + t
         if encoder_scaling == "gate_net":
             self.gate_net  = _make_mlp(16, d_hidden, 1,       2, activation)
@@ -227,6 +231,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
         # node embedding
         node_in = torch.cat([u0_bc, x_bc, t_bc], dim=-1)   # [B, nt, nx, 3]
         h_node  = self.node_mlp(node_in)                    # [B, nt, nx, d_latent]
+
+        if self.encoder_type == "mlp":
+            return h_node
 
         if edge_feats_pre is not None:
             # --- batched path using precomputed static edge features ---
@@ -1346,20 +1353,24 @@ class HypNO_ST(nn.Module):
         detector_cfg: dict | None = None,
         readout: str = "gelu",
         encoder_scaling: str = "gate_net",
+        encoder_type: str = "gnn",
+        skip: bool = True,
     ) -> None:
         super().__init__()
         self.stencil_k_x = stencil_k_x
         self.stencil_k_t = stencil_k_t
         self.radius_x = radius_x
         self.radius_t = radius_t
+        self.skip = skip
         self.shock_mode = shock_mode
         self.unified_mp = unified_mp
         self.has_external_detector = False
 
         # P: joint space-time lifting (produces [B, nt, nx, d_latent] directly)
+        self.encoder_type = encoder_type
         self.lifting = _SpaceTimeLiftingLayer(
             d_latent, d_hidden, stencil_k_x, activation, radius_x=radius_x,
-            encoder_scaling=encoder_scaling,
+            encoder_scaling=encoder_scaling, encoder_type=encoder_type,
         )
 
         # PINN shock detector (only created for pinn mode, but kept as optional
@@ -1485,6 +1496,14 @@ class HypNO_ST(nn.Module):
             for layer in self.mp_layers:
                 h = layer(h, x, t, u0, si_for_mp)
 
+        elif self.shock_mode == "physics":
+            u_coarse = torch.zeros(B, nt, nx, device=h.device)
+
+            for layer in self.mp_layers:
+                h = layer(h, x, t, u0)
+
+            shock_indicator = torch.zeros(B, nt, nx, device=h.device)
+
         elif self.shock_mode == "classic":
             u_coarse = torch.zeros(B, nt, nx, device=h.device)
 
@@ -1509,9 +1528,12 @@ class HypNO_ST(nn.Module):
                 si_max = shock_indicator.amax(dim=(1, 2), keepdim=True).clamp(min=1e-8)
                 shock_indicator = shock_indicator / si_max
 
-        # --- Q: decoder with skip from u0 ---
-        correction = self.decoder(h).squeeze(-1)                         # [B, nt, nx]
-        u0_exp = u0.unsqueeze(1).expand(B, nt, nx)
-        u_pred = u0_exp + correction
+        # --- Q: decoder ---
+        out = self.decoder(h).squeeze(-1)                                # [B, nt, nx]
+        if self.skip:
+            u0_exp = u0.unsqueeze(1).expand(B, nt, nx)
+            u_pred = u0_exp + out
+        else:
+            u_pred = out
 
         return u_pred, u_coarse, shock_indicator
