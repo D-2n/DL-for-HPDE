@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Read(//c/Users/dimit/Desktop/repos/DL-for-HPDE/**)",
+      "Bash(python -c \"from hyperbolic_pde.models.hypno_st import HypNO_ST; m = HypNO_ST\\(encoder_scaling='physics'\\); print\\('OK, lifting params:', sum\\(p.numel\\(\\) for p in m.lifting.parameters\\(\\)\\)\\)\")",
+      "Bash(python -c \"from hyperbolic_pde.models.hypno_st2 import HypNO_ST2, precompute_lwr_edge_features_v2; print\\('OK'\\)\")",
+      "Bash(python -c ':*)"
+    ]
+  }
+}

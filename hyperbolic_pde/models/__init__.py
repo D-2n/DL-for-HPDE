@@ -8,6 +8,7 @@ from .hypgno import HypGNO
 from .hypno import HypNO
 from .hypno_pinn import HypNO_PINN
 from .hypno_st import HypNO_ST
+from .hypno_st2 import HypNO_ST2
 #from .gnn import GridGNN
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "HypNO",
     "HypNO_PINN",
     "HypNO_ST",
+    "HypNO_ST2",
     #"GridGNN",
 ]

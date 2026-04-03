@@ -6,12 +6,12 @@ data:
   test_path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
   path_local: /data/hyperbolic_dataset.npz
   test_path_local: /data/hyperbolic_dataset.npz
-  nx: 256
+  nx: 96
   nt: 128
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
-  cfl: 0.2
+  cfl: 0.3
   num_samples: 4000
   test_num_samples: 10
   test_sine_pieces: 20
@@ -19,7 +19,7 @@ data:
   num_segments:  [2, 5, 7, 10]
   u_min: 0.0
   u_max: 1.0
-  ic_points: 256
+  ic_points: 96
   method: muscl              # "godunov" (1st order) or "muscl" (2nd order MUSCL-Hancock)
   boundary: ghost
   train_fraction: 0.8
@@ -229,11 +229,12 @@ hypno_st:
   stencil_k_x: 7
   stencil_k_t: 3
   d_latent: 64
-  d_hidden: 64
-  n_layers: 4
+  d_hidden: 96
+  n_layers: 6
   activation: gelu
-  encoder_scaling: gate_net  # "gate_net" | "upwind" | "physics" (char cone + soft upwind + entropy + shock atten)
-  shock_mode: weno          # "pinn" | "weno" | "physics" | "classic"
+  encoder_type: gnn          # "gnn" (neighbor aggregation) or "mlp" (pointwise [u0, x, t] only)
+  encoder_scaling: physics   # "gate_net" | "upwind" | "physics" (only used when encoder_type=gnn)
+  shock_mode: physics        # "pinn" | "weno" | "physics" | "classic"
   message_scaling: true     # false = no PINN/WENO weighting (raw MP)
   shock_delta: 0.1          # pinn mode only
   shock_threshold: 0.3      # pinn mode only
@@ -241,18 +242,19 @@ hypno_st:
   weno_p: 0.5             # 0 = no WENO weighting (raw MP)
   unified_mp: true           # true = single MLP for space+time, false = separate MLPs
   readout: relu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
-  detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
+  skip: true                # true = u_pred = u0 + correction, false = u_pred = decoder(h) directly
+  detector_path: null
   causal_temporal: true
-  radius_x: 0.2
-  radius_t: 0.15
+  radius_x: 0.18
+  radius_t: 0.17
   optimizer: adamw
-  epochs: 150
+  epochs: 60
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
-  lr_min: 5.0e-6
-  batch_size: 2
+  lr_min: 1.0e-5
+  batch_size: 4
   lambda_state: 1.0
   lambda_conservation: 1.0
   lambda_tv: 0.01
@@ -265,7 +267,7 @@ hypno_st:
   plot_dir: hyperbolic_pde/runs/plots/hypno_st
 
 shock_detector:
-  ic_points: 256
+  ic_points: 96
   d_latent: 128
   d_hidden: 128
   n_layers: 7
