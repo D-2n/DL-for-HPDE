@@ -363,8 +363,7 @@ def main() -> None:
             ef = edge_feats.to(device) if not skip_ef else None
 
             opt.zero_grad(set_to_none=True)
-            # pass u_true for Oleinik entropy gate during training
-            pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=ef, u_true=u_full)
+            pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=ef)
             loss, _ = hypno_pinn_loss(
                 pred, u_full, u_coarse,
                 lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
@@ -389,7 +388,7 @@ def main() -> None:
         for h in log.handlers:
             h.flush()
 
-        # validation (no u_true — Oleinik gate disabled at eval)
+        # validation
         if val_loader is not None:
             model.eval()
             val_loss = 0.0

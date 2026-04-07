@@ -7,8 +7,9 @@ Changes from hypno_st.py
   to zero for non-adjacent edges (|offset| > 1) because these quantities are
   ill-defined when a shock may sit between the two nodes.
 * Physics gate point 3 (shock attenuation) removed.
-* Oleinik entropy gate is training-only; at inference it returns 1.  During
-  training it uses ground-truth a_L / a_R passed via ``u_true``.
+* Oleinik entropy gate uses the model's own state estimates (u_i / u_j from
+  edge features in the encoder, u_hat from state_probe in MP layers) instead
+  of ground-truth, so it is active at both train and eval time.
 * Edge feature dimension: 14 (was 15).  +1 for time at runtime → 15 total
   input to edge MLP.
 """
@@ -200,14 +201,12 @@ class _SpaceTimeLiftingLayer(nn.Module):
         rel_x: torch.Tensor, a_j: torch.Tensor,
         a_ij: torch.Tensor, t_val: torch.Tensor,
         dx_grid: float,
-        u_true_i: torch.Tensor | None = None,
-        u_true_j: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Composite physics gate (v2).
 
         Components (3 learnable scalars):
           1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature)
-          2. Oleinik entropy:  training-only, uses GT a_L / a_R
+          2. Oleinik entropy:  uses model's own u_i / u_j estimates
           4. Characteristic cone:  Gaussian centred on char foot from j
         """
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
@@ -217,17 +216,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
         # 1. Soft upwind
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
 
-        # 2. Oleinik entropy (training only, from GT)
-        if self.training and u_true_i is not None and u_true_j is not None:
-            u_L = torch.where(rel_x > 0, u_true_i, u_true_j)
-            u_R = torch.where(rel_x > 0, u_true_j, u_true_i)
-            a_L = 1.0 - 2.0 * u_L
-            a_R = 1.0 - 2.0 * u_R
-            is_shock = (u_L > u_R).float()
-            entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
-            g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
-        else:
-            g_entropy = torch.ones_like(g_upwind)
+        # 2. Oleinik entropy (from model's own state estimates)
+        u_L = torch.where(rel_x > 0, u_i, u_j)
+        u_R = torch.where(rel_x > 0, u_j, u_i)
+        a_L = 1.0 - 2.0 * u_L
+        a_R = 1.0 - 2.0 * u_R
+        is_shock = (u_L > u_R).float()
+        entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
+        g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
         # 3. Characteristic cone
         char_miss = (rel_x + a_j * t_val).abs()
@@ -246,7 +242,6 @@ class _SpaceTimeLiftingLayer(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         edge_feats_pre: torch.Tensor | None = None,
-        u_true: torch.Tensor | None = None,
     ) -> torch.Tensor:
         B, nx = u0.shape
         nt = t.shape[0]
@@ -276,28 +271,11 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 gate = upwind + alpha * (1.0 - upwind)
             else:  # physics
                 dx_grid = (x[0, 1] - x[0, 0]).abs().item()
-                # For Oleinik during training, broadcast u_true to edge shape
-                u_true_i_ef = None
-                u_true_j_ef = None
-                if self.training and u_true is not None:
-                    # u_true: [B, nt, nx] — we need [B, nt, nx, n_neighbors, 1]
-                    # u_true_i is just u_true at node i, broadcast across neighbors
-                    u_true_i_ef = u_true.unsqueeze(3).unsqueeze(-1).expand(B, nt, nx, n_neighbors, 1)
-                    # u_true_j requires padding like edge_feats_pre was built
-                    k_eff = n_neighbors // 2
-                    u_true_pad = F.pad(u_true, (k_eff, k_eff), mode="replicate")
-                    u_true_j_list = []
-                    for j in range(-k_eff, k_eff + 1):
-                        u_true_j_list.append(u_true_pad[:, :, k_eff + j : k_eff + j + nx])
-                    # [B, nt, nx, n_neighbors]
-                    u_true_j_ef = torch.stack(u_true_j_list, dim=3).unsqueeze(-1)
-
                 gate = self._physics_gate(
                     u_i=ef[..., 0:1], u_j=ef[..., 1:2],
                     rel_x=ef[..., 5:6], a_j=ef[..., 10:11],
                     a_ij=ef[..., 11:12], t_val=ef[..., N_EDGE_FEATS:N_EDGE_FEATS+1],
                     dx_grid=dx_grid,
-                    u_true_i=u_true_i_ef, u_true_j=u_true_j_ef,
                 )
             contrib = gate * msg
             if self.radius_x is not None:
@@ -311,11 +289,6 @@ class _SpaceTimeLiftingLayer(nn.Module):
 
             u_pad = F.pad(u0.unsqueeze(1), (k, k), mode="replicate").squeeze(1)
             x_pad = F.pad(x.unsqueeze(1),  (k, k), mode="replicate").squeeze(1)
-
-            # For Oleinik: pad u_true along spatial dim
-            u_true_pad = None
-            if self.training and u_true is not None:
-                u_true_pad = F.pad(u_true, (k, k), mode="replicate")
 
             agg = torch.zeros_like(h_node)
             for j in range(-k, k + 1):
@@ -369,17 +342,11 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     gate = upwind + alpha * (1.0 - upwind)
                 else:  # physics
                     dx_grid = (x[0, 1] - x[0, 0]).abs().item()
-                    u_true_i_val = None
-                    u_true_j_val = None
-                    if self.training and u_true_pad is not None:
-                        u_true_i_val = u_true[:, :, :].unsqueeze(-1)  # [B, nt, nx, 1]
-                        u_true_j_val = u_true_pad[:, :, k + j : k + j + nx].unsqueeze(-1)
                     gate = self._physics_gate(
                         u_i=u0_bc, u_j=u_k_bc,
                         rel_x=rel_x, a_j=a_k,
                         a_ij=a_ik, t_val=t_bc,
                         dx_grid=dx_grid,
-                        u_true_i=u_true_i_val, u_true_j=u_true_j_val,
                     )
                 contrib = gate * msg
 
@@ -1039,7 +1006,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
     Changes from v1:
       - Shock attenuation gate (point 3) removed
-      - Oleinik entropy gate is training-only, uses GT u_true
+      - Oleinik entropy gate uses model's own u_hat estimates
       - Slope removed from edge features
       - Inter-node features masked for non-adjacent edges
       - 4 learnable scalars → 3 (spatial) + 1 (temporal CFL)
@@ -1092,27 +1059,22 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         rel_x: torch.Tensor, a_j: torch.Tensor,
         a_ij: torch.Tensor,
         t_val: torch.Tensor, dx_grid: float,
-        u_true_i: torch.Tensor | None = None,
-        u_true_j: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Physics gate for spatial messages (v2): upwind + entropy(train) + char cone."""
+        """Physics gate for spatial messages (v2): upwind + entropy + char cone."""
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
         char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
 
-        # Oleinik: training only, from GT
-        if self.training and u_true_i is not None and u_true_j is not None:
-            u_L = torch.where(rel_x > 0, u_true_i, u_true_j)
-            u_R = torch.where(rel_x > 0, u_true_j, u_true_i)
-            a_L = 1.0 - 2.0 * u_L
-            a_R = 1.0 - 2.0 * u_R
-            is_shock = (u_L > u_R).float()
-            entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
-            g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
-        else:
-            g_entropy = torch.ones_like(g_upwind)
+        # Oleinik entropy (from model's own state estimates u_i / u_j)
+        u_L = torch.where(rel_x > 0, u_i, u_j)
+        u_R = torch.where(rel_x > 0, u_j, u_i)
+        a_L = 1.0 - 2.0 * u_L
+        a_R = 1.0 - 2.0 * u_R
+        is_shock = (u_L > u_R).float()
+        entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
+        g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
         char_miss = (rel_x + a_j * t_val).abs()
         sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
@@ -1134,7 +1096,6 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         t: torch.Tensor,
         u0: torch.Tensor,
         shock_indicator: torch.Tensor | None = None,
-        u_true: torch.Tensor | None = None,
     ) -> torch.Tensor:
         B, nt, nx, d = h.shape
 
@@ -1151,11 +1112,6 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
         u_hat = torch.sigmoid(self.state_probe(h)).squeeze(-1)
         u_hat_i = u_hat.unsqueeze(-1)
-
-        # Prepare GT for Oleinik in physics gate
-        u_true_xp = None
-        if self.training and u_true is not None:
-            u_true_xp = F.pad(u_true, (k_x, k_x), mode="replicate")
 
         # ---- spatial MP ----
         h_flat = h.reshape(B * nt, nx, d).permute(0, 2, 1)
@@ -1201,18 +1157,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 ], dim=-1)
                 msg = self.sp_msg(msg_in)
 
-            # physics gate with GT Oleinik
-            u_true_i_val = None
-            u_true_j_val = None
-            if self.training and u_true_xp is not None:
-                u_true_i_val = u_true.unsqueeze(-1)  # [B, nt, nx, 1]
-                u_true_j_val = u_true_xp[:, :, k_x + j : k_x + j + nx].unsqueeze(-1)
-
             gate = self._spatial_physics_gate(
                 u_i=u_hat_i, u_j=u_hat_j,
                 rel_x=rel_x, a_j=a_j_val,
                 a_ij=a_ij, t_val=t_i, dx_grid=dx_val,
-                u_true_i=u_true_i_val, u_true_j=u_true_j_val,
             )
             contrib = msg * gate
             if self.radius_x is not None:
@@ -1408,14 +1356,12 @@ class HypNO_ST2(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         edge_feats_pre: torch.Tensor | None = None,
-        u_true: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         u0:             [B, nx]   initial condition
         x:              [nx]      spatial coordinates
         t:              [nt]      time coordinates
         edge_feats_pre: [B, nx, 2k+1, 14] precomputed static edge features (v2)
-        u_true:         [B, nt, nx] ground truth (optional, for Oleinik during training)
 
         Returns:
             u_pred, u_coarse, shock_indicator
@@ -1427,7 +1373,7 @@ class HypNO_ST2(nn.Module):
             x = x.unsqueeze(0).expand(B, -1)
 
         # --- P: joint space-time lifting ---
-        h = self.lifting(u0, x, t, edge_feats_pre=edge_feats_pre, u_true=u_true)
+        h = self.lifting(u0, x, t, edge_feats_pre=edge_feats_pre)
 
         # --- external detector (frozen, if available) ---
         ext_indicator = None
@@ -1451,7 +1397,7 @@ class HypNO_ST2(nn.Module):
             u_coarse = torch.zeros(B, nt, nx, device=h.device)
 
             for layer in self.mp_layers:
-                h = layer(h, x, t, u0, u_true=u_true)
+                h = layer(h, x, t, u0)
 
             shock_indicator = torch.zeros(B, nt, nx, device=h.device)
 

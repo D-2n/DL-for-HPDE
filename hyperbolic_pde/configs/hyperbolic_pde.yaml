@@ -266,6 +266,46 @@ hypno_st:
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno_st
 
+hypno_st2:
+  stencil_k_x: 7
+  stencil_k_t: 2
+  d_latent: 64
+  d_hidden: 96
+  n_layers: 6
+  activation: gelu
+  encoder_type: gnn
+  encoder_scaling: physics
+  shock_mode: physics
+  shock_delta: 0.1
+  shock_threshold: 0.3
+  weno_eps: 1.0e-6
+  weno_p: 0.5
+  unified_mp: true
+  readout: relu
+  skip: true
+  detector_path: null
+  causal_temporal: true
+  radius_x: 0.18
+  radius_t: 0.08
+  optimizer: adamw
+  epochs: 100
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 4
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.01
+  lambda_pinn: 0.0
+  shock_weighted: false
+  shock_alpha: 3.0
+  checkpoint_every: 100
+  save_path: hyperbolic_pde/runs/hypno_st2.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypno_st2
+
 shock_detector:
   ic_points: 96
   d_latent: 128
