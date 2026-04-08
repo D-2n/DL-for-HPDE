@@ -188,30 +188,29 @@ class _SpaceTimeLiftingLayer(nn.Module):
         elif encoder_scaling == "upwind":
             self.upwind_alpha = nn.Parameter(torch.tensor(0.1))
         elif encoder_scaling == "physics":
-            # 3 learnable scalars (shock attenuation removed)
+            # 2 learnable scalars (char cone removed — uses wrong speed at shocks)
             self.phys_temperature = nn.Parameter(torch.tensor(0.0))
             self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
-            self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         else:
             raise ValueError(f"Unknown encoder_scaling: {encoder_scaling!r}")
         self.combine = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
 
     def _physics_gate(
         self, u_i: torch.Tensor, u_j: torch.Tensor,
-        rel_x: torch.Tensor, a_j: torch.Tensor,
-        a_ij: torch.Tensor, t_val: torch.Tensor,
-        dx_grid: float,
+        rel_x: torch.Tensor,
+        a_ij: torch.Tensor,
     ) -> torch.Tensor:
         """Composite physics gate (v2).
 
-        Components (3 learnable scalars):
+        Components (2 learnable scalars):
           1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature)
           2. Oleinik entropy:  uses model's own u_i / u_j estimates
-          4. Characteristic cone:  Gaussian centred on char foot from j
+        Characteristic cone removed — it uses characteristic speed a_k,
+        but shocks propagate at RH speed a_ij.  This causes the cone to
+        suppress physically relevant upwind messages at discontinuities.
         """
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
-        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         # 1. Soft upwind
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
@@ -225,12 +224,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
         g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
-        # 3. Characteristic cone
-        char_miss = (rel_x + a_j * t_val).abs()
-        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
-        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
-
-        return g_upwind * g_entropy * g_char
+        return g_upwind * g_entropy
 
     def _get_max_k(self, x: torch.Tensor) -> int:
         dx = (x[0, 1] - x[0, 0]).abs().item()
@@ -270,12 +264,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 alpha = torch.sigmoid(self.upwind_alpha)
                 gate = upwind + alpha * (1.0 - upwind)
             else:  # physics
-                dx_grid = (x[0, 1] - x[0, 0]).abs().item()
                 gate = self._physics_gate(
                     u_i=ef[..., 0:1], u_j=ef[..., 1:2],
-                    rel_x=ef[..., 5:6], a_j=ef[..., 10:11],
-                    a_ij=ef[..., 11:12], t_val=ef[..., N_EDGE_FEATS:N_EDGE_FEATS+1],
-                    dx_grid=dx_grid,
+                    rel_x=ef[..., 5:6],
+                    a_ij=ef[..., 11:12],
                 )
             contrib = gate * msg
             if self.radius_x is not None:
@@ -341,12 +333,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     alpha = torch.sigmoid(self.upwind_alpha)
                     gate = upwind + alpha * (1.0 - upwind)
                 else:  # physics
-                    dx_grid = (x[0, 1] - x[0, 0]).abs().item()
                     gate = self._physics_gate(
                         u_i=u0_bc, u_j=u_k_bc,
-                        rel_x=rel_x, a_j=a_k,
-                        a_ij=a_ik, t_val=t_bc,
-                        dx_grid=dx_grid,
+                        rel_x=rel_x,
+                        a_ij=a_ik,
                     )
                 contrib = gate * msg
 
@@ -1035,10 +1025,9 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
         self.state_probe = nn.Linear(d_latent, 1)
 
-        # 3 spatial + 1 temporal learnable scalars
+        # 2 spatial + 1 temporal learnable scalars
         self.phys_temperature = nn.Parameter(torch.tensor(0.0))
         self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
-        self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
         if unified_mp:
@@ -1056,14 +1045,12 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
     def _spatial_physics_gate(
         self, u_i: torch.Tensor, u_j: torch.Tensor,
-        rel_x: torch.Tensor, a_j: torch.Tensor,
+        rel_x: torch.Tensor,
         a_ij: torch.Tensor,
-        t_val: torch.Tensor, dx_grid: float,
     ) -> torch.Tensor:
-        """Physics gate for spatial messages (v2): upwind + entropy + char cone."""
+        """Physics gate for spatial messages (v2): upwind + entropy."""
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
-        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
 
@@ -1076,11 +1063,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
         g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
-        char_miss = (rel_x + a_j * t_val).abs()
-        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
-        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
-
-        return g_upwind * g_entropy * g_char
+        return g_upwind * g_entropy
 
     def _temporal_physics_gate(
         self, a_i: torch.Tensor, rel_t: torch.Tensor, dx_grid: float,
@@ -1159,8 +1142,8 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
             gate = self._spatial_physics_gate(
                 u_i=u_hat_i, u_j=u_hat_j,
-                rel_x=rel_x, a_j=a_j_val,
-                a_ij=a_ij, t_val=t_i, dx_grid=dx_val,
+                rel_x=rel_x,
+                a_ij=a_ij,
             )
             contrib = msg * gate
             if self.radius_x is not None:
