@@ -348,7 +348,8 @@ def main() -> None:
     step = 0
     model.train()
     start_time = time.perf_counter()
-    checkpoint_every = int(model_cfg.get("checkpoint_every", 20))
+    checkpoint_every = int(model_cfg.get("checkpoint_every", 50))
+    val_every = int(model_cfg.get("val_every", 5))
 
     train_losses: list[float] = []
     val_losses: list[float] = []
@@ -388,12 +389,14 @@ def main() -> None:
         for h in log.handlers:
             h.flush()
 
-        # validation
-        if val_loader is not None:
+        # validation (every val_every epochs)
+        if val_loader is not None and epoch % val_every == 0:
             model.eval()
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             val_loss = 0.0
             val_count = 0
-            with torch.no_grad():
+            with torch.inference_mode():
                 for v_u0, v_u, v_ef in val_loader:
                     v_u0 = v_u0.to(device)
                     v_u = v_u.to(device)
@@ -412,8 +415,6 @@ def main() -> None:
             for h in log.handlers:
                 h.flush()
             model.train()
-        else:
-            val_losses.append(float("nan"))
 
         if checkpoint_every > 0 and epoch % checkpoint_every == 0:
             ckpt_path = run_dir / f"checkpoint_epoch{epoch}.pt"
@@ -433,7 +434,8 @@ def main() -> None:
     ep_range = list(range(1, len(train_losses) + 1))
     ax.plot(ep_range, train_losses, label="Train loss")
     if val_loader is not None and val_losses:
-        ax.plot(ep_range, val_losses, label="Val loss")
+        val_epochs = list(range(val_every, epochs + 1, val_every))[:len(val_losses)]
+        ax.plot(val_epochs, val_losses, label="Val loss")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title("HypNO-ST2 training curves")

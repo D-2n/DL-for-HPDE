@@ -301,7 +301,8 @@ hypno_st2:
   lambda_pinn: 0.0
   shock_weighted: false
   shock_alpha: 3.0
-  checkpoint_every: 100
+  checkpoint_every: 50
+  val_every: 5
   save_path: hyperbolic_pde/runs/hypno_st2.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno_st2
