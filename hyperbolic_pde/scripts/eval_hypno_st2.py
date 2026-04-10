@@ -154,7 +154,7 @@ def main() -> None:
     with torch.no_grad():
         for i in range(0, n_test, batch_size):
             u0_batch = u0_test[i : i + batch_size]
-            u_pred, _, shock_ind = model(u0_batch, x_grid, t_grid)
+            u_pred, _, shock_ind, _ = model(u0_batch, x_grid, t_grid)
             pred_chunks.append(u_pred)
             shock_chunks.append(shock_ind)
     pred_full = torch.cat(pred_chunks, dim=0)
