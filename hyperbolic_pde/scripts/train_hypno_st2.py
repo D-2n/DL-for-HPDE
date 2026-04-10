@@ -15,11 +15,11 @@ from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
 
 import yaml
-from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.models.hypno_st2 import HypNO_ST2, precompute_lwr_edge_features_v2
 
@@ -152,10 +152,12 @@ def hypno_pinn_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
     u_coarse: torch.Tensor,
+    u_hats: list[torch.Tensor] | None = None,
     lambda_state: float = 1.0,
     lambda_conservation: float = 1.0,
     lambda_tv: float = 0.0,
     lambda_pinn: float = 0.1,
+    lambda_probe: float = 0.0,
     shock_weighted: bool = False,
     shock_alpha: float = 5.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
@@ -178,11 +180,18 @@ def hypno_pinn_loss(
 
     loss_pinn = (u_coarse - target).abs().mean()
 
+    # deep supervision on state_probe u_hats (one per MP layer)
+    if u_hats is not None and len(u_hats) > 0 and lambda_probe > 0.0:
+        loss_probe = sum((uh - target).abs().mean() for uh in u_hats) / len(u_hats)
+    else:
+        loss_probe = torch.zeros((), device=pred.device)
+
     loss = (
         lambda_state * loss_state
         + lambda_conservation * loss_mass
         + lambda_tv * loss_tv
         + lambda_pinn * loss_pinn
+        + lambda_probe * loss_probe
     )
 
     info = {
@@ -190,6 +199,7 @@ def hypno_pinn_loss(
         "mass": loss_mass.item(),
         "tv": loss_tv.item(),
         "pinn": loss_pinn.item(),
+        "probe": float(loss_probe.item()) if torch.is_tensor(loss_probe) else float(loss_probe),
         "total": loss.item(),
     }
     return loss, info
@@ -342,6 +352,7 @@ def main() -> None:
     lambda_conservation = float(model_cfg.get("lambda_conservation", 1.0))
     lambda_tv = float(model_cfg.get("lambda_tv", 0.0))
     lambda_pinn = float(model_cfg.get("lambda_pinn", 0.1))
+    lambda_probe = float(model_cfg.get("lambda_probe", 0.0))
     shock_weighted = bool(model_cfg.get("shock_weighted", False))
     shock_alpha = float(model_cfg.get("shock_alpha", 5.0))
 
@@ -364,11 +375,17 @@ def main() -> None:
             ef = edge_feats.to(device) if not skip_ef else None
 
             opt.zero_grad(set_to_none=True)
-            pred, u_coarse, _ = model(u0, x_grid, t_grid, edge_feats_pre=ef)
+            pred, u_coarse, _, u_hats = model(u0, x_grid, t_grid, edge_feats_pre=ef)
             loss, _ = hypno_pinn_loss(
                 pred, u_full, u_coarse,
-                lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
-                shock_weighted, shock_alpha,
+                u_hats=u_hats,
+                lambda_state=lambda_state,
+                lambda_conservation=lambda_conservation,
+                lambda_tv=lambda_tv,
+                lambda_pinn=lambda_pinn,
+                lambda_probe=lambda_probe,
+                shock_weighted=shock_weighted,
+                shock_alpha=shock_alpha,
             )
             loss.backward()
             grad_clip = model_cfg.get("grad_clip")
@@ -401,11 +418,17 @@ def main() -> None:
                     v_u0 = v_u0.to(device)
                     v_u = v_u.to(device)
                     v_ef = v_ef.to(device) if not skip_ef else None
-                    v_pred, v_coarse, _ = model(v_u0, x_grid, t_grid, edge_feats_pre=v_ef)
+                    v_pred, v_coarse, _, v_u_hats = model(v_u0, x_grid, t_grid, edge_feats_pre=v_ef)
                     v_l, _ = hypno_pinn_loss(
                         v_pred, v_u, v_coarse,
-                        lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
-                        shock_weighted, shock_alpha,
+                        u_hats=v_u_hats,
+                        lambda_state=lambda_state,
+                        lambda_conservation=lambda_conservation,
+                        lambda_tv=lambda_tv,
+                        lambda_pinn=lambda_pinn,
+                        lambda_probe=lambda_probe,
+                        shock_weighted=shock_weighted,
+                        shock_alpha=shock_alpha,
                     )
                     val_loss += v_l.item() * v_u0.size(0)
                     val_count += v_u0.size(0)

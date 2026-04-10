@@ -188,9 +188,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
         elif encoder_scaling == "upwind":
             self.upwind_alpha = nn.Parameter(torch.tensor(0.1))
         elif encoder_scaling == "physics":
-            # 2 learnable scalars (char cone removed — uses wrong speed at shocks)
+            # 3 learnable scalars (char cone restored)
             self.phys_temperature = nn.Parameter(torch.tensor(0.0))
             self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
+            self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         else:
             raise ValueError(f"Unknown encoder_scaling: {encoder_scaling!r}")
         self.combine = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
@@ -199,18 +200,20 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self, u_i: torch.Tensor, u_j: torch.Tensor,
         rel_x: torch.Tensor,
         a_ij: torch.Tensor,
+        a_j: torch.Tensor,
+        t_val: torch.Tensor,
+        dx_grid: float,
     ) -> torch.Tensor:
-        """Composite physics gate (v2).
+        """Composite physics gate (v2, char cone restored).
 
-        Components (2 learnable scalars):
+        Components (3 learnable scalars):
           1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature)
           2. Oleinik entropy:  uses model's own u_i / u_j estimates
-        Characteristic cone removed — it uses characteristic speed a_k,
-        but shocks propagate at RH speed a_ij.  This causes the cone to
-        suppress physically relevant upwind messages at discontinuities.
+          3. Characteristic cone:  Gaussian centred on char foot from j
         """
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
+        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         # 1. Soft upwind
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
@@ -224,7 +227,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
         entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
         g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
-        return g_upwind * g_entropy
+        # 3. Characteristic cone — does j's characteristic reach i by time t?
+        #    char from x_j at t=0 with speed a_j arrives at x_j + a_j*t
+        #    relative to x_i: (x_j - x_i) + a_j*t = rel_x + a_j*t
+        char_miss = (rel_x + a_j * t_val).abs()
+        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
+        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+
+        return g_upwind * g_entropy * g_char
 
     def _get_max_k(self, x: torch.Tensor) -> int:
         dx = (x[0, 1] - x[0, 0]).abs().item()
@@ -264,10 +274,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 alpha = torch.sigmoid(self.upwind_alpha)
                 gate = upwind + alpha * (1.0 - upwind)
             else:  # physics
+                dx_grid = (x[0, 1] - x[0, 0]).abs().item()
                 gate = self._physics_gate(
                     u_i=ef[..., 0:1], u_j=ef[..., 1:2],
                     rel_x=ef[..., 5:6],
                     a_ij=ef[..., 11:12],
+                    a_j=ef[..., 10:11],
+                    t_val=ef[..., 14:15],
+                    dx_grid=dx_grid,
                 )
             contrib = gate * msg
             if self.radius_x is not None:
@@ -333,10 +347,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     alpha = torch.sigmoid(self.upwind_alpha)
                     gate = upwind + alpha * (1.0 - upwind)
                 else:  # physics
+                    dx_grid = (x[0, 1] - x[0, 0]).abs().item()
                     gate = self._physics_gate(
                         u_i=u0_bc, u_j=u_k_bc,
                         rel_x=rel_x,
                         a_ij=a_ik,
+                        a_j=a_k,
+                        t_val=t_bc,
+                        dx_grid=dx_grid,
                     )
                 contrib = gate * msg
 
@@ -1025,9 +1043,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
         self.state_probe = nn.Linear(d_latent, 1)
 
-        # 2 spatial + 1 temporal learnable scalars
+        # 3 spatial + 1 temporal learnable scalars (char cone restored)
         self.phys_temperature = nn.Parameter(torch.tensor(0.0))
         self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
+        self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
         if unified_mp:
@@ -1047,10 +1066,14 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self, u_i: torch.Tensor, u_j: torch.Tensor,
         rel_x: torch.Tensor,
         a_ij: torch.Tensor,
+        a_j: torch.Tensor,
+        t_val: torch.Tensor,
+        dx_grid: float,
     ) -> torch.Tensor:
-        """Physics gate for spatial messages (v2): upwind + entropy."""
+        """Physics gate for spatial messages (v2): upwind + entropy + char cone."""
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
+        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
 
@@ -1063,7 +1086,12 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
         g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
-        return g_upwind * g_entropy
+        # Characteristic cone — does j's characteristic reach i by time t?
+        char_miss = (rel_x + a_j * t_val).abs()
+        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
+        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+
+        return g_upwind * g_entropy * g_char
 
     def _temporal_physics_gate(
         self, a_i: torch.Tensor, rel_t: torch.Tensor, dx_grid: float,
@@ -1144,6 +1172,9 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 u_i=u_hat_i, u_j=u_hat_j,
                 rel_x=rel_x,
                 a_ij=a_ij,
+                a_j=a_j_val,
+                t_val=t_i,
+                dx_grid=dx_val,
             )
             contrib = msg * gate
             if self.radius_x is not None:
@@ -1339,7 +1370,7 @@ class HypNO_ST2(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         edge_feats_pre: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
         """
         u0:             [B, nx]   initial condition
         x:              [nx]      spatial coordinates
@@ -1347,7 +1378,10 @@ class HypNO_ST2(nn.Module):
         edge_feats_pre: [B, nx, 2k+1, 14] precomputed static edge features (v2)
 
         Returns:
-            u_pred, u_coarse, shock_indicator
+            u_pred, u_coarse, shock_indicator, u_hats
+            where u_hats is a list of per-MP-layer state_probe outputs
+            (empty list for shock_mode == "classic" where MP layers have
+            no state_probe).
         """
         B, nx = u0.shape
         nt = t.shape[0]
@@ -1366,6 +1400,8 @@ class HypNO_ST2(nn.Module):
                 ext_indicator, _ = self.external_detector(u0, x[0] if x.dim() > 1 else x, t)
             ext_indicator = ext_indicator.detach()
 
+        u_hats: list[torch.Tensor] = []
+
         if self.shock_mode == "pinn":
             dx_val = (x[0, 1] - x[0, 0]).abs().item()
             dt_val = (t[1] - t[0]).abs().item()
@@ -1375,12 +1411,14 @@ class HypNO_ST2(nn.Module):
 
             for layer in self.mp_layers:
                 h = layer(h, x, t, u0, si_for_mp)
+                u_hats.append(torch.sigmoid(layer.state_probe(h)).squeeze(-1))
 
         elif self.shock_mode == "physics":
             u_coarse = torch.zeros(B, nt, nx, device=h.device)
 
             for layer in self.mp_layers:
                 h = layer(h, x, t, u0)
+                u_hats.append(torch.sigmoid(layer.state_probe(h)).squeeze(-1))
 
             shock_indicator = torch.zeros(B, nt, nx, device=h.device)
 
@@ -1400,6 +1438,7 @@ class HypNO_ST2(nn.Module):
 
             for layer in self.mp_layers:
                 h = layer(h, x, t, u0, shock_indicator=ext_indicator)
+                u_hats.append(torch.sigmoid(layer.state_probe(h)).squeeze(-1))
 
             if ext_indicator is not None:
                 shock_indicator = ext_indicator
@@ -1416,4 +1455,4 @@ class HypNO_ST2(nn.Module):
         else:
             u_pred = out
 
-        return u_pred, u_coarse, shock_indicator
+        return u_pred, u_coarse, shock_indicator, u_hats
