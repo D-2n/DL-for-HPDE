@@ -317,6 +317,7 @@ def main() -> None:
         encoder_scaling=str(model_cfg.get("encoder_scaling", "gate_net")),
         encoder_type=encoder_type,
         skip=bool(model_cfg.get("skip", True)),
+        use_char_cone=bool(model_cfg.get("use_char_cone", False)),
         detector_path=model_cfg.get("detector_path", None),
         detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)

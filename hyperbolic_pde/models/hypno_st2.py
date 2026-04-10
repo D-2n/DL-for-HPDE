@@ -74,8 +74,9 @@ def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: s
 # 0: u_i,  1: u_k,  2: du,  3: |du|,  4: u_avg,
 # 5: rel_x,  6: |dx|,
 # 7: f_i,  8: f_k,  9: a_i,  10: a_k,  11: a_ik,  12: sign(a_ik),  13: upwind
-# Features 2-4 and 11-13 are inter-node and get masked for |offset| > 1.
-_INTERNODE_INDICES = [2, 3, 4, 11, 12, 13]
+# Inter-node features are zeroed for non-adjacent edges (|offset| > 1).
+# rel_x / |dx| are kept for adjacent edges so the upwind sign computation works.
+_INTERNODE_INDICES = [2, 3, 4, 5, 6, 11, 12, 13]
 N_EDGE_FEATS = 14
 
 
@@ -173,12 +174,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
     def __init__(self, d_latent: int, d_hidden: int, stencil_k: int, activation: str,
                  radius_x: float | None = None,
                  encoder_scaling: str = "gate_net",
-                 encoder_type: str = "gnn") -> None:
+                 encoder_type: str = "gnn",
+                 use_char_cone: bool = False) -> None:
         super().__init__()
         self.k = stencil_k
         self.radius_x = radius_x
         self.encoder_scaling = encoder_scaling
         self.encoder_type = encoder_type
+        self.use_char_cone = use_char_cone
         self.node_mlp  = _make_mlp(3, d_hidden, d_latent, 2, activation)
         if encoder_type == "mlp":
             return
@@ -188,10 +191,11 @@ class _SpaceTimeLiftingLayer(nn.Module):
         elif encoder_scaling == "upwind":
             self.upwind_alpha = nn.Parameter(torch.tensor(0.1))
         elif encoder_scaling == "physics":
-            # 3 learnable scalars (char cone restored)
+            # 2 always-on learnable scalars + optional char-cone scalar
             self.phys_temperature = nn.Parameter(torch.tensor(0.0))
             self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
-            self.phys_char_width = nn.Parameter(torch.tensor(0.0))
+            if use_char_cone:
+                self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         else:
             raise ValueError(f"Unknown encoder_scaling: {encoder_scaling!r}")
         self.combine = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
@@ -204,16 +208,16 @@ class _SpaceTimeLiftingLayer(nn.Module):
         t_val: torch.Tensor,
         dx_grid: float,
     ) -> torch.Tensor:
-        """Composite physics gate (v2, char cone restored).
+        """Composite physics gate (v2).
 
-        Components (3 learnable scalars):
+        Components:
           1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature)
           2. Oleinik entropy:  uses model's own u_i / u_j estimates
-          3. Characteristic cone:  Gaussian centred on char foot from j
+          3. (optional) Characteristic cone:  Gaussian centred on char foot
+             from j, enabled only when ``self.use_char_cone`` is True.
         """
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
-        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         # 1. Soft upwind
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
@@ -227,14 +231,19 @@ class _SpaceTimeLiftingLayer(nn.Module):
         entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
         g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
-        # 3. Characteristic cone — does j's characteristic reach i by time t?
-        #    char from x_j at t=0 with speed a_j arrives at x_j + a_j*t
-        #    relative to x_i: (x_j - x_i) + a_j*t = rel_x + a_j*t
-        char_miss = (rel_x + a_j * t_val).abs()
-        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
-        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+        gate = g_upwind * g_entropy
 
-        return g_upwind * g_entropy * g_char
+        # 3. Characteristic cone (optional) — does j's characteristic reach i
+        #    by time t?  char from x_j at t=0 with speed a_j arrives at
+        #    x_j + a_j*t, relative to x_i: (x_j - x_i) + a_j*t = rel_x + a_j*t
+        if self.use_char_cone:
+            char_w = F.softplus(self.phys_char_width).clamp(min=1e-6)
+            char_miss = (rel_x + a_j * t_val).abs()
+            sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
+            g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+            gate = gate * g_char
+
+        return gate
 
     def _get_max_k(self, x: torch.Tensor) -> int:
         dx = (x[0, 1] - x[0, 0]).abs().item()
@@ -322,18 +331,22 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 sign_a = torch.sign(a_ik)
                 upwind = (a_ik * rel_x < 0).float()
 
-                # mask inter-node features for non-adjacent
+                # mask inter-node features for non-adjacent (incl. rel_x/|dx|)
                 if not is_adjacent:
                     du     = torch.zeros_like(du)
                     u_avg  = torch.zeros_like(u_avg)
                     a_ik   = torch.zeros_like(a_ik)
                     sign_a = torch.zeros_like(sign_a)
                     upwind = torch.zeros_like(upwind)
+                    rel_x_masked = torch.zeros_like(rel_x)
+                    abs_dx = torch.zeros_like(abs_dx)
+                else:
+                    rel_x_masked = rel_x
 
                 edge_in = torch.cat([
                     u0_bc, u_k_bc,
                     du, du.abs(), u_avg,
-                    rel_x, abs_dx,
+                    rel_x_masked, abs_dx,
                     f_i, f_k,
                     a_i, a_k, a_ik,
                     sign_a, upwind,
@@ -525,10 +538,14 @@ class _PINNSpaceTimeMPLayer(nn.Module):
             rel_x = x_j_val - x_i
             du, u_avg, abs_dx, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind = \
                 _compute_spatial_edge_feats(u_hat_i, u_hat_j, rel_x, is_adjacent)
+            # Mask rel_x / |dx| for non-adjacent edges in the MLP input
+            # (keep real rel_x for the radius-cut check below)
+            rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
+            abs_dx_in = abs_dx if is_adjacent else torch.zeros_like(abs_dx)
 
             msg_in = torch.cat([
                 h, h_j,
-                rel_x, abs_dx,
+                rel_x_in, abs_dx_in,
                 u_hat_i.expand_as(rel_x), u_hat_j,
                 du, u_avg,
                 f_i, f_j, a_i, a_j, a_ij,
@@ -682,13 +699,16 @@ class _ClassicSpaceTimeMPLayer(nn.Module):
             rel_x = rel_x.expand_as(x_j_val)
             du0 = du0.expand_as(rel_x)
             abs_du0 = abs_du0.expand_as(rel_x)
+            # Mask rel_x for non-adjacent edges in the MLP input
+            # (keep real rel_x for the radius-cut check below)
+            rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
 
             if self.unified_mp:
                 is_sp = h.new_ones(B, nt, nx, 1)
-                msg_in = torch.cat([h, h_j, x_i_exp, x_j_val, rel_x, du0, abs_du0, is_sp], dim=-1)
+                msg_in = torch.cat([h, h_j, x_i_exp, x_j_val, rel_x_in, du0, abs_du0, is_sp], dim=-1)
                 msg = self.uni_msg(msg_in)
             else:
-                msg_in = torch.cat([h, h_j, x_i_exp, x_j_val, rel_x, du0, abs_du0], dim=-1)
+                msg_in = torch.cat([h, h_j, x_i_exp, x_j_val, rel_x_in, du0, abs_du0], dim=-1)
                 msg = self.sp_msg(msg_in)
 
             contrib = msg
@@ -877,6 +897,10 @@ class _WENOSpaceTimeMPLayer(nn.Module):
             rel_x = x_j_val - x_i
             du, u_avg, abs_dx, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind = \
                 _compute_spatial_edge_feats(u_hat_i, u_hat_j, rel_x, is_adjacent)
+            # Mask rel_x / |dx| for non-adjacent edges in the MLP input
+            # (keep real rel_x for the radius-cut check below)
+            rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
+            abs_dx_in = abs_dx if is_adjacent else torch.zeros_like(abs_dx)
 
             if self.unified_mp:
                 cfl_sp = a_ij.abs() * (t[1] - t[0]).abs().item() / dx_val
@@ -885,14 +909,14 @@ class _WENOSpaceTimeMPLayer(nn.Module):
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     f_i, f_j, a_i, a_j, a_ij,
                     sign_a, upwind,
-                    rel_x, abs_dx, cfl_sp,
+                    rel_x_in, abs_dx_in, cfl_sp,
                     h.new_ones(B, nt, nx, 1),
                 ], dim=-1)
                 msg = self.uni_msg(msg_in)
             else:
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x, abs_dx,
+                    rel_x_in, abs_dx_in,
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     du, u_avg,
                     f_i, f_j, a_i, a_j, a_ij,
@@ -1031,6 +1055,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         radius_t: float | None = None,
         causal_temporal: bool = True,
         unified_mp: bool = False,
+        use_char_cone: bool = False,
     ) -> None:
         super().__init__()
         self.k_x = k_x
@@ -1039,14 +1064,17 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.radius_t = radius_t
         self.causal = causal_temporal
         self.unified_mp = unified_mp
+        self.use_char_cone = use_char_cone
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
 
         self.state_probe = nn.Linear(d_latent, 1)
 
-        # 3 spatial + 1 temporal learnable scalars (char cone restored)
+        # 2 spatial + 1 temporal learnable scalars; char-cone scalar added only
+        # when use_char_cone is True.
         self.phys_temperature = nn.Parameter(torch.tensor(0.0))
         self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
-        self.phys_char_width = nn.Parameter(torch.tensor(0.0))
+        if use_char_cone:
+            self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
         if unified_mp:
@@ -1070,10 +1098,9 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         t_val: torch.Tensor,
         dx_grid: float,
     ) -> torch.Tensor:
-        """Physics gate for spatial messages (v2): upwind + entropy + char cone."""
+        """Physics gate for spatial messages (v2): upwind + entropy (+ optional char cone)."""
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
-        char_w      = F.softplus(self.phys_char_width).clamp(min=1e-6)
 
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
 
@@ -1086,12 +1113,17 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
         g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
-        # Characteristic cone — does j's characteristic reach i by time t?
-        char_miss = (rel_x + a_j * t_val).abs()
-        sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
-        g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+        gate = g_upwind * g_entropy
 
-        return g_upwind * g_entropy * g_char
+        # Characteristic cone (optional) — does j's characteristic reach i by time t?
+        if self.use_char_cone:
+            char_w = F.softplus(self.phys_char_width).clamp(min=1e-6)
+            char_miss = (rel_x + a_j * t_val).abs()
+            sigma = char_w * (dx_grid + a_j.abs() * t_val.abs().clamp(min=1e-6))
+            g_char = torch.exp(-0.5 * (char_miss / sigma.clamp(min=1e-6)) ** 2)
+            gate = gate * g_char
+
+        return gate
 
     def _temporal_physics_gate(
         self, a_i: torch.Tensor, rel_t: torch.Tensor, dx_grid: float,
@@ -1145,6 +1177,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             rel_x = x_j_val - x_i
             du, u_avg, abs_dx, f_i, f_j, a_i_val, a_j_val, a_ij, sign_a, upwind = \
                 _compute_spatial_edge_feats(u_hat_i, u_hat_j, rel_x, is_adjacent)
+            # Mask rel_x / |dx| for non-adjacent edges in the MLP input
+            # (keep real rel_x for the physics gate and radius-cut below)
+            rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
+            abs_dx_in = abs_dx if is_adjacent else torch.zeros_like(abs_dx)
 
             if self.unified_mp:
                 cfl_sp = a_ij.abs() * (t[1] - t[0]).abs().item() / dx_val
@@ -1153,14 +1189,14 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     f_i, f_j, a_i_val, a_j_val, a_ij,
                     sign_a, upwind,
-                    rel_x, abs_dx, cfl_sp,
+                    rel_x_in, abs_dx_in, cfl_sp,
                     h.new_ones(B, nt, nx, 1),
                 ], dim=-1)
                 msg = self.uni_msg(msg_in)
             else:
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x, abs_dx,
+                    rel_x_in, abs_dx_in,
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     du, u_avg,
                     f_i, f_j, a_i_val, a_j_val, a_ij,
@@ -1284,6 +1320,7 @@ class HypNO_ST2(nn.Module):
         encoder_scaling: str = "gate_net",
         encoder_type: str = "gnn",
         skip: bool = True,
+        use_char_cone: bool = False,
     ) -> None:
         super().__init__()
         self.stencil_k_x = stencil_k_x
@@ -1296,9 +1333,11 @@ class HypNO_ST2(nn.Module):
         self.has_external_detector = False
 
         self.encoder_type = encoder_type
+        self.use_char_cone = use_char_cone
         self.lifting = _SpaceTimeLiftingLayer(
             d_latent, d_hidden, stencil_k_x, activation, radius_x=radius_x,
             encoder_scaling=encoder_scaling, encoder_type=encoder_type,
+            use_char_cone=use_char_cone,
         )
 
         if shock_mode == "pinn":
@@ -1322,6 +1361,7 @@ class HypNO_ST2(nn.Module):
                     d_latent, d_hidden, stencil_k_x, stencil_k_t, activation,
                     radius_x=radius_x, radius_t=radius_t,
                     causal_temporal=causal_temporal, unified_mp=unified_mp,
+                    use_char_cone=use_char_cone,
                 )
                 for _ in range(n_layers)
             ])
