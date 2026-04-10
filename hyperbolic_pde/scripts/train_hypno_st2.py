@@ -244,7 +244,7 @@ def main() -> None:
         default=str(resolve_config_path(ROOT / "configs")),
     )
     args = parser.parse_args()
-
+    print('--- STARTING HYPNO_ST2 TRAINING ---')
     cfg = load_config(Path(args.config))
     cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg["data"]
