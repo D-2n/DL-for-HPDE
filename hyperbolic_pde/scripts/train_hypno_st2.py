@@ -160,29 +160,37 @@ def hypno_pinn_loss(
     lambda_probe: float = 0.0,
     shock_weighted: bool = False,
     shock_alpha: float = 5.0,
+    loss_type: str = "mae",
 ) -> tuple[torch.Tensor, dict[str, float]]:
+    lt = loss_type.lower()
+    if lt not in ("mae", "mse"):
+        raise ValueError(f"loss_type must be 'mae' or 'mse', got {loss_type!r}")
+
+    def _dist(x: torch.Tensor) -> torch.Tensor:
+        return x.abs() if lt == "mae" else x.pow(2)
+
     if shock_weighted:
         du_dx = torch.abs(target[:, :, 1:] - target[:, :, :-1])
         du_dx = torch.nn.functional.pad(du_dx, (0, 1), mode='replicate')
         w = 1.0 + (shock_alpha - 1.0) * du_dx / (du_dx.amax(dim=(1, 2), keepdim=True) + 1e-8)
-        loss_state = (w * (pred - target).abs()).mean()
+        loss_state = (w * _dist(pred - target)).mean()
     else:
-        loss_state = (pred - target).abs().mean()
+        loss_state = _dist(pred - target).mean()
 
     nx = pred.shape[2]
     mass_pred = pred.sum(dim=2)
     mass_target = target.sum(dim=2)
-    loss_mass = (mass_pred - mass_target).abs().mean() / nx
+    loss_mass = _dist(mass_pred - mass_target).mean() / nx
 
     tv_pred = total_variation(pred)
     tv_target = total_variation(target)
     loss_tv = torch.clamp(tv_pred - tv_target, min=0.0).mean()
 
-    loss_pinn = (u_coarse - target).abs().mean()
+    loss_pinn = _dist(u_coarse - target).mean()
 
     # deep supervision on state_probe u_hats (one per MP layer)
     if u_hats is not None and len(u_hats) > 0 and lambda_probe > 0.0:
-        loss_probe = sum((uh - target).abs().mean() for uh in u_hats) / len(u_hats)
+        loss_probe = sum(_dist(uh - target).mean() for uh in u_hats) / len(u_hats)
     else:
         loss_probe = torch.zeros((), device=pred.device)
 
@@ -356,6 +364,10 @@ def main() -> None:
     lambda_probe = float(model_cfg.get("lambda_probe", 0.0))
     shock_weighted = bool(model_cfg.get("shock_weighted", False))
     shock_alpha = float(model_cfg.get("shock_alpha", 5.0))
+    loss_type = str(model_cfg.get("loss_type", "mae")).lower()
+    if loss_type not in ("mae", "mse"):
+        raise ValueError(f"hypno_st2.loss_type must be 'mae' or 'mse', got {loss_type!r}")
+    log.info(f"Training objective: {loss_type.upper()}")
 
     step = 0
     model.train()
@@ -364,10 +376,13 @@ def main() -> None:
     val_every = int(model_cfg.get("val_every", 5))
 
     train_losses: list[float] = []
+    train_mses: list[float] = []
     val_losses: list[float] = []
+    val_mses: list[float] = []
 
     for epoch in range(1, epochs + 1):
         epoch_loss_sum = 0.0
+        epoch_mse_sum = 0.0
         epoch_count = 0
         for u0, u_full, edge_feats in loader:
             step += 1
@@ -387,6 +402,7 @@ def main() -> None:
                 lambda_probe=lambda_probe,
                 shock_weighted=shock_weighted,
                 shock_alpha=shock_alpha,
+                loss_type=loss_type,
             )
             loss.backward()
             grad_clip = model_cfg.get("grad_clip")
@@ -396,13 +412,18 @@ def main() -> None:
             if scheduler is not None:
                 scheduler.step()
 
+            with torch.no_grad():
+                batch_mse = (pred - u_full).pow(2).mean().item()
             epoch_loss_sum += loss.item() * u0.size(0)
+            epoch_mse_sum += batch_mse * u0.size(0)
             epoch_count += u0.size(0)
 
         train_losses.append(epoch_loss_sum / max(1, epoch_count))
+        train_mses.append(epoch_mse_sum / max(1, epoch_count))
         lr_now = opt.param_groups[0]["lr"]
         log.info(
-            f"epoch {epoch:3d}/{epochs} | train_loss={train_losses[-1]:.3e} | lr={lr_now:.2e} | {gpu_status()}"
+            f"epoch {epoch:3d}/{epochs} | optim_loss={train_losses[-1]:.3e} | "
+            f"mse={train_mses[-1]:.3e} | lr={lr_now:.2e} | {gpu_status()}"
         )
         for h in log.handlers:
             h.flush()
@@ -413,6 +434,7 @@ def main() -> None:
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             val_loss = 0.0
+            val_mse = 0.0
             val_count = 0
             with torch.inference_mode():
                 for v_u0, v_u, v_ef in val_loader:
@@ -430,12 +452,20 @@ def main() -> None:
                         lambda_probe=lambda_probe,
                         shock_weighted=shock_weighted,
                         shock_alpha=shock_alpha,
+                        loss_type=loss_type,
                     )
+                    v_mse_batch = (v_pred - v_u).pow(2).mean().item()
                     val_loss += v_l.item() * v_u0.size(0)
+                    val_mse += v_mse_batch * v_u0.size(0)
                     val_count += v_u0.size(0)
             val_avg = val_loss / max(1, val_count)
+            val_mse_avg = val_mse / max(1, val_count)
             val_losses.append(val_avg)
-            log.info(f"epoch {epoch:3d}/{epochs} | val_loss={val_avg:.3e} | {gpu_status()}")
+            val_mses.append(val_mse_avg)
+            log.info(
+                f"epoch {epoch:3d}/{epochs} | val_optim_loss={val_avg:.3e} | "
+                f"val_mse={val_mse_avg:.3e} | {gpu_status()}"
+            )
             for h in log.handlers:
                 h.flush()
             model.train()
@@ -454,18 +484,32 @@ def main() -> None:
     log.info(f"Saved final model to {final_path}")
     log.info(f"Training time: {elapsed:.2f}s")
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    ax_loss, ax_mse = axes
     ep_range = list(range(1, len(train_losses) + 1))
-    ax.plot(ep_range, train_losses, label="Train loss")
+    val_epochs = list(range(val_every, epochs + 1, val_every))[:len(val_losses)]
+
+    ax_loss.plot(ep_range, train_losses, label="Train optim loss")
     if val_loader is not None and val_losses:
-        val_epochs = list(range(val_every, epochs + 1, val_every))[:len(val_losses)]
-        ax.plot(val_epochs, val_losses, label="Val loss")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title("HypNO-ST2 training curves")
-    ax.set_yscale("log")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+        ax_loss.plot(val_epochs, val_losses, label="Val optim loss")
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel(f"Optim loss ({loss_type.upper()}-based)")
+    ax_loss.set_title("Optimization loss")
+    ax_loss.set_yscale("log")
+    ax_loss.legend()
+    ax_loss.grid(True, alpha=0.3)
+
+    ax_mse.plot(ep_range, train_mses, label="Train MSE")
+    if val_loader is not None and val_mses:
+        ax_mse.plot(val_epochs, val_mses, label="Val MSE")
+    ax_mse.set_xlabel("Epoch")
+    ax_mse.set_ylabel("MSE")
+    ax_mse.set_title("State MSE (monitoring)")
+    ax_mse.set_yscale("log")
+    ax_mse.legend()
+    ax_mse.grid(True, alpha=0.3)
+
+    fig.suptitle("HypNO-ST2 training curves")
     curve_path = run_dir / "loss_curves.png"
     fig.savefig(curve_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
