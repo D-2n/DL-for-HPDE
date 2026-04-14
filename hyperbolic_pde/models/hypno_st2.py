@@ -70,14 +70,14 @@ def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: s
     return nn.Sequential(*mods)
 
 
-# ---- index constants for the 14 static edge features ---------------------- #
+# ---- index constants for the 13 static edge features ---------------------- #
 # 0: u_i,  1: u_k,  2: du,  3: |du|,  4: u_avg,
-# 5: rel_x,  6: |dx|,
-# 7: f_i,  8: f_k,  9: a_i,  10: a_k,  11: a_ik,  12: sign(a_ik),  13: upwind
+# 5: rel_x,
+# 6: f_i,  7: f_k,  8: a_i,  9: a_k,  10: a_ik,  11: sign(a_ik),  12: upwind
 # Inter-node features are zeroed for non-adjacent edges (|offset| > 1).
-# rel_x / |dx| are kept for adjacent edges so the upwind sign computation works.
-_INTERNODE_INDICES = [2, 3, 4, 5, 6, 11, 12, 13]
-N_EDGE_FEATS = 14
+# rel_x is kept for adjacent edges so the upwind sign computation works.
+_INTERNODE_INDICES = [2, 3, 4, 5, 10, 11, 12]
+N_EDGE_FEATS = 13
 
 
 def precompute_lwr_edge_features_v2(
@@ -101,7 +101,7 @@ def precompute_lwr_edge_features_v2(
 
     Returns
     -------
-    Tensor [N, nx, 2*k_eff+1, 14]
+    Tensor [N, nx, 2*k_eff+1, 13]
     """
     if radius_x is not None:
         dx = (x[1] - x[0]).abs().item()
@@ -123,7 +123,6 @@ def precompute_lwr_edge_features_v2(
         du    = u_k - u0
         u_avg = 0.5 * (u0 + u_k)
         rel_x = x_k - x_exp
-        abs_dx = rel_x.abs()
 
         f_i = u0 * (1.0 - u0)
         f_k = u_k * (1.0 - u_k)
@@ -143,11 +142,11 @@ def precompute_lwr_edge_features_v2(
         feat = torch.stack([
             u0, u_k,
             du, du.abs(), u_avg,
-            rel_x, abs_dx,
+            rel_x,
             f_i, f_k,
             a_i, a_k, a_ik,
             sign_a, upwind,
-        ], dim=-1)                                              # [N, nx, 14]
+        ], dim=-1)                                              # [N, nx, 13]
 
         # mask inter-node features for non-adjacent edges
         is_adjacent = abs(j) <= 1
@@ -159,7 +158,7 @@ def precompute_lwr_edge_features_v2(
 
         feats.append(feat)
 
-    return torch.stack(feats, dim=2)                            # [N, nx, 2k+1, 14]
+    return torch.stack(feats, dim=2)                            # [N, nx, 2k+1, 13]
 
 
 # --------------------------------------------------------------------------- #
@@ -168,7 +167,7 @@ def precompute_lwr_edge_features_v2(
 class _SpaceTimeLiftingLayer(nn.Module):
     """Joint space-time lifting (v2).
 
-    Edge MLP input is 15 = 14 static features + t.
+    Edge MLP input is 14 = 13 static features + t.
     """
 
     def __init__(self, d_latent: int, d_hidden: int, stencil_k: int, activation: str,
@@ -279,7 +278,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
             if self.encoder_scaling == "gate_net":
                 gate = torch.sigmoid(self.gate_net(ef))
             elif self.encoder_scaling == "upwind":
-                upwind = ef[..., 13:14]
+                upwind = ef[..., 12:13]
                 alpha = torch.sigmoid(self.upwind_alpha)
                 gate = upwind + alpha * (1.0 - upwind)
             else:  # physics
@@ -287,9 +286,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 gate = self._physics_gate(
                     u_i=ef[..., 0:1], u_j=ef[..., 1:2],
                     rel_x=ef[..., 5:6],
-                    a_ij=ef[..., 11:12],
-                    a_j=ef[..., 10:11],
-                    t_val=ef[..., 14:15],
+                    a_ij=ef[..., 10:11],
+                    a_j=ef[..., 9:10],
+                    t_val=ef[..., 13:14],
                     dx_grid=dx_grid,
                 )
             contrib = gate * msg
@@ -317,7 +316,6 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 rel_x  = x_k_bc - x_bc
 
                 du     = u_k_bc - u0_bc
-                abs_dx = rel_x.abs()
                 u_avg  = 0.5 * (u0_bc + u_k_bc)
 
                 f_i = u0_bc * (1.0 - u0_bc)
@@ -339,14 +337,13 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     sign_a = torch.zeros_like(sign_a)
                     upwind = torch.zeros_like(upwind)
                     rel_x_masked = torch.zeros_like(rel_x)
-                    abs_dx = torch.zeros_like(abs_dx)
                 else:
                     rel_x_masked = rel_x
 
                 edge_in = torch.cat([
                     u0_bc, u_k_bc,
                     du, du.abs(), u_avg,
-                    rel_x_masked, abs_dx,
+                    rel_x_masked,
                     f_i, f_k,
                     a_i, a_k, a_ik,
                     sign_a, upwind,
@@ -416,7 +413,6 @@ def _compute_spatial_edge_feats(
 
     Inter-node features are zeroed when ``is_adjacent`` is False.
     """
-    abs_dx = rel_x.abs()
     du     = u_hat_j - u_hat_i
     u_avg  = 0.5 * (u_hat_i + u_hat_j)
 
@@ -438,7 +434,7 @@ def _compute_spatial_edge_feats(
         z = torch.zeros_like(du)
         du, u_avg, a_ij, sign_a, upwind = z, z, z, z, z
 
-    return du, u_avg, abs_dx, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind
+    return du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind
 
 
 # --------------------------------------------------------------------------- #
@@ -448,7 +444,7 @@ class _PINNSpaceTimeMPLayer(nn.Module):
     """Factored space-time MP with signed shock attenuation (v2).
 
     Spatial edge features (no slope, inter-node masked for non-adjacent):
-      (h_i, h_j, rel_x, |dx|, u_hat_i, u_hat_j, du, u_avg,
+      (h_i, h_j, rel_x, u_hat_i, u_hat_j, du, u_avg,
        f_i, f_j, a_i, a_j, a_ij, sign_a, upwind)
     Temporal edge features (unchanged):
       (h_i, h_j, u_hat_i, u_hat_j, a_i, a_j, rel_t, cfl, x/t)
@@ -477,9 +473,9 @@ class _PINNSpaceTimeMPLayer(nn.Module):
 
         self.state_probe = nn.Linear(d_latent, 1)
 
-        # spatial: (h_i, h_j, rel_x, |dx|, u_i, u_j, du, u_avg,
-        #           f_i, f_j, a_i, a_j, a_ij, sign_a, upwind) = 2d + 13
-        sp_in = 2 * d_latent + 13
+        # spatial: (h_i, h_j, rel_x, u_i, u_j, du, u_avg,
+        #           f_i, f_j, a_i, a_j, a_ij, sign_a, upwind) = 2d + 12
+        sp_in = 2 * d_latent + 12
         self.sp_msg = _make_mlp(sp_in, d_hidden, d_latent, 3, activation)
 
         # temporal unchanged: (h_i, h_j, u_i, u_j, a_i, a_j, rel_t, cfl, x/t) = 2d + 7
@@ -536,16 +532,15 @@ class _PINNSpaceTimeMPLayer(nn.Module):
             u_hat_j = u_hat_xp[:, :, k_x + j : k_x + j + nx].unsqueeze(-1)
 
             rel_x = x_j_val - x_i
-            du, u_avg, abs_dx, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind = \
+            du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind = \
                 _compute_spatial_edge_feats(u_hat_i, u_hat_j, rel_x, is_adjacent)
-            # Mask rel_x / |dx| for non-adjacent edges in the MLP input
+            # Mask rel_x for non-adjacent edges in the MLP input
             # (keep real rel_x for the radius-cut check below)
             rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
-            abs_dx_in = abs_dx if is_adjacent else torch.zeros_like(abs_dx)
 
             msg_in = torch.cat([
                 h, h_j,
-                rel_x_in, abs_dx_in,
+                rel_x_in,
                 u_hat_i.expand_as(rel_x), u_hat_j,
                 du, u_avg,
                 f_i, f_j, a_i, a_j, a_ij,
@@ -764,9 +759,9 @@ class _ClassicSpaceTimeMPLayer(nn.Module):
 class _WENOSpaceTimeMPLayer(nn.Module):
     """Factored space-time MP with WENO smoothness weighting (v2).
 
-    Spatial edge features: (h_i, h_j, rel_x, |dx|, u_hat_i, u_hat_j, du, u_avg,
+    Spatial edge features: (h_i, h_j, rel_x, u_hat_i, u_hat_j, du, u_avg,
                             f_i, f_j, a_i, a_j, a_ij, sign_a, upwind)
-    = 2*d_latent + 13  (slope removed, -1 from v1)
+    = 2*d_latent + 12  (slope and |dx| removed)
 
     Inter-node features masked for non-adjacent edges.
     """
@@ -800,13 +795,13 @@ class _WENOSpaceTimeMPLayer(nn.Module):
 
         if unified_mp:
             # (h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij,
-            #  sign_a, upwind, rel_pos, |rel_pos|, cfl, is_spatial)
-            uni_in = 2 * d_latent + 13
+            #  sign_a, upwind, rel_pos, cfl, is_spatial)
+            uni_in = 2 * d_latent + 12
             self.uni_msg = _make_mlp(uni_in, d_hidden, d_latent, 3, activation)
         else:
-            # spatial: (h_i, h_j, rel_x, |dx|, u_i, u_j, du, u_avg,
-            #           f_i, f_j, a_i, a_j, a_ij, sign_a, upwind) = 2d + 13
-            sp_in = 2 * d_latent + 13
+            # spatial: (h_i, h_j, rel_x, u_i, u_j, du, u_avg,
+            #           f_i, f_j, a_i, a_j, a_ij, sign_a, upwind) = 2d + 12
+            sp_in = 2 * d_latent + 12
             self.sp_msg = _make_mlp(sp_in, d_hidden, d_latent, 3, activation)
 
             tp_in = 2 * d_latent + 7
@@ -895,12 +890,11 @@ class _WENOSpaceTimeMPLayer(nn.Module):
             u_hat_j = u_hat_xp[:, :, k_x + j : k_x + j + nx].unsqueeze(-1)
 
             rel_x = x_j_val - x_i
-            du, u_avg, abs_dx, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind = \
+            du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind = \
                 _compute_spatial_edge_feats(u_hat_i, u_hat_j, rel_x, is_adjacent)
-            # Mask rel_x / |dx| for non-adjacent edges in the MLP input
+            # Mask rel_x for non-adjacent edges in the MLP input
             # (keep real rel_x for the radius-cut check below)
             rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
-            abs_dx_in = abs_dx if is_adjacent else torch.zeros_like(abs_dx)
 
             if self.unified_mp:
                 cfl_sp = a_ij.abs() * (t[1] - t[0]).abs().item() / dx_val
@@ -909,14 +903,14 @@ class _WENOSpaceTimeMPLayer(nn.Module):
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     f_i, f_j, a_i, a_j, a_ij,
                     sign_a, upwind,
-                    rel_x_in, abs_dx_in, cfl_sp,
+                    rel_x_in, cfl_sp,
                     h.new_ones(B, nt, nx, 1),
                 ], dim=-1)
                 msg = self.uni_msg(msg_in)
             else:
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x_in, abs_dx_in,
+                    rel_x_in,
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     du, u_avg,
                     f_i, f_j, a_i, a_j, a_ij,
@@ -996,7 +990,7 @@ class _WENOSpaceTimeMPLayer(nn.Module):
                     a_avg_t,
                     torch.sign(a_avg_t),
                     h.new_zeros(B, nt, nx, 1),
-                    rel_t, rel_t.abs(), cfl,
+                    rel_t, cfl,
                     h.new_zeros(B, nt, nx, 1),
                 ], dim=-1)
                 msg = self.uni_msg(msg_in)
@@ -1078,11 +1072,11 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
         if unified_mp:
-            uni_in = 2 * d_latent + 13
+            uni_in = 2 * d_latent + 12
             self.uni_msg = _make_mlp(uni_in, d_hidden, d_latent, 3, activation)
         else:
-            # 2d + 13 (slope removed → -1 from v1's 2d+14)
-            sp_in = 2 * d_latent + 13
+            # 2d + 12 (slope and |dx| removed)
+            sp_in = 2 * d_latent + 12
             self.sp_msg = _make_mlp(sp_in, d_hidden, d_latent, 3, activation)
             tp_in = 2 * d_latent + 7
             self.tp_msg = _make_mlp(tp_in, d_hidden, d_latent, 3, activation)
@@ -1175,12 +1169,11 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             u_hat_j = u_hat_xp[:, :, k_x + j : k_x + j + nx].unsqueeze(-1)
 
             rel_x = x_j_val - x_i
-            du, u_avg, abs_dx, f_i, f_j, a_i_val, a_j_val, a_ij, sign_a, upwind = \
+            du, u_avg, f_i, f_j, a_i_val, a_j_val, a_ij, sign_a, upwind = \
                 _compute_spatial_edge_feats(u_hat_i, u_hat_j, rel_x, is_adjacent)
-            # Mask rel_x / |dx| for non-adjacent edges in the MLP input
+            # Mask rel_x for non-adjacent edges in the MLP input
             # (keep real rel_x for the physics gate and radius-cut below)
             rel_x_in = rel_x if is_adjacent else torch.zeros_like(rel_x)
-            abs_dx_in = abs_dx if is_adjacent else torch.zeros_like(abs_dx)
 
             if self.unified_mp:
                 cfl_sp = a_ij.abs() * (t[1] - t[0]).abs().item() / dx_val
@@ -1189,14 +1182,14 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     f_i, f_j, a_i_val, a_j_val, a_ij,
                     sign_a, upwind,
-                    rel_x_in, abs_dx_in, cfl_sp,
+                    rel_x_in, cfl_sp,
                     h.new_ones(B, nt, nx, 1),
                 ], dim=-1)
                 msg = self.uni_msg(msg_in)
             else:
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x_in, abs_dx_in,
+                    rel_x_in,
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     du, u_avg,
                     f_i, f_j, a_i_val, a_j_val, a_ij,
@@ -1259,7 +1252,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                     a_avg_t,
                     torch.sign(a_avg_t),
                     h.new_zeros(B, nt, nx, 1),
-                    rel_t, rel_t.abs(), cfl,
+                    rel_t, cfl,
                     h.new_zeros(B, nt, nx, 1),
                 ], dim=-1)
                 msg = self.uni_msg(msg_in)
