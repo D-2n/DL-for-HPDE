@@ -7,12 +7,12 @@ data:
   path_local: /data/hyperbolic_dataset.npz
   test_path_local: /data/hyperbolic_dataset.npz
   nx: 96
-  nt: 128
+  nt: 96
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
   cfl: 0.3
-  num_samples: 4000
+  num_samples: 1500
   test_num_samples: 10
   test_sine_pieces: 20
   ic_types: [piecewise_constant, piecewise_sine, riemann]
@@ -267,8 +267,8 @@ hypno_st:
   plot_dir: hyperbolic_pde/runs/plots/hypno_st
 
 hypno_st2:
-  stencil_k_x: 7
-  stencil_k_t: 2
+  stencil_k_x: 1
+  stencil_k_t: 5
   d_latent: 64
   d_hidden: 96
   n_layers: 6
@@ -276,6 +276,7 @@ hypno_st2:
   encoder_type: gnn
   encoder_scaling: physics
   shock_mode: physics
+  use_char_cone: false     # enable Gaussian char-cone component of physics gate
   shock_delta: 0.1
   shock_threshold: 0.3
   weno_eps: 1.0e-6
@@ -285,20 +286,22 @@ hypno_st2:
   skip: true
   detector_path: null
   causal_temporal: true
-  radius_x: 0.18
-  radius_t: 0.08
+  radius_x: null
+  radius_t: null
   optimizer: adamw
-  epochs: 100
+  epochs: 150
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 1.0e-5
   batch_size: 4
+  loss_type: mae             # 'mae' (L1) or 'mse' (L2) — applies to state/mass/pinn/probe terms
   lambda_state: 1.0
   lambda_conservation: 1.0
-  lambda_tv: 0.01
+  lambda_tv: 0.0
   lambda_pinn: 0.0
+  lambda_probe: 0.01          # deep supervision on per-layer state_probe u_hats
   shock_weighted: false
   shock_alpha: 3.0
   checkpoint_every: 50
@@ -306,6 +309,92 @@ hypno_st2:
   save_path: hyperbolic_pde/runs/hypno_st2.pt
   eval_plots: 10
   plot_dir: hyperbolic_pde/runs/plots/hypno_st2
+
+hypno_st3:
+  stencil_k_x: 4
+  stencil_k_t: 2
+  d_latent: 64
+  d_hidden: 64
+  d_hidden_nonadj: 32     # if null, defaults to d_hidden; can be set smaller (e.g. 48) since non-adj edges use 8-dim features
+  n_layers: 6
+  activation: gelu
+  encoder_type: gnn
+  encoder_scaling: physics
+  shock_mode: physics
+  use_char_cone: false      # enable Gaussian char-cone component of physics gate
+  shock_delta: 0.1
+  shock_threshold: 0.3
+  weno_eps: 1.0e-6
+  weno_p: 0.5
+  unified_mp: true
+  readout: relu
+  skip: false
+  detector_path: null
+  causal_temporal: true
+  radius_x: null
+  radius_t: null
+  optimizer: adamw
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 2
+  loss_type: mae             # 'mae' (L1) or 'mse' (L2) — applies to state/mass/pinn/probe terms
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_tv: 0.0
+  lambda_pinn: 0.0
+  lambda_probe: 0.01          # deep supervision on per-layer state_probe u_hats
+  shock_weighted: false
+  shock_alpha: 3.0
+  checkpoint_every: 50
+  val_every: 5
+  save_path: hyperbolic_pde/runs/hypno_st3.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypno_st3
+
+hypno_st4:
+  stencil_k_x: 6
+  d_latent: 64
+  d_hidden: 96
+  d_hidden_nonadj: 32       # smaller width for non-adj edge MLP (null = same as d_hidden)
+  n_layers: 6
+  activation: gelu
+  encoder_type: gnn
+  encoder_scaling: physics
+  shock_mode: physics       # "physics" | "classic" | "weno"
+  use_char_cone: false
+  weno_eps: 1.0e-6
+  weno_p: 0.5
+  readout: gelu
+  radius_x: null
+  # Pushforward training
+  train_mode: pushforward   # currently only pushforward is implemented
+  K_rollout: 8              # total window length (no-grad prefix + grad suffix)
+  K_grad: 2                 # grad'd tail length
+  window_start: random      # "random" | "zero"
+  # Optimizer toggle
+  optimizer: soap         # "adamw" | "soap"
+  soap_precondition_frequency: 10
+  soap_shampoo_beta: 0.95
+  # Training schedule
+  epochs: 150
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 64
+  loss_type: mae            # 'mae' | 'mse'
+  lambda_state: 1.0
+  lambda_probe: 0.01        # deep supervision on per-layer state_probe u_hats
+  checkpoint_every: 50
+  val_every: 5
+  save_path: hyperbolic_pde/runs/hypno_st4.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/hypno_st4
 
 shock_detector:
   ic_points: 96

@@ -3,9 +3,13 @@
 Changes from hypno_st.py
 ------------------------
 * Feature 7 (slope = du / |dx|) removed entirely.
-* Inter-node features (du, |du|, u_avg, a_ik, sign(a_ik), upwind) are masked
-  to zero for non-adjacent edges (|offset| > 1) because these quantities are
-  ill-defined when a shock may sit between the two nodes.
+* Inter-node features (du, |du|, u_avg, upwind) are zeroed for non-adjacent
+  edges (|offset| > 1) because these quantities are ill-defined when a shock
+  may sit between the two nodes.
+* Rankine-Hugoniot speed s and sign(s) are ADJACENT-ONLY features: they are
+  absent from non-adjacent edge messages entirely (implemented by zeroing the
+  corresponding slots of the shared feature vector). They are still used
+  internally by the physics gate on adjacent edges.
 * Physics gate point 3 (shock attenuation) removed.
 * Oleinik entropy gate uses the model's own state estimates (u_i / u_j from
   edge features in the encoder, u_hat from state_probe in MP layers) instead
@@ -73,10 +77,17 @@ def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: s
 # ---- index constants for the 13 static edge features ---------------------- #
 # 0: u_i,  1: u_k,  2: du,  3: |du|,  4: u_avg,
 # 5: rel_x,
-# 6: f_i,  7: f_k,  8: a_i,  9: a_k,  10: a_ik,  11: sign(a_ik),  12: upwind
-# Inter-node features are zeroed for non-adjacent edges (|offset| > 1).
-# rel_x is kept for adjacent edges so the upwind sign computation works.
+# 6: f_i,  7: f_k,  8: a_i,  9: a_k,  10: s (RH speed),  11: sign(s),  12: upwind
+# For non-adjacent edges (|offset| > 1), slots 10 and 11 (s and sign(s)) are
+# removed entirely from the message — they require a single well-defined
+# wave between i and i+k, which is meaningless when a shock may sit between
+# them.  The remaining inter-node slots (du, |du|, u_avg, rel_x, upwind) are
+# also zeroed for the same reason.
 _INTERNODE_INDICES = [2, 3, 4, 5, 10, 11, 12]
+# Adjacent-only features: s and sign(s).  Listed separately because the
+# design intent is stronger than a generic inter-node mask — these slots do
+# not exist in the non-adjacent message at all.
+_ADJACENT_ONLY_INDICES = [10, 11]
 N_EDGE_FEATS = 13
 
 
@@ -86,11 +97,12 @@ def precompute_lwr_edge_features_v2(
     stencil_k: int,
     radius_x: float | None = None,
 ) -> torch.Tensor:
-    """Precompute the 14 static LWR edge features (v2).
+    """Precompute the 13 static LWR edge features (v2).
 
-    Inter-node features (du, |du|, u_avg, a_ik, sign_a, upwind) are zeroed
-    for non-adjacent edges (|offset| > 1) since they are ill-defined when a
-    shock may lie between the two nodes.  Slope is removed entirely.
+    Non-adjacent edges (|offset| > 1): the Rankine-Hugoniot speed s and its
+    sign are removed from the feature vector, alongside the other inter-node
+    quantities (du, |du|, u_avg, upwind) — all are ill-defined when a shock
+    may lie between the two nodes.  Slope is removed entirely.
 
     Parameters
     ----------
@@ -206,11 +218,15 @@ class _SpaceTimeLiftingLayer(nn.Module):
         a_j: torch.Tensor,
         t_val: torch.Tensor,
         dx_grid: float,
+        is_adjacent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Composite physics gate (v2).
 
         Components:
-          1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature)
+          1. Soft upwind:  sigmoid(-a_ij * rel_x / temperature).
+             Adjacent-only: uses the Rankine-Hugoniot speed a_ij, which is
+             absent on non-adjacent edges.  Gate is forced to 1 there so it
+             does not attenuate non-adjacent messages.
           2. Oleinik entropy:  uses model's own u_i / u_j estimates
           3. (optional) Characteristic cone:  Gaussian centred on char foot
              from j, enabled only when ``self.use_char_cone`` is True.
@@ -218,8 +234,11 @@ class _SpaceTimeLiftingLayer(nn.Module):
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
 
-        # 1. Soft upwind
+        # 1. Soft upwind (adjacent-only; RH speed is not defined across a
+        #    potentially-shocked non-adjacent pair)
         g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+        if is_adjacent_mask is not None:
+            g_upwind = is_adjacent_mask * g_upwind + (1.0 - is_adjacent_mask)
 
         # 2. Oleinik entropy (from model's own state estimates)
         u_L = torch.where(rel_x > 0, u_i, u_j)
@@ -283,6 +302,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 gate = upwind + alpha * (1.0 - upwind)
             else:  # physics
                 dx_grid = (x[0, 1] - x[0, 0]).abs().item()
+                # adjacency from stencil position (rel_x is zeroed for
+                # non-adjacent edges, so it can't be used as an indicator)
+                k_half = n_neighbors // 2
+                j_offsets = torch.arange(
+                    -k_half, k_half + 1, device=ef.device, dtype=ef.dtype,
+                )
+                is_adj_1d = (j_offsets.abs() <= 1).to(ef.dtype)
+                is_adj = is_adj_1d.view(1, 1, 1, n_neighbors, 1)
                 gate = self._physics_gate(
                     u_i=ef[..., 0:1], u_j=ef[..., 1:2],
                     rel_x=ef[..., 5:6],
@@ -290,6 +317,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     a_j=ef[..., 9:10],
                     t_val=ef[..., 13:14],
                     dx_grid=dx_grid,
+                    is_adjacent_mask=is_adj,
                 )
             contrib = gate * msg
             if self.radius_x is not None:
@@ -358,6 +386,8 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     gate = upwind + alpha * (1.0 - upwind)
                 else:  # physics
                     dx_grid = (x[0, 1] - x[0, 0]).abs().item()
+                    adj_val = 1.0 if is_adjacent else 0.0
+                    is_adj = torch.full_like(rel_x, adj_val)
                     gate = self._physics_gate(
                         u_i=u0_bc, u_j=u_k_bc,
                         rel_x=rel_x,
@@ -365,6 +395,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
                         a_j=a_k,
                         t_val=t_bc,
                         dx_grid=dx_grid,
+                        is_adjacent_mask=is_adj,
                     )
                 contrib = gate * msg
 
@@ -411,15 +442,23 @@ def _compute_spatial_edge_feats(
 ) -> tuple[torch.Tensor, ...]:
     """Return (du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind).
 
-    Inter-node features are zeroed when ``is_adjacent`` is False.
+    For non-adjacent edges (``is_adjacent`` False), the Rankine-Hugoniot
+    speed ``a_ij`` and its sign are not computed at all — they are returned
+    as zeros so the shared MLP receives no information about these
+    quantities on non-adjacent edges.  The remaining inter-node features
+    (du, u_avg, upwind) are likewise zeroed.
     """
-    du     = u_hat_j - u_hat_i
-    u_avg  = 0.5 * (u_hat_i + u_hat_j)
-
     f_i = u_hat_i * (1.0 - u_hat_i)
     f_j = u_hat_j * (1.0 - u_hat_j)
     a_i = 1.0 - 2.0 * u_hat_i
     a_j = 1.0 - 2.0 * u_hat_j
+
+    if not is_adjacent:
+        z = torch.zeros_like(rel_x)
+        return z, z, f_i, f_j, a_i, a_j, z, z, z
+
+    du     = u_hat_j - u_hat_i
+    u_avg  = 0.5 * (u_hat_i + u_hat_j)
 
     du_safe = torch.where(du.abs() < 1e-6, torch.ones_like(du), du)
     a_ij = torch.where(
@@ -429,10 +468,6 @@ def _compute_spatial_edge_feats(
     )
     sign_a = torch.sign(a_ij)
     upwind = (a_ij * rel_x < 0).float()
-
-    if not is_adjacent:
-        z = torch.zeros_like(du)
-        du, u_avg, a_ij, sign_a, upwind = z, z, z, z, z
 
     return du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind
 
@@ -1091,12 +1126,22 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         a_j: torch.Tensor,
         t_val: torch.Tensor,
         dx_grid: float,
+        is_adjacent: bool = True,
     ) -> torch.Tensor:
-        """Physics gate for spatial messages (v2): upwind + entropy (+ optional char cone)."""
+        """Physics gate for spatial messages (v2): upwind + entropy (+ optional char cone).
+
+        The upwind component depends on the Rankine-Hugoniot speed a_ij, which
+        is only defined between adjacent nodes.  On non-adjacent edges it is
+        forced to 1 so the gate does not attenuate those messages based on a
+        meaningless quantity.
+        """
         temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
         gamma_ent   = torch.sigmoid(self.phys_gamma_entropy)
 
-        g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+        if is_adjacent:
+            g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+        else:
+            g_upwind = torch.ones_like(rel_x)
 
         # Oleinik entropy (from model's own state estimates u_i / u_j)
         u_L = torch.where(rel_x > 0, u_i, u_j)
@@ -1204,6 +1249,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 a_j=a_j_val,
                 t_val=t_i,
                 dx_grid=dx_val,
+                is_adjacent=is_adjacent,
             )
             contrib = msg * gate
             if self.radius_x is not None:
