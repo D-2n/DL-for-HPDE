@@ -85,10 +85,13 @@ def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: s
 
 
 # ---- index constants ------------------------------------------------------ #
-# Adjacent static feature vector (13 slots, unchanged from v2):
-# 0: u_i,  1: u_k,  2: du,  3: |du|,  4: u_avg,  5: rel_x,
-# 6: f_i,  7: f_k,  8: a_i,  9: a_k,  10: a_ij (RH speed),  11: sign(a_ij),  12: upwind
-N_EDGE_FEATS_ADJ = 13
+# Adjacent static feature vector (12 slots):
+# 0: u_i,  1: u_k,  2: du,  3: u_avg,  4: sign(rel_x),
+# 5: f_i,  6: f_k,  7: a_i,  8: a_k,  9: a_ij (RH speed),  10: sign(a_ij),  11: upwind
+# NOTE: |du| and the signed rel_x magnitude were removed (uninformative /
+# replaced with sign(rel_x)). a_ij now falls back to a_i (= lambda_i) when
+# |du| is below the safety threshold, instead of the u_avg-based estimate.
+N_EDGE_FEATS_ADJ = 12
 
 # Non-adjacent static feature vector (8 slots):
 # 0: u_i,  1: u_k,  2: f_i,  3: f_k,  4: a_i,  5: a_k,  6: x_i,  7: x_k
@@ -115,7 +118,7 @@ def precompute_lwr_edge_features_v3(
 
     Returns
     -------
-    feats_adj    : Tensor [N, nx, 3, 13]        — offsets j in {-1, 0, 1}
+    feats_adj    : Tensor [N, nx, 3, 12]        — offsets j in {-1, 0, 1}
     feats_nonadj : Tensor [N, nx, 2(k-1), 8]    — offsets j in {-k..-2} ∪ {2..k}
                    ``None`` when k <= 1 (no non-adjacent edges exist).
     """
@@ -146,11 +149,12 @@ def precompute_lwr_edge_features_v3(
             du     = u_k - u0
             u_avg  = 0.5 * (u0 + u_k)
             rel_x  = x_k - x_exp
+            sign_dx = torch.sign(rel_x)
 
             du_safe = torch.where(du.abs() < 1e-6, torch.ones_like(du), du)
             a_ik = torch.where(
                 du.abs() < 1e-6,
-                1.0 - 2.0 * u_avg,
+                a_i,
                 (f_k - f_i) / du_safe,
             )
             sign_a = torch.sign(a_ik)
@@ -158,12 +162,12 @@ def precompute_lwr_edge_features_v3(
 
             feat = torch.stack([
                 u0, u_k,
-                du, du.abs(), u_avg,
-                rel_x,
+                du, u_avg,
+                sign_dx,
                 f_i, f_k,
                 a_i, a_k, a_ik,
                 sign_a, upwind,
-            ], dim=-1)                                          # [N, nx, 13]
+            ], dim=-1)                                          # [N, nx, 12]
             adj_list.append(feat)
         else:
             feat = torch.stack([
@@ -203,7 +207,7 @@ def _compute_adj_spatial_edge_feats(
     du_safe = torch.where(du.abs() < 1e-6, torch.ones_like(du), du)
     a_ij = torch.where(
         du.abs() < 1e-6,
-        1.0 - 2.0 * u_avg,
+        a_i,
         (f_j - f_i) / du_safe,
     )
     sign_a = torch.sign(a_ij)
@@ -278,10 +282,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
       every edge, using ``rel_t`` when it's non-zero and the absolute
       ``t_i`` on pure-spatial edges (preserving the v3 semantic).
 
-    Edge feature vector (unified, `2*0 + 15 = 15` static dims + t
-    absorbed via ``t_i, t_j``):
-        u0_i, u0_j, f0_i, f0_j, a0_i, a0_j, du0, |du0|,
-        rel_x, rel_t, t_i, t_j, a0_ij, sign(a0_ij), is_adj_sp
+    Edge feature vector (unified, 14 static dims; t absorbed via
+    ``t_i, t_j``):
+        u0_i, u0_j, f0_i, f0_j, a0_i, a0_j, du0,
+        sign(rel_x), rel_t, t_i, t_j, a0_ij, sign(a0_ij), is_adj_sp
     """
 
     def __init__(
@@ -307,8 +311,8 @@ class _SpaceTimeLiftingLayer(nn.Module):
         if encoder_type == "mlp":
             return
 
-        # Static edge feature dim = 15 (see class docstring).
-        edge_in = 15
+        # Static edge feature dim = 14 (see class docstring).
+        edge_in = 14
         self.edge_mlp = _make_mlp(edge_in, d_hidden, d_latent, 2, activation)
         # Softmax-normalised attention score over the ball. Physics gate
         # multiplies after softmax (see ``forward``).
@@ -448,11 +452,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
             du0 = u0_j - u0_bc
             is_adj_sp = (dm == 0) and (abs(di) == 1)
             if is_adj_sp:
-                u_avg = 0.5 * (u0_bc + u0_j)
                 du_safe = torch.where(du0.abs() < 1e-6, torch.ones_like(du0), du0)
                 a0_ij = torch.where(
                     du0.abs() < 1e-6,
-                    1.0 - 2.0 * u_avg,
+                    a0_i.expand_as(du0),
                     (f0_j - f0_i) / du_safe,
                 )
                 sign_a0 = torch.sign(a0_ij)
@@ -460,16 +463,17 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 a0_ij = torch.zeros_like(du0)
                 sign_a0 = torch.zeros_like(du0)
             is_adj_flag = u0_bc.new_full(u0_bc.shape, 1.0 if is_adj_sp else 0.0)
+            sign_rel_x = torch.sign(rel_x)
             edge_in = torch.cat([
                 u0_bc, u0_j,
                 f0_i, f0_j,
                 a0_i, a0_j,
-                du0, du0.abs(),
-                rel_x, rel_t,
+                du0,
+                sign_rel_x, rel_t,
                 t_bc, t_j,
                 a0_ij, sign_a0,
                 is_adj_flag,
-            ], dim=-1)                                                          # [..., 15]
+            ], dim=-1)                                                          # [..., 14]
             if self.encoder_scaling == "classic":
                 gate = torch.ones_like(rel_x)
             else:  # physics
@@ -629,7 +633,7 @@ class _PINNSpaceTimeMPLayer(nn.Module):
                     _compute_adj_spatial_edge_feats(u_hat_i, u_hat_j, rel_x)
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x,
+                    torch.sign(rel_x),
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     du, u_avg,
                     f_i, f_j, a_i, a_j, a_ij,
@@ -712,12 +716,12 @@ class _ClassicSpaceTimeMPLayer(nn.Module):
     Causality (``causal_temporal``) drops edges with ``dm > 0``,
     including diagonals.
 
-    Edge feature vector (`2d + 15`):
+    Edge feature vector (`2d + 14`):
         h_i, h_j,
         u0_i, u0_j, f0_i, f0_j, a0_i, a0_j,
-        du0, |du0|,
+        du0,
         x_i, x_j, t_i, t_j,
-        rel_x, rel_t,
+        sign(rel_x), rel_t,
         is_adj_sp
     """
 
@@ -741,8 +745,8 @@ class _ClassicSpaceTimeMPLayer(nn.Module):
         self.causal = causal_temporal
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
 
-        # 2d (h_i, h_j) + 15 static edge features (see class docstring).
-        self.uni_msg = _make_mlp(2 * d_latent + 15, d_hidden, d_latent, 3, activation)
+        # 2d (h_i, h_j) + 14 static edge features (see class docstring).
+        self.uni_msg = _make_mlp(2 * d_latent + 14, d_hidden, d_latent, 3, activation)
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
         self.W = nn.Linear(d_latent, d_latent)
 
@@ -803,9 +807,9 @@ class _ClassicSpaceTimeMPLayer(nn.Module):
                 h, h_j,
                 u0_i, u0_j,
                 f0_i, f0_j, a0_i, a0_j,
-                du0, du0.abs(),
+                du0,
                 x_i, x_j, t_i, t_j,
-                rel_x, rel_t,
+                torch.sign(rel_x), rel_t,
                 is_adj_flag,
             ], dim=-1)
             msg = self.uni_msg(msg_in)
@@ -966,14 +970,14 @@ class _WENOSpaceTimeMPLayer(nn.Module):
                         u_hat_i.expand_as(rel_x), u_hat_j,
                         f_i, f_j, a_i, a_j, a_ij,
                         sign_a, upwind,
-                        rel_x, cfl_sp,
+                        torch.sign(rel_x), cfl_sp,
                         h.new_ones(B, nt, nx, 1),
                     ], dim=-1)
                     msg = self.uni_msg(msg_in)
                 else:
                     msg_in = torch.cat([
                         h, h_j,
-                        rel_x,
+                        torch.sign(rel_x),
                         u_hat_i.expand_as(rel_x), u_hat_j,
                         du, u_avg,
                         f_i, f_j, a_i, a_j, a_ij,
@@ -1276,7 +1280,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 u_hat_i.expand_as(rel_x), u_hat_j,
                 f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
                 du, u_avg, a_ij, sign_a, upwind,
-                rel_x, rel_t, cfl,
+                torch.sign(rel_x), rel_t, cfl,
                 is_adj_flag,
             ], dim=-1)                                                          # 2d + 15
             gate = self._ball_physics_gate(

@@ -216,6 +216,97 @@ def _muscl_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarra
     return u_new
 
 
+_WENO_EPS = 1e-6
+
+
+def _weno5_reconstruct_left(v: np.ndarray) -> np.ndarray:
+    """Fifth-order WENO reconstruction of the value at the RIGHT interface
+    of each cell from the LEFT-biased stencil.
+
+    Input  v : [nx + 4] cell-centred values (2 ghosts each side).
+    Output   : [nx + 1] reconstructed values at interfaces i+1/2
+               for i = -1 .. nx-1  (i.e. all nx+1 physical interfaces).
+
+    Uses Jiang-Shu WENO5 with classical smoothness indicators.
+    """
+    # We need 5-cell stencils centred so that interface i+1/2 uses cells
+    # {i-2, i-1, i, i+1, i+2}. With 2 ghosts, the first physical interface
+    # (-1/2) uses cells {-3..1} which needs 3 left ghosts. So caller must
+    # pad with 3 ghosts.
+    vm2 = v[0:-4]
+    vm1 = v[1:-3]
+    v0  = v[2:-2]
+    vp1 = v[3:-1]
+    vp2 = v[4:]
+
+    # Candidate reconstructions (ENO stencils)
+    p0 = (1.0/3.0)*vm2 - (7.0/6.0)*vm1 + (11.0/6.0)*v0
+    p1 = -(1.0/6.0)*vm1 + (5.0/6.0)*v0 + (1.0/3.0)*vp1
+    p2 = (1.0/3.0)*v0 + (5.0/6.0)*vp1 - (1.0/6.0)*vp2
+
+    # Smoothness indicators
+    b0 = (13.0/12.0)*(vm2 - 2.0*vm1 + v0)**2 + 0.25*(vm2 - 4.0*vm1 + 3.0*v0)**2
+    b1 = (13.0/12.0)*(vm1 - 2.0*v0 + vp1)**2 + 0.25*(vm1 - vp1)**2
+    b2 = (13.0/12.0)*(v0 - 2.0*vp1 + vp2)**2 + 0.25*(3.0*v0 - 4.0*vp1 + vp2)**2
+
+    # Linear weights for upwind (left-biased) reconstruction
+    d0, d1, d2 = 0.1, 0.6, 0.3
+    a0 = d0 / (_WENO_EPS + b0)**2
+    a1 = d1 / (_WENO_EPS + b1)**2
+    a2 = d2 / (_WENO_EPS + b2)**2
+    asum = a0 + a1 + a2
+    w0 = a0 / asum
+    w1 = a1 / asum
+    w2 = a2 / asum
+
+    return w0*p0 + w1*p1 + w2*p2
+
+
+def _weno5_rhs(u: np.ndarray, dx: float, boundary: str) -> np.ndarray:
+    """Spatial operator L(u) = -(F_{i+1/2} - F_{i-1/2})/dx using WENO5 with
+    global Lax-Friedrichs flux splitting.
+    """
+    nx = u.size
+    ng = 3
+    u_ext = _apply_ghost_bc(u, boundary, ng)          # [nx + 6]
+
+    # Global LF dissipation coefficient
+    alpha = float(np.max(np.abs(flux_prime(u_ext))))
+    alpha = max(alpha, 1e-8)
+
+    f_ext = flux(u_ext)
+    fp = 0.5 * (f_ext + alpha * u_ext)                # [nx+6] — +char direction
+    fm = 0.5 * (f_ext - alpha * u_ext)                # [nx+6] — -char direction
+
+    # Interface i+1/2 for i = -1 .. nx-1  → nx+1 interfaces.
+    # Physical cell i lives at u_ext[i+3] (3 ghosts).
+    # Left-biased stencil for interface i+1/2: cells {i-2..i+2} → u_ext[i+1..i+5].
+    #   Over all interfaces need u_ext[0..nx+4] (length nx+5).
+    # Right-biased stencil: cells {i-1..i+3} → u_ext[i+2..i+6].
+    #   Over all interfaces need u_ext[1..nx+5] (length nx+5).
+    fp_s = fp[0:-1]                   # [nx+5]  for left-biased on f+
+    fm_s = fm[1:][::-1]               # [nx+5]  reversed → reuse left-biased kernel
+
+    fhat_p = _weno5_reconstruct_left(fp_s)             # [nx+1]
+    fhat_m = _weno5_reconstruct_left(fm_s)[::-1]       # [nx+1]
+
+    fhat = fhat_p + fhat_m                             # numerical flux at interfaces
+
+    return -(fhat[1:] - fhat[:-1]) / dx
+
+
+def _weno5_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarray:
+    """Fifth-order WENO in space + SSP-RK3 in time."""
+    L = _weno5_rhs
+    u1 = u + dt * L(u, dx, boundary)
+    u2 = 0.75 * u + 0.25 * (u1 + dt * L(u1, dx, boundary))
+    u_new = (1.0/3.0) * u + (2.0/3.0) * (u2 + dt * L(u2, dx, boundary))
+    if boundary == "fixed":
+        u_new[0] = u[0]
+        u_new[-1] = u[-1]
+    return u_new
+
+
 def solve_conservation_fvm(
     u0: np.ndarray,
     x_min: float,
@@ -229,13 +320,14 @@ def solve_conservation_fvm(
     """
     Solve u_t + f(u)_x = 0 for f(u)=u(1-u).
 
-    method: "godunov" (first-order) or "muscl" (second-order MUSCL-Hancock + minmod).
+    method: "godunov" (1st-order), "muscl" (2nd-order MUSCL-Hancock+minmod),
+            or "weno5" (5th-order WENO + SSP-RK3, LF flux splitting).
     boundary: "periodic", "fixed", or "ghost".
     """
-    if method not in ("godunov", "muscl"):
-        raise ValueError(f"method must be 'godunov' or 'muscl', got '{method}'")
+    if method not in ("godunov", "muscl", "weno5"):
+        raise ValueError(f"method must be 'godunov', 'muscl', or 'weno5', got '{method}'")
 
-    step_fn = _godunov_step if method == "godunov" else _muscl_step
+    step_fn = {"godunov": _godunov_step, "muscl": _muscl_step, "weno5": _weno5_step}[method]
 
     nx = u0.size
     x = np.linspace(x_min, x_max, nx, dtype=np.float32)
