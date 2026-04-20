@@ -538,6 +538,7 @@ class _ShockDetectorPINN(nn.Module):
 # --------------------------------------------------------------------------- #
 # PINN space-time MP layer (v3)
 # --------------------------------------------------------------------------- #
+'''
 class _PINNSpaceTimeMPLayer(nn.Module):
     """Factored space-time MP (v3). Separate adj / non-adj spatial MLPs."""
 
@@ -704,7 +705,7 @@ class _PINNSpaceTimeMPLayer(nn.Module):
 
         return self.act(h_nonlocal + h_local)
 
-
+'''
 # --------------------------------------------------------------------------- #
 # Classic space-time MP layer (v3)
 # --------------------------------------------------------------------------- #

@@ -10,7 +10,7 @@ from .hypno_pinn import HypNO_PINN
 from .hypno_st import HypNO_ST
 from .hypno_st2 import HypNO_ST2
 from .hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3
-from .hypno_st4 import HypNO_ST4
+
 #from .gnn import GridGNN
 
 __all__ = [
