@@ -345,11 +345,14 @@ def solve_conservation_fvm(
         amax = max(1e-6, amax)
         dt = cfl * dx / amax
         dt = min(dt, t_max - t)
+        u_prev = u.copy()
+        t_prev = t
         u = step_fn(u, dx, dt, boundary)
-
         t += dt
+
         while k < nt_out and t >= t_out[k] - 1e-12:
-            u_hist[k] = u.astype(np.float32)
+            alpha = (t_out[k] - t_prev) / (t - t_prev) if t > t_prev else 1.0
+            u_hist[k] = (u_prev + alpha * (u - u_prev)).astype(np.float32)
             k += 1
 
     return x, t_out, u_hist
