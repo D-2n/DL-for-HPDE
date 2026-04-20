@@ -314,9 +314,6 @@ class _SpaceTimeLiftingLayer(nn.Module):
         # Static edge feature dim = 14 (see class docstring).
         edge_in = 14
         self.edge_mlp = _make_mlp(edge_in, d_hidden, d_latent, 2, activation)
-        # Softmax-normalised attention score over the ball. Physics gate
-        # multiplies after softmax (see ``forward``).
-        self.attn_score = nn.Linear(edge_in, 1)
 
         if encoder_scaling == "classic":
             pass
@@ -486,24 +483,24 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 )
             return edge_in, gate, rel_x, rel_t
 
-        # ---- pass 1: scores only ----
-        scores: list[torch.Tensor] = []
+        # ---- pass 1: gates only ----
+        gates: list[torch.Tensor] = []
+        edge_inputs: list[torch.Tensor] = []
         for di, dm in offsets:
             edge_in, gate, rel_x, rel_t = _build_edge(di, dm)
-            score = self.attn_score(edge_in) + torch.log(gate.clamp(min=1e-12))
             if self.radius_x is not None:
-                score = score.masked_fill(rel_x.abs() > self.radius_x, float("-inf"))
+                gate = gate.masked_fill(rel_x.abs() > self.radius_x, 0.0)
             if self.radius_t is not None:
-                score = score.masked_fill(rel_t.abs() > self.radius_t, float("-inf"))
-            scores.append(score)
-        alpha = F.softmax(torch.stack(scores, dim=-2), dim=-2)                  # [B, nt, nx, E, 1]
+                gate = gate.masked_fill(rel_t.abs() > self.radius_t, 0.0)
+            gates.append(gate)
+            edge_inputs.append(edge_in)
+        gate_sum = torch.stack(gates, dim=-2).sum(dim=-2).clamp(min=1e-12)      # [B, nt, nx, 1]
 
-        # ---- pass 2: accumulate alpha_k * msg_k without stacking msgs ----
+        # ---- pass 2: accumulate (gate_k / sum_gates) * msg_k ----
         agg = torch.zeros_like(h_node)
         for k, (di, dm) in enumerate(offsets):
-            edge_in, _, _, _ = _build_edge(di, dm)
-            msg = self.edge_mlp(edge_in)
-            agg = agg + alpha[..., k, :] * msg
+            msg = self.edge_mlp(edge_inputs[k])
+            agg = agg + (gates[k] / gate_sum) * msg
 
         return self.combine(torch.cat([h_node, agg], dim=-1))
 
@@ -1156,11 +1153,6 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
         # 2d (h_i, h_j) + 15 static edge features (see class docstring).
         self.uni_msg = _make_mlp(2 * d_latent + 15, d_hidden, d_latent, 3, activation)
-        # Attention score: scalar per edge, softmax-normalised over the
-        # ball so neighbour weights sum to 1.  Physics gate multiplies
-        # *after* softmax, so normalisation happens among the
-        # un-attenuated neighbours.
-        self.attn_score = nn.Linear(2 * d_latent + 15, 1)
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
         self.W = nn.Linear(d_latent, d_latent)
 
@@ -1292,24 +1284,24 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             )
             return msg_in, gate, rel_x, rel_t
 
-        # ---- pass 1: scores only (cheap) ----
-        scores: list[torch.Tensor] = []
+        # ---- pass 1: gates only ----
+        gates: list[torch.Tensor] = []
+        msg_inputs: list[torch.Tensor] = []
         for di, dm in offsets:
             msg_in, gate, rel_x, rel_t = _build_edge(di, dm)
-            score = self.attn_score(msg_in) + torch.log(gate.clamp(min=1e-12))
             if self.radius_x is not None:
-                score = score.masked_fill(rel_x.abs() > self.radius_x, float("-inf"))
+                gate = gate.masked_fill(rel_x.abs() > self.radius_x, 0.0)
             if self.radius_t is not None:
-                score = score.masked_fill(rel_t.abs() > self.radius_t, float("-inf"))
-            scores.append(score)
-        alpha = F.softmax(torch.stack(scores, dim=-2), dim=-2)                  # [B, nt, nx, E, 1]
+                gate = gate.masked_fill(rel_t.abs() > self.radius_t, 0.0)
+            gates.append(gate)
+            msg_inputs.append(msg_in)
+        gate_sum = torch.stack(gates, dim=-2).sum(dim=-2).clamp(min=1e-12)      # [B, nt, nx, 1]
 
-        # ---- pass 2: accumulate alpha_k * msg_k without stacking msgs ----
+        # ---- pass 2: accumulate (gate_k / sum_gates) * msg_k ----
         agg = h.new_zeros(B, nt, nx, d)
         for k, (di, dm) in enumerate(offsets):
-            msg_in, _, _, _ = _build_edge(di, dm)
-            msg = self.uni_msg(msg_in)
-            agg = agg + alpha[..., k, :] * msg
+            msg = self.uni_msg(msg_inputs[k])
+            agg = agg + (gates[k] / gate_sum) * msg
 
         upd_in = torch.cat([h, agg], dim=-1)
         h_nonlocal = self.update_net(upd_in)
