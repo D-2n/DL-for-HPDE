@@ -354,6 +354,7 @@ def main() -> None:
         model.load_state_dict(ckpt)
         log.info(f"Resumed weights from {resume_path}")
 
+    torch.set_float32_matmul_precision("high")
     use_compile = bool(model_cfg.get("compile", True)) and hasattr(torch, "compile")
     if use_compile:
         log.info("Compiling model with torch.compile ...")
