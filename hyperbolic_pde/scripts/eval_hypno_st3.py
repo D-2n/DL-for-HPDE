@@ -132,7 +132,11 @@ def main() -> None:
         weights_path = run_dir / "model_final.pt"
     else:
         weights_path = Path(model_cfg["save_path"])
-    model.load_state_dict(torch.load(weights_path, map_location=device))
+    state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+    # torch.compile prefixes keys with "_orig_mod." — strip if present
+    if any(k.startswith("_orig_mod.") for k in state_dict):
+        state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     model.eval()
     print(f"[HypNO-ST3] Loaded weights from {weights_path}")
 

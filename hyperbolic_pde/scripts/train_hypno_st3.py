@@ -352,6 +352,8 @@ def main() -> None:
     resume_path = model_cfg.get("resume_from", None)
     if resume_path and Path(resume_path).exists():
         ckpt = torch.load(resume_path, map_location=device, weights_only=True)
+        if any(k.startswith("_orig_mod.") for k in ckpt):
+            ckpt = {k.removeprefix("_orig_mod."): v for k, v in ckpt.items()}
         model.load_state_dict(ckpt)
         log.info(f"Resumed weights from {resume_path}")
 
