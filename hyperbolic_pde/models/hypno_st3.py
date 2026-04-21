@@ -518,7 +518,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
     Aggregation is gate-normalised: w_k = gate_k / sum(gate_j), summing to 1.
 
-    Adjacent edge features (2d + 12):
+    Adjacent edge features (2d + 10):
         h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign(a_ij), upwind, sign(rel_x)
     Non-adjacent edge features (2d + 11):
         h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi (= x_i / max(t_i, eps))
@@ -556,8 +556,8 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
-        # adj:    h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind, sign(rel_x) = 2d+12
-        self.adj_msg = _make_mlp(2 * d_latent + 12, d_hidden, d_latent, 3, activation)
+        # adj:    h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind, sign(rel_x) = 2d+10
+        self.adj_msg = _make_mlp(2 * d_latent + 10, d_hidden, d_latent, 3, activation)
         # nonadj: h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi = 2d+11
         self.nonadj_msg = _make_mlp(2 * d_latent + 11, dh_na, d_latent, 3, activation)
 
