@@ -355,6 +355,7 @@ def main() -> None:
         log.info(f"Resumed weights from {resume_path}")
 
     torch.set_float32_matmul_precision("high")
+    torch._dynamo.config.capture_scalar_outputs = True
     use_compile = bool(model_cfg.get("compile", True)) and hasattr(torch, "compile")
     if use_compile:
         log.info("Compiling model with torch.compile ...")
