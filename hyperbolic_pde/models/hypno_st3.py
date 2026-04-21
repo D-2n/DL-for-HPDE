@@ -302,7 +302,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.encoder_type = encoder_type
         self.use_char_cone = use_char_cone
         self.causal = causal_temporal
-        self.node_mlp = _make_mlp(3, d_hidden, d_latent, 2, activation)
+        self.node_mlp = _make_mlp(5, d_hidden, d_latent, 2, activation)
         if encoder_type == "mlp":
             return
 
@@ -397,7 +397,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
         x_bc  = x.unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
         t_bc  = t.view(1, nt, 1, 1).expand(B, nt, nx, 1)
 
-        node_in = torch.cat([u0_bc, x_bc, t_bc], dim=-1)
+        f0_i_node = u0_bc * (1.0 - u0_bc)
+        a0_i_node = 1.0 - 2.0 * u0_bc
+        node_in = torch.cat([u0_bc, x_bc, t_bc, f0_i_node, a0_i_node], dim=-1)
         h_node  = self.node_mlp(node_in)
 
         if self.encoder_type == "mlp":
@@ -424,8 +426,8 @@ class _SpaceTimeLiftingLayer(nn.Module):
             t.unsqueeze(0).unsqueeze(0), (k_t, k_t), mode="replicate",
         ).squeeze(0).squeeze(0)
 
-        f0_i = u0_bc * (1.0 - u0_bc)
-        a0_i = 1.0 - 2.0 * u0_bc
+        f0_i = f0_i_node
+        a0_i = a0_i_node
 
         offsets = _enumerate_ball_offsets(k_x, k_t, self.causal)
 
@@ -516,10 +518,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
     Aggregation is gate-normalised: w_k = gate_k / sum(gate_j), summing to 1.
 
-    Adjacent edge features (2d + 10):
+    Adjacent edge features (2d + 12):
         h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign(a_ij), upwind, sign(rel_x)
-    Non-adjacent edge features (2d + 6):
-        h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x)
+    Non-adjacent edge features (2d + 11):
+        h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi (= x_i / max(t_i, eps))
     """
 
     def __init__(
@@ -556,8 +558,8 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
         # adj:    h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind, sign(rel_x) = 2d+12
         self.adj_msg = _make_mlp(2 * d_latent + 12, d_hidden, d_latent, 3, activation)
-        # nonadj: h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x)   = 2d+10
-        self.nonadj_msg = _make_mlp(2 * d_latent + 10, dh_na, d_latent, 3, activation)
+        # nonadj: h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi = 2d+11
+        self.nonadj_msg = _make_mlp(2 * d_latent + 11, dh_na, d_latent, 3, activation)
 
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
         self.W = nn.Linear(d_latent, d_latent)
@@ -675,13 +677,15 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 ], dim=-1)                                                      # 2d + 12
             else:
                 a_ij = torch.zeros_like(rel_x)
+                xi = x_i / t_i.clamp(min=1e-6)
                 msg_in = torch.cat([
                     h, h_j,
                     u_hat_i.expand_as(rel_x), u_hat_j,
                     f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
                     rel_x, rel_t, cfl,
                     torch.sign(rel_x),
-                ], dim=-1)                                                      # 2d + 10
+                    xi,
+                ], dim=-1)                                                      # 2d + 11
 
             gate = self._ball_physics_gate(
                 di=di, dm=dm,
