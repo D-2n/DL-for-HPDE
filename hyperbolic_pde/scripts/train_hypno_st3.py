@@ -354,6 +354,12 @@ def main() -> None:
         model.load_state_dict(ckpt)
         log.info(f"Resumed weights from {resume_path}")
 
+    use_compile = bool(model_cfg.get("compile", True)) and hasattr(torch, "compile")
+    if use_compile:
+        log.info("Compiling model with torch.compile ...")
+        model = torch.compile(model)
+        log.info("torch.compile done")
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info(f"{n_params:,} trainable parameters")
 
@@ -379,6 +385,9 @@ def main() -> None:
     lambda_probe = float(model_cfg.get("lambda_probe", 0.0))
     shock_weighted = bool(model_cfg.get("shock_weighted", False))
     shock_alpha = float(model_cfg.get("shock_alpha", 5.0))
+    nt_full = t_grid.shape[0]
+    t_window = model_cfg.get("t_window", None)
+    t_win = int(t_window) if t_window is not None else nt_full
     loss_type = str(model_cfg.get("loss_type", "mae")).lower()
     if loss_type not in ("mae", "mse"):
         raise ValueError(f"hypno_st3.loss_type must be 'mae' or 'mse', got {loss_type!r}")
@@ -413,13 +422,20 @@ def main() -> None:
             ef_adj_d, ef_nonadj_d = _prep_ef(ef_adj, ef_nonadj)
 
             opt.zero_grad(set_to_none=True)
+            if t_win < nt_full:
+                t0 = torch.randint(0, nt_full - t_win + 1, ()).item()
+                t_slice = t_grid[t0 : t0 + t_win]
+                u_target = u_full[:, t0 : t0 + t_win, :]
+            else:
+                t_slice = t_grid
+                u_target = u_full
             pred, u_coarse, _, u_hats = model(
-                u0, x_grid, t_grid,
+                u0, x_grid, t_slice,
                 edge_feats_adj=ef_adj_d,
                 edge_feats_nonadj=ef_nonadj_d,
             )
             loss, _ = hypno_pinn_loss(
-                pred, u_full, u_coarse,
+                pred, u_target, u_coarse,
                 u_hats=u_hats,
                 lambda_state=lambda_state,
                 lambda_conservation=lambda_conservation,
@@ -439,7 +455,7 @@ def main() -> None:
                 scheduler.step()
 
             with torch.no_grad():
-                batch_mse = (pred - u_full).pow(2).mean().item()
+                batch_mse = (pred - u_target).pow(2).mean().item()
             epoch_loss_sum += loss.item() * u0.size(0)
             epoch_mse_sum += batch_mse * u0.size(0)
             epoch_count += u0.size(0)

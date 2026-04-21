@@ -313,6 +313,8 @@ hypno_st2:
 hypno_st3:
   stencil_k_x: 4
   stencil_k_t: 2
+  t_window: 32        # random temporal window length during training (null = full nt)
+  compile: true       # torch.compile the model for faster kernel fusion
   d_latent: 64
   d_hidden: 64
   d_hidden_nonadj: 32     # if null, defaults to d_hidden; can be set smaller (e.g. 48) since non-adj edges use 8-dim features
