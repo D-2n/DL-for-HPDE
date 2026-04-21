@@ -387,16 +387,27 @@ def _solve_one_sample(
     boundary: str,
     method: str = "godunov",
 ) -> Tuple[int, np.ndarray]:
-    _, _, u_hist = solve_conservation_fvm(
-        u0=u0,
-        x_min=x_min,
-        x_max=x_max,
-        t_max=t_max,
-        nt_out=nt_out,
-        cfl=cfl,
-        boundary=boundary,
-        method=method,
-    )
+    if method == "lax_hopf":
+        from hyperbolic_pde.data.lax_hopf import solve_lax_hopf
+        _, _, u_hist = solve_lax_hopf(
+            u0=u0,
+            x_min=x_min,
+            x_max=x_max,
+            t_max=t_max,
+            nt_out=nt_out,
+            boundary=boundary,
+        )
+    else:
+        _, _, u_hist = solve_conservation_fvm(
+            u0=u0,
+            x_min=x_min,
+            x_max=x_max,
+            t_max=t_max,
+            nt_out=nt_out,
+            cfl=cfl,
+            boundary=boundary,
+            method=method,
+        )
     return index, u_hist
 
 
@@ -455,18 +466,32 @@ def generate_dataset(
         u0_all[i] = u0
         ic_all[i] = encode_ic(u0, x, ic_points)
 
+    use_lax_hopf = method == "lax_hopf"
+    if use_lax_hopf:
+        from hyperbolic_pde.data.lax_hopf import solve_lax_hopf
+
     if not num_workers or num_workers <= 1:
         for i in range(num_samples):
-            _, _, u_hist = solve_conservation_fvm(
-                u0=u0_all[i],
-                x_min=x_min,
-                x_max=x_max,
-                t_max=t_max,
-                nt_out=nt,
-                cfl=cfl,
-                boundary=boundary,
-                method=method,
-            )
+            if use_lax_hopf:
+                _, _, u_hist = solve_lax_hopf(
+                    u0=u0_all[i],
+                    x_min=x_min,
+                    x_max=x_max,
+                    t_max=t_max,
+                    nt_out=nt,
+                    boundary=boundary,
+                )
+            else:
+                _, _, u_hist = solve_conservation_fvm(
+                    u0=u0_all[i],
+                    x_min=x_min,
+                    x_max=x_max,
+                    t_max=t_max,
+                    nt_out=nt,
+                    cfl=cfl,
+                    boundary=boundary,
+                    method=method,
+                )
             u[i] = u_hist
         return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
 
