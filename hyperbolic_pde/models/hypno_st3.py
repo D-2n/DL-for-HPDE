@@ -27,6 +27,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 import argparse
 import sys
@@ -480,7 +481,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 )
             return edge_in, gate, rel_x, rel_t
 
-        # ---- pass 1: gates only ----
+        # ---- collect features and gates ----
         gates: list[torch.Tensor] = []
         edge_inputs: list[torch.Tensor] = []
         for di, dm in offsets:
@@ -493,11 +494,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
             edge_inputs.append(edge_in)
         gate_sum = torch.stack(gates, dim=-2).sum(dim=-2).clamp(min=1e-12)      # [B, nt, nx, 1]
 
-        # ---- pass 2: accumulate (gate_k / sum_gates) * msg_k ----
-        agg = torch.zeros_like(h_node)
-        for k, (di, dm) in enumerate(offsets):
-            msg = self.edge_mlp(edge_inputs[k])
-            agg = agg + (gates[k] / gate_sum) * msg
+        # ---- single batched MLP call over all offsets ----
+        n_offsets = len(edge_inputs)
+        edge_in_stacked = torch.stack(edge_inputs, dim=3)                        # [B, nt, nx, n_offsets, 14]
+        msgs = self.edge_mlp(
+            edge_in_stacked.reshape(-1, edge_in_stacked.shape[-1])
+        ).reshape(B, nt, nx, n_offsets, -1)                                      # [B, nt, nx, n_offsets, d]
+        gates_t = torch.stack(gates, dim=3)                                      # [B, nt, nx, n_offsets, 1]
+        agg = (gates_t / gate_sum.unsqueeze(3) * msgs).sum(dim=3)               # [B, nt, nx, d]
 
         return self.combine(torch.cat([h_node, agg], dim=-1))
 
@@ -696,25 +700,45 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             )
             return msg_in, is_adj_sp, gate, rel_x, rel_t
 
-        # ---- pass 1: gates only ----
-        gates: list[torch.Tensor] = []
-        msg_inputs: list[tuple] = []
+        # ---- collect features and gates, split by adjacency class ----
+        adj_feats:    list[torch.Tensor] = []
+        nonadj_feats: list[torch.Tensor] = []
+        adj_gates:    list[torch.Tensor] = []
+        nonadj_gates: list[torch.Tensor] = []
         for di, dm in offsets:
             msg_in, is_adj_sp, gate, rel_x, rel_t = _build_edge(di, dm)
             if self.radius_x is not None:
                 gate = gate.masked_fill(rel_x.abs() > self.radius_x, 0.0)
             if self.radius_t is not None:
                 gate = gate.masked_fill(rel_t.abs() > self.radius_t, 0.0)
-            gates.append(gate)
-            msg_inputs.append((msg_in, is_adj_sp))
-        gate_sum = torch.stack(gates, dim=-2).sum(dim=-2).clamp(min=1e-12)      # [B, nt, nx, 1]
+            if is_adj_sp:
+                adj_feats.append(msg_in)
+                adj_gates.append(gate)
+            else:
+                nonadj_feats.append(msg_in)
+                nonadj_gates.append(gate)
 
-        # ---- pass 2: accumulate (gate_k / sum_gates) * msg_k ----
-        agg = h.new_zeros(B, nt, nx, d)
-        for k, (di, dm) in enumerate(offsets):
-            msg_in, is_adj_sp = msg_inputs[k]
-            msg = self.adj_msg(msg_in) if is_adj_sp else self.nonadj_msg(msg_in)
-            agg = agg + (gates[k] / gate_sum) * msg
+        # gate normalisation over all edges
+        all_gates = adj_gates + nonadj_gates                                      # [B, nt, nx, 1] each
+        gate_sum = torch.stack(all_gates, dim=-2).sum(dim=-2).clamp(min=1e-12)   # [B, nt, nx, 1]
+
+        # ---- batched MLP pass: 2 adj calls fused, 24 nonadj calls fused ----
+        n_adj    = len(adj_feats)
+        n_nonadj = len(nonadj_feats)
+
+        adj_in   = torch.stack(adj_feats,    dim=3)                               # [B, nt, nx, n_adj,    2d+10]
+        nonadj_in = torch.stack(nonadj_feats, dim=3)                              # [B, nt, nx, n_nonadj, 2d+11]
+
+        adj_out   = self.adj_msg(
+            adj_in.reshape(-1, adj_in.shape[-1])
+        ).reshape(B, nt, nx, n_adj, d)                                            # [B, nt, nx, n_adj,    d]
+        nonadj_out = self.nonadj_msg(
+            nonadj_in.reshape(-1, nonadj_in.shape[-1])
+        ).reshape(B, nt, nx, n_nonadj, d)                                         # [B, nt, nx, n_nonadj, d]
+
+        all_msgs  = torch.cat([adj_out, nonadj_out], dim=3)                       # [B, nt, nx, 26, d]
+        all_gates_t = torch.stack(all_gates, dim=3)                               # [B, nt, nx, 26, 1]
+        agg = (all_gates_t / gate_sum.unsqueeze(3) * all_msgs).sum(dim=3)         # [B, nt, nx, d]
 
         upd_in = torch.cat([h, agg], dim=-1)
         h_nonlocal = self.update_net(upd_in)
@@ -750,6 +774,7 @@ class HypNO_ST3(nn.Module):
         skip: bool = True,
         use_char_cone: bool = False,
         d_hidden_nonadj: int | None = None,
+        use_checkpoint: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -758,6 +783,7 @@ class HypNO_ST3(nn.Module):
         self.radius_x = radius_x
         self.radius_t = radius_t
         self.skip = skip
+        self.use_checkpoint = use_checkpoint
         self.has_external_detector = False
 
         self.lifting = _SpaceTimeLiftingLayer(
@@ -832,7 +858,10 @@ class HypNO_ST3(nn.Module):
         u_coarse = torch.zeros(B, nt, nx, device=h.device)
 
         for layer in self.mp_layers:
-            h = layer(h, x, t, u0)
+            if self.use_checkpoint:
+                h = torch_checkpoint(layer, h, x, t, u0, use_reentrant=False)
+            else:
+                h = layer(h, x, t, u0)
             u_hats.append(torch.sigmoid(layer.state_probe(h)).squeeze(-1))
 
         shock_indicator = torch.zeros(B, nt, nx, device=h.device)
