@@ -4,6 +4,7 @@ from pathlib import Path
 from .models.pinn import UniversalPINN, hyperbolic_residual
 from .models.fno import FNO2d, SpectralConv2d
 from .data.fvm import generate_dataset, load_dataset, save_dataset, solve_conservation_fvm
+from .data.lax_hopf import solve_lax_hopf
 
 # Map of hostname substring -> remote data root.
 # On machines whose hostname contains the key, "hyperbolic_pde/data" in paths
@@ -31,5 +32,6 @@ __all__ = [
     "load_dataset",
     "save_dataset",
     "solve_conservation_fvm",
+    "solve_lax_hopf",
     "resolve_data_path",
 ]
