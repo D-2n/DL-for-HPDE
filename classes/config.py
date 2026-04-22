@@ -1,3 +1,0 @@
-ALPHA = 0.1
-X_MIN, X_MAX = -1.0, 1.0
-T_MIN, T_MAX = 0.0, 4.0
