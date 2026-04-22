@@ -307,6 +307,131 @@ def _weno5_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarra
     return u_new
 
 
+# --------------------------------------------------------------------------- #
+# DG(1): piecewise-linear DG with local Lax-Friedrichs flux + SSP-RK3
+# --------------------------------------------------------------------------- #
+# The DG state is stored as a flat array of length 2*nx:
+#   dofs[0::2] = cell means   u_i^0  (L2-projection coefficient for phi_0=1)
+#   dofs[1::2] = cell slopes  u_i^1  (coefficient for phi_1 = sqrt(3)*(2xi-1),
+#                                      xi in [0,1] local coordinate)
+#
+# The two Legendre basis functions on the reference cell [0,1] are:
+#   phi_0(xi) = 1
+#   phi_1(xi) = sqrt(3) * (2*xi - 1)
+# with inner products <phi_k, phi_k> = 1 (orthonormal on [0,1]).
+#
+# Quadrature: 2-point Gauss on [0,1] is exact for polynomials up to degree 3,
+# sufficient for the degree-1 test function times the (nonlinear) flux.
+#   nodes:   xi_q = [0.5 - 1/(2*sqrt(3)),  0.5 + 1/(2*sqrt(3))]
+#   weights: w_q  = [0.5, 0.5]
+
+_DG_SQRT3 = np.sqrt(3.0)
+_DG_XI_Q  = np.array([0.5 - 1.0 / (2.0 * _DG_SQRT3), 0.5 + 1.0 / (2.0 * _DG_SQRT3)])
+_DG_W_Q   = np.array([0.5, 0.5])
+# basis evaluated at quadrature nodes: shape (2,2) — [basis, quad]
+_DG_PHI_Q = np.array([
+    np.ones(2),                          # phi_0 at quad nodes
+    _DG_SQRT3 * (2.0 * _DG_XI_Q - 1.0), # phi_1 at quad nodes
+])
+# basis evaluated at left (xi=0) and right (xi=1) cell boundaries
+_DG_PHI_L = np.array([1.0, -_DG_SQRT3])   # phi_k(0)
+_DG_PHI_R = np.array([1.0,  _DG_SQRT3])   # phi_k(1)
+
+
+def _dg_project(u_cell: np.ndarray) -> np.ndarray:
+    """L2-project cell-mean array u_cell [nx] onto DG(1) dofs [2*nx].
+
+    Since u is piecewise-constant (cell means), the slope dof is zero.
+    """
+    nx = u_cell.size
+    dofs = np.zeros(2 * nx, dtype=np.float64)
+    dofs[0::2] = u_cell
+    return dofs
+
+
+def _dg_cell_means(dofs: np.ndarray) -> np.ndarray:
+    """Extract cell means from DG dofs (mean = dof[0] since phi_0=1)."""
+    return dofs[0::2].copy()
+
+
+def _dg_eval_at(dofs: np.ndarray, xi: float) -> np.ndarray:
+    """Evaluate DG(1) polynomial in every cell at local coordinate xi in [0,1]."""
+    u0 = dofs[0::2]
+    u1 = dofs[1::2]
+    return u0 + u1 * _DG_SQRT3 * (2.0 * xi - 1.0)
+
+
+def _dg_rhs(dofs: np.ndarray, dx: float, boundary: str) -> np.ndarray:
+    """DG(1) spatial RHS: returns d(dofs)/dt = M^{-1} * (volume - surface) terms.
+
+    For orthonormal Legendre basis on [0,1] the mass matrix is the identity,
+    so the update is simply the sum of volume and surface integrals.
+    """
+    nx = dofs.size // 2
+    u0 = dofs[0::2]   # cell means   [nx]
+    u1 = dofs[1::2]   # cell slopes  [nx]
+
+    # ---- volume integral: sum_q w_q * f(u_h(xi_q)) * dphi_k/dxi * (1/dx) ----
+    # dphi_0/dxi = 0,  dphi_1/dxi = 2*sqrt(3)  (constant on cell)
+    # Volume term contributes only to k=1 dof.
+    # u_h at quad nodes: u0 + u1 * phi_1(xi_q)
+    phi1_q = _DG_PHI_Q[1]                              # [2]
+    u_q = u0[:, None] + u1[:, None] * phi1_q[None, :]  # [nx, 2]
+    f_q = flux(u_q)                                     # [nx, 2]
+    dphi1_dxi = 2.0 * _DG_SQRT3
+    vol_1 = np.sum(_DG_W_Q * f_q * dphi1_dxi, axis=1) / dx   # [nx]
+
+    # ---- interface fluxes: local Lax-Friedrichs ----
+    # Boundary conditions: extend u at left/right interfaces
+    u_R_left  = u0 + u1 * _DG_PHI_R[1]   # right edge of each cell  [nx]
+    u_L_right = u0 + u1 * _DG_PHI_L[1]   # left  edge of each cell  [nx]
+
+    if boundary == "periodic":
+        u_ext_R = np.concatenate([u_R_left, u_R_left[:1]])   # [nx+1] left states at i+1/2
+        u_ext_L = np.concatenate([u_L_right[-1:], u_L_right])# [nx+1] right states at i+1/2
+    else:
+        # ghost / fixed: replicate boundary cell values
+        u_ext_R = np.concatenate([u_R_left, u_R_left[-1:]])
+        u_ext_L = np.concatenate([u_L_right[:1], u_L_right])
+
+    # local LF at each of the nx+1 interfaces
+    alpha_if = np.maximum(
+        np.abs(flux_prime(u_ext_R)),
+        np.abs(flux_prime(u_ext_L)),
+    )
+    fhat = 0.5 * (flux(u_ext_R) + flux(u_ext_L)) - 0.5 * alpha_if * (u_ext_L - u_ext_R)
+
+    # ---- surface integral for each test function ----
+    # For cell i, interface i+1/2 is on the right (xi=1), interface i-1/2 on left (xi=0).
+    # Contribution: phi_k(1)*fhat_{i+1/2} - phi_k(0)*fhat_{i-1/2}  (divided by dx)
+    fhat_r = fhat[1:]    # fhat at right interface of cell i [nx]
+    fhat_l = fhat[:-1]   # fhat at left  interface of cell i [nx]
+
+    surf_0 = (_DG_PHI_R[0] * fhat_r - _DG_PHI_L[0] * fhat_l) / dx   # [nx]
+    surf_1 = (_DG_PHI_R[1] * fhat_r - _DG_PHI_L[1] * fhat_l) / dx   # [nx]
+
+    rhs = np.empty_like(dofs)
+    rhs[0::2] = vol_1 * 0.0 - surf_0    # vol term for phi_0 is zero
+    rhs[1::2] = vol_1       - surf_1
+    return rhs
+
+
+def _dg_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarray:
+    """DG(1) step: project cell means -> evolve dofs via SSP-RK3 -> return cell means."""
+    dofs = _dg_project(u)
+    L = _dg_rhs
+
+    d1 = dofs + dt * L(dofs, dx, boundary)
+    d2 = 0.75 * dofs + 0.25 * (d1 + dt * L(d1, dx, boundary))
+    d3 = (1.0/3.0) * dofs + (2.0/3.0) * (d2 + dt * L(d2, dx, boundary))
+
+    u_new = _dg_cell_means(d3)
+    if boundary == "fixed":
+        u_new[0] = u[0]
+        u_new[-1] = u[-1]
+    return u_new
+
+
 def solve_conservation_fvm(
     u0: np.ndarray,
     x_min: float,
@@ -321,13 +446,14 @@ def solve_conservation_fvm(
     Solve u_t + f(u)_x = 0 for f(u)=u(1-u).
 
     method: "godunov" (1st-order), "muscl" (2nd-order MUSCL-Hancock+minmod),
-            or "weno5" (5th-order WENO + SSP-RK3, LF flux splitting).
+            "weno5" (5th-order WENO + SSP-RK3, LF flux splitting), or
+            "dg" (DG(1) piecewise-linear + local LF flux + SSP-RK3).
     boundary: "periodic", "fixed", or "ghost".
     """
-    if method not in ("godunov", "muscl", "weno5"):
-        raise ValueError(f"method must be 'godunov', 'muscl', or 'weno5', got '{method}'")
+    if method not in ("godunov", "muscl", "weno5", "dg"):
+        raise ValueError(f"method must be 'godunov', 'muscl', 'weno5', or 'dg', got '{method}'")
 
-    step_fn = {"godunov": _godunov_step, "muscl": _muscl_step, "weno5": _weno5_step}[method]
+    step_fn = {"godunov": _godunov_step, "muscl": _muscl_step, "weno5": _weno5_step, "dg": _dg_step}[method]
 
     nx = u0.size
     x = np.linspace(x_min, x_max, nx, dtype=np.float32)
