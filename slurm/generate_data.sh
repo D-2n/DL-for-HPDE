@@ -8,6 +8,7 @@
 
 source /home/dzdrale/hypno_env/bin/activate
 cd /home/dzdrale/DL-for-HPDE
+export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
 mkdir -p /home/dzdrale/scratch/lwr_1d
 
 python hyperbolic_pde/scripts/generate_data.py
