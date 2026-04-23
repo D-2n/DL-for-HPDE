@@ -86,7 +86,7 @@ def apply_runtime_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
 # ── machine-aware config resolution ──────────────────────────────────── #
 
 # Hostnames (substrings) that indicate a remote/HPC machine
-_REMOTE_HOSTS: set[str] = {"dragon"}
+_REMOTE_HOSTS: set[str] = {"dragon", "cleps", "gpu0"}
 
 
 def resolve_config_path(configs_dir: Path) -> Path:
