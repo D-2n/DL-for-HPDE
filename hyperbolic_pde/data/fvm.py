@@ -596,6 +596,8 @@ def generate_dataset(
     if use_lax_hopf:
         from hyperbolic_pde.data.lax_hopf import solve_lax_hopf
 
+    log_every = 500
+    print(f"Generating {num_samples} samples (nx={nx}, nt={nt}, method={method}) ...")
     if not num_workers or num_workers <= 1:
         for i in range(num_samples):
             if use_lax_hopf:
@@ -619,6 +621,8 @@ def generate_dataset(
                     method=method,
                 )
             u[i] = u_hist
+            if (i + 1) % log_every == 0 or (i + 1) == num_samples:
+                print(f"  {i + 1}/{num_samples} samples done", flush=True)
         return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
 
     from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -639,9 +643,13 @@ def generate_dataset(
             )
             for i in range(num_samples)
         ]
+        completed = 0
         for future in as_completed(futures):
             index, u_hist = future.result()
             u[index] = u_hist
+            completed += 1
+            if completed % log_every == 0 or completed == num_samples:
+                print(f"  {completed}/{num_samples} samples done", flush=True)
 
     return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
 
