@@ -1,4 +1,6 @@
-﻿import socket
+﻿from __future__ import annotations
+
+import socket
 from pathlib import Path
 
 from .models.pinn import UniversalPINN, hyperbolic_residual
