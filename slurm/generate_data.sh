@@ -6,9 +6,8 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/generate_data_%j.log
 
-source /home/dzdrale/hypno_env/bin/activate
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
 mkdir -p /home/dzdrale/scratch/lwr_1d
 
-python hyperbolic_pde/scripts/generate_data.py
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_data.py
