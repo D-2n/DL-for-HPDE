@@ -403,6 +403,7 @@ def main() -> None:
     start_time = time.perf_counter()
     checkpoint_every = int(model_cfg.get("checkpoint_every", 50))
     val_every = int(model_cfg.get("val_every", 5))
+    log_batch_every = int(model_cfg.get("log_batch_every", 50))
 
     train_losses: list[float] = []
     train_mses: list[float] = []
@@ -464,6 +465,15 @@ def main() -> None:
             epoch_loss_sum += loss.item() * u0.size(0)
             epoch_mse_sum += batch_mse * u0.size(0)
             epoch_count += u0.size(0)
+            if log_batch_every > 0 and step % log_batch_every == 0:
+                n_batches = len(loader)
+                batch_idx = (step - 1) % n_batches + 1
+                log.info(
+                    f"  epoch {epoch:3d} batch {batch_idx}/{n_batches} | "
+                    f"loss={loss.item():.3e} | mse={batch_mse:.3e}"
+                )
+                for h in log.handlers:
+                    h.flush()
 
         train_losses.append(epoch_loss_sum / max(1, epoch_count))
         train_mses.append(epoch_mse_sum / max(1, epoch_count))
