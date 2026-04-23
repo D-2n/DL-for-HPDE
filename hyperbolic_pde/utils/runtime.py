@@ -86,7 +86,13 @@ def apply_runtime_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
 # ── machine-aware config resolution ──────────────────────────────────── #
 
 # Hostnames (substrings) that indicate a remote/HPC machine
-_REMOTE_HOSTS: set[str] = {"dragon", "cleps", "gpu0"}
+_REMOTE_HOSTS: set[str] = {"dragon"}
+
+# Per-host config overrides: hostname substring → config filename (no path, just name)
+_HOST_CONFIGS: dict[str, str] = {
+    "cleps": "hyperbolic_pde_cleps.yaml",
+    "gpu0": "hyperbolic_pde_cleps.yaml",
+}
 
 
 def resolve_config_path(configs_dir: Path) -> Path:
@@ -94,15 +100,24 @@ def resolve_config_path(configs_dir: Path) -> Path:
 
     Priority:
       1. HPDE_CONFIG environment variable (explicit override, must be a valid path)
-      2. Hostname contains a key from _REMOTE_HOSTS → hyperbolic_pde_remote.yaml
-      3. Default → hyperbolic_pde_local.yaml
-      4. Fallback → hyperbolic_pde.yaml  (original monolithic config)
+      2. Hostname matches a key in _HOST_CONFIGS → that file (if it exists)
+      3. Hostname contains a key from _REMOTE_HOSTS → hyperbolic_pde_remote.yaml
+      4. Default → hyperbolic_pde_local.yaml
+      5. Fallback → hyperbolic_pde.yaml  (original monolithic config)
     """
     env = os.getenv("HPDE_CONFIG")
     if env and Path(env).exists():
         return Path(env)
 
     host = socket.gethostname().lower()
+
+    for key, fname in _HOST_CONFIGS.items():
+        if key in host:
+            candidate = configs_dir / fname
+            if candidate.exists():
+                return candidate
+            break
+
     for key in _REMOTE_HOSTS:
         if key in host:
             candidate = configs_dir / "hyperbolic_pde_remote.yaml"
