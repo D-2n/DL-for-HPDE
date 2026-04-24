@@ -66,8 +66,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
     parser.add_argument("--run-dir", type=str, default=None)
-    parser.add_argument("--n-samples", type=int, default=10, help="Number of test samples to evaluate")
-    parser.add_argument("--n-plots", type=int, default=3, help="Number of samples to plot")
+    parser.add_argument("--n_samples", type=int, default=10, help="Number of test samples to evaluate")
+    parser.add_argument("--n_plots", type=int, default=3, help="Number of samples to plot")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -93,7 +93,7 @@ def main() -> None:
 
     dataset = load_dataset(Path(data_cfg["path"]))
     _, test_idx = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
-    test_idx = test_idx[:args.n_samples]
+    test_idx = test_idx[:args.n_samples]  # noqa: already underscore
 
     x_np = dataset.x
     t_np = dataset.t

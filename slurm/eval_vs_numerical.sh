@@ -12,5 +12,5 @@ export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
 mkdir -p /home/dzdrale/scratch/logs
 
 /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/eval_vs_numerical.py \
-    --n-samples 50 \
-    --n-plots 5
+    --n_samples 50 \
+    --n_plots 5
