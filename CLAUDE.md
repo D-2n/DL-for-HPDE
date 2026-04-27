@@ -112,3 +112,53 @@ model:
 With `k_x=4, k_t=4` (causal): `(2*4+1) * (4+1) - 1 = 44` edges per node per layer.
 Each node sees `k_x` spatial cells left/right and `k_t` past timesteps (including diagonals).
 Receptive field grows by `k_x` in space and `k_t` in time per layer.
+
+---
+
+## CLEPS Cluster Setup
+
+**Access**: `ssh dzdrale@cleps.paris.inria.fr` (must be on INRIA-interne WiFi or INRIA VPN)
+
+**Paths**:
+- Repo: `/home/dzdrale/DL-for-HPDE`
+- Venv: `/home/dzdrale/hypno_env` (Python 3.9, PyTorch cu124)
+- Dataset: `/home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz`
+- Run outputs/checkpoints: `/home/dzdrale/scratch/runs/`
+- SLURM logs: `/home/dzdrale/scratch/logs/`
+
+**SLURM scripts**: `slurm/generate_data.sh`, `slurm/train_hypno_st3.sh`, `slurm/train_hypno_st3_mlp.sh`
+
+**Hostname detection** (for auto config selection):
+- Login node: `cleps` → matches `_HOST_CONFIGS["cleps"]`
+- Compute nodes: `node0XX` → matches `_HOST_CONFIGS["node0"]`
+- GPU nodes: `gpu0XX` → matches `_HOST_CONFIGS["gpu0"]`
+- All map to `hyperbolic_pde_cleps.yaml`
+
+**Config**: `hyperbolic_pde/configs/hyperbolic_pde_cleps.yaml` overrides data paths, num_samples, compile=false. MLP variant: `hyperbolic_pde_cleps_mlp.yaml`.
+
+**GPU nodes** (as of 2026-04-23):
+- `parq-gpu001`: A100-PCIE-40GB × 3
+- `gpu012-013`: A100-SXM4-80GB × 4 (preferred for large runs)
+- `gpu016-017, gpu015`: H100-80GB × 4
+- `gpu018`: H200-141GB × 4
+- Max walltime: 48 hours. User limits: 75 concurrent jobs, 2000 total submissions.
+
+**Key commands**:
+```bash
+sbatch slurm/generate_data.sh                  # generate dataset
+sbatch slurm/train_hypno_st3.sh                # submit GNN encoder training
+sbatch slurm/train_hypno_st3_mlp.sh            # submit MLP encoder training
+squeue -u $USER                                # check job status
+scancel <JOBID>                                # cancel job
+ssh <nodename> nvidia-smi                      # check GPU usage on compute node
+tail -f /home/dzdrale/scratch/logs/<job>.log   # live log
+sinfo -p gpu -o "%N %G %t"                     # check GPU availability
+sbatch --exclude=<node> slurm/train_hypno_st3.sh  # avoid a busy node
+```
+
+**Python path**: scripts use `export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH` (no setup.py/pyproject.toml).
+
+**Known issues**:
+- `torch.compile` fails on Python 3.9 — disabled via `compile: false` in cleps config
+- Compute node hostnames are `node0XX` or `gpu0XX`, not `cleps` — all handled by `_HOST_CONFIGS`
+- Install torch with `--index-url https://download.pytorch.org/whl/cu124` or you get CPU-only

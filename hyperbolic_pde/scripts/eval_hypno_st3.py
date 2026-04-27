@@ -71,7 +71,7 @@ def main() -> None:
     else:
         latest_path = Path("hyperbolic_pde/runs/hypno_st3/latest_run.txt")
         if latest_path.exists():
-            run_dir = Path(latest_path.read_text(encoding="utf-8").strip())
+            run_dir = Path(latest_path.read_text(encoding="utf-8").strip().splitlines()[-1].strip())
         else:
             run_dir = None
 
