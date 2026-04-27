@@ -2,269 +2,32 @@ seed: 42
 device: cuda
 
 data:
-  path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
-  test_path: /work/work_dzdrale/lwr_1d/hyperbolic_dataset.npz
+
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz
+  test_path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz
   path_local: /data/hyperbolic_dataset.npz
   test_path_local: /data/hyperbolic_dataset.npz
-  nx: 96
-  nt: 96
+  nx: 128
+  nt: 128
   x_min: -1.0
   x_max: 1.0
   t_max: 1.0
-  cfl: 0.3
-  num_samples: 1500
+  cfl: 0.25
+  num_samples: 5000
   test_num_samples: 10
   test_sine_pieces: 20
   ic_types: [piecewise_constant, piecewise_sine, riemann]
   num_segments:  [2, 5, 7, 10]
   u_min: 0.0
   u_max: 1.0
-  ic_points: 96
-  method: muscl              # "godunov" (1st order) or "muscl" (2nd order MUSCL-Hancock)
+  ic_points: 128
+  method: lax_hopf              # "godunov" (1st order) or "muscl" (2nd order MUSCL-Hancock)
   boundary: ghost
   train_fraction: 0.8
   val_fraction: 0.1
   compare_samples: 10
-pinn:
-  hidden_layers: 4
-  hidden_width: 128
-  activation: tanh
-  epochs: 150
-  lr: 5.0e-4
-  batch_pdes: 1000
-  interior_samples: 256
-  initial_samples: 256
-  boundary_samples: 128
-  lambda_res: 1.0
-  lambda_init: 1.0
-  lambda_bc: 1.0
-  hard_boundary: false
-  save_path: hyperbolic_pde/runs/pinn.pt
-  eval_samples: 5
-  eval_plots: 3
-  plot_dir: hyperbolic_pde/runs/plots/pinn
 
-fno: # ~40 epochs for default data/batch config
-  modes_x: 24
-  modes_t: 24
-  width: 128
-  layers: 6
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 0.0
-  grad_clip: null   
-  lr_schedule: cosine
-  lr_min: 5.0e-5
-  lr_step: 5000
-  lr_gamma: 0.5
-  batch_size: 8
-  checkpoint_every: 20
-  save_path: hyperbolic_pde/runs/fno.pt
-  eval_plots: 8
-  plot_dir: hyperbolic_pde/runs/plots/fno
 
-fno_experiment:
-  modes_x: 32
-  modes_t: 32
-  width: 64
-  layers: 6
-  band_start: 125
-  epochs: 200
-  lr: 1.0e-3
-  weight_decay: 0.0
-  grad_clip: null
-  lr_schedule: cosine
-  lr_min: 5.0e-5
-  lr_step: 5000
-  lr_gamma: 0.5
-  batch_size: 8
-  checkpoint_every: 20
-  save_path: hyperbolic_pde/runs/fno_experiment_epoch160_epoch60.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/fno_experiment
-
-deeponet:
-  branch_layers: 6
-  trunk_layers: 6
-  hidden_width: 128
-  latent_dim: 128
-  activation: tanh
-  use_bias: true
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 0.0
-  grad_clip: null
-  lr_schedule: cosine
-  lr_min: 5.0e-6
-  lr_step: 5000
-  lr_gamma: 0.5
-  batch_size: 16
-  save_path: hyperbolic_pde/runs/deeponet.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/deeponet
-
-vpinn:
-  hidden_layers: 8
-  hidden_width: 256
-  activation: tanh
-  epochs: 150
-  lr: 1.0e-3
-  batch_pdes: 1000
-  val_batch_pdes: 16
-  interior_samples: 256
-  initial_samples: 256
-  boundary_samples: 128
-  n_test: 2
-  lambda_weak: 1.0
-  lambda_init: 1.0
-  lambda_bc: 0.1
-  hard_boundary: false
-  save_path: hyperbolic_pde/runs/vpinn.pt
-
-gnn:
-  hidden: 64
-  layers: 5
-  epochs: 250
-  lr: 1.0e-3
-  weight_decay: 0.0
-  grad_clip: null
-  lr_schedule: cosine
-  lr_min: 1.0e-5
-  lr_step: 5000
-  lr_gamma: 0.5
-  batch_size: 16
-  save_path: hyperbolic_pde/runs/gnn.pt
-
-hypgno:
-  stencil_k: 3
-  d_latent: 128
-  d_hidden: 128
-  d_time: 32
-  n_layers: 8
-  activation: gelu
-  optimizer: adamw
-  epochs: 500
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_schedule: cosine
-  lr_min: 1.0e-5
-  batch_size: 32
-  lambda_state: 1.0
-  lambda_conservation: 1.0
-  lambda_tv: 0.0
-  checkpoint_every: 20
-  save_path: hyperbolic_pde/runs/hypgno_epoch40.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypgno
-
-hypno:
-  resume_from: hyperbolic_pde/runs/hypn.pt
-  stencil_k_x: 7
-  stencil_k_t: 3
-  d_latent: 64
-  d_hidden: 64
-  d_time: 32
-  n_layers: 4
-  activation: gelu
-  optimizer: adamw
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_schedule: cosine
-  lr_min: 1.0e-5
-  batch_size: 2
-  lambda_state: 1.0
-  lambda_conservation: 1.0
-  lambda_tv: 0.5
-  shock_weighted: true
-  shock_alpha: 5.0
-  checkpoint_every: 20
-  save_path: hyperbolic_pde/runs/hypno_tv.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypno
-#dumb comment
-hypno_pinn:
-  #resume_from: hyperbolic_pde/runs/hypno_pinn/run_20260325_101403/model_final.pt
-  stencil_k_x: 7
-  stencil_k_t: 3
-  d_latent: 64
-  d_hidden: 64
-  d_time: 64
-  n_layers: 4
-  activation: gelu
-  shock_mode: weno          # "pinn" | "weno" | "physics" | "classic"
-  shock_delta: 0.1          # pinn mode only
-  shock_threshold: 0.3      # pinn mode only
-  weno_eps: 1.0e-6          # weno mode only
-  weno_p: 0.5             # 0 = no WENO weighting (raw MP)
-  unified_mp: true           # true = single MLP for space+time, false = separate MLPs
-  readout: relu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
-  detector_path: hyperbolic_pde/runs/shock_detector.pt  # pre-trained PINN shock detector (null = disabled)
-  causal_temporal: true
-  radius_x: 0.2
-  radius_t: 0.15
-  optimizer: adamw
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_schedule: cosine
-  lr_min: 5.0e-6
-  batch_size: 2
-  lambda_state: 1.0
-  lambda_conservation: 1.0
-  lambda_tv: 0.01
-  lambda_pinn: 0.0
-  shock_weighted: false
-  shock_alpha: 3.0
-  checkpoint_every: 100
-  save_path: hyperbolic_pde/runs/hypno_pinn.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypno_pinn
-
-# HypNO with joint space-time lifting (no separate time embedding)
-hypno_st:
-  stencil_k_x: 7
-  stencil_k_t: 3
-  d_latent: 64
-  d_hidden: 96
-  n_layers: 6
-  activation: gelu
-  encoder_type: gnn          # "gnn" (neighbor aggregation) or "mlp" (pointwise [u0, x, t] only)
-  encoder_scaling: physics   # "gate_net" | "upwind" | "physics" (only used when encoder_type=gnn)
-  shock_mode: physics        # "pinn" | "weno" | "physics" | "classic"
-  message_scaling: true     # false = no PINN/WENO weighting (raw MP)
-  shock_delta: 0.1          # pinn mode only
-  shock_threshold: 0.3      # pinn mode only
-  weno_eps: 1.0e-6          # weno mode only
-  weno_p: 0.5             # 0 = no WENO weighting (raw MP)
-  unified_mp: true           # true = single MLP for space+time, false = separate MLPs
-  readout: relu             # activation for decoder MLP (relu for sharp shocks, gelu/tanh for smooth) THEORETICALLY
-  skip: true                # true = u_pred = u0 + correction, false = u_pred = decoder(h) directly
-  detector_path: null
-  causal_temporal: true
-  radius_x: 0.18
-  radius_t: 0.17
-  optimizer: adamw
-  epochs: 60
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_schedule: cosine
-  lr_min: 1.0e-5
-  batch_size: 4
-  lambda_state: 1.0
-  lambda_conservation: 1.0
-  lambda_tv: 0.01
-  lambda_pinn: 0.0
-  shock_weighted: false
-  shock_alpha: 3.0
-  checkpoint_every: 100
-  save_path: hyperbolic_pde/runs/hypno_st.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypno_st
 
 hypno_st2:
   stencil_k_x: 1
@@ -311,18 +74,18 @@ hypno_st2:
   plot_dir: hyperbolic_pde/runs/plots/hypno_st2
 
 hypno_st3:
-  stencil_k_x: 4
-  stencil_k_t: 2
-  t_window: 32        # random temporal window length during training (null = full nt)
-  compile: true       # torch.compile the model for faster kernel fusion
+  stencil_k_x: 2
+  stencil_k_t: 4
+  t_window: null        # random temporal window length during training (null = full nt)
+  compile: false      # torch.compile the model for faster kernel fusion
   use_checkpoint: true  # gradient checkpointing on MP layers to reduce activation memory
-  d_latent: 64
-  d_hidden: 64
-  d_hidden_nonadj: 32     # if null, defaults to d_hidden; can be set smaller (e.g. 48) since non-adj edges use 8-dim features
+  d_latent: 96
+  d_hidden: 96
+  d_hidden_nonadj: 48     # if null, defaults to d_hidden; can be set smaller (e.g. 48) since non-adj edges use 8-dim features
   n_layers: 6
   activation: gelu
   encoder_type: gnn
-  encoder_scaling: physics
+  encoder_scaling: classic
   shock_mode: physics
   use_char_cone: false      # enable Gaussian char-cone component of physics gate
   shock_delta: 0.1
@@ -343,7 +106,7 @@ hypno_st3:
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 1.0e-5
-  batch_size: 2
+  batch_size: 16
   loss_type: mae             # 'mae' (L1) or 'mse' (L2) — applies to state/mass/pinn/probe terms
   lambda_state: 1.0
   lambda_conservation: 1.0
@@ -352,130 +115,9 @@ hypno_st3:
   lambda_probe: 0.01          # deep supervision on per-layer state_probe u_hats
   shock_weighted: false
   shock_alpha: 3.0
-  checkpoint_every: 50
-  val_every: 5
-  save_path: hyperbolic_pde/runs/hypno_st3.pt
+  checkpoint_every: 10
+  val_every: 10
+  
+  save_path: /home/dzdrale/scratch/runs/hypno_st3_k_x5.pt
   eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypno_st3
-
-hypno_st4:
-  stencil_k_x: 6
-  d_latent: 64
-  d_hidden: 96
-  d_hidden_nonadj: 32       # smaller width for non-adj edge MLP (null = same as d_hidden)
-  n_layers: 6
-  activation: gelu
-  encoder_type: gnn
-  encoder_scaling: physics
-  shock_mode: physics       # "physics" | "classic" | "weno"
-  use_char_cone: false
-  weno_eps: 1.0e-6
-  weno_p: 0.5
-  readout: gelu
-  radius_x: null
-  # Pushforward training
-  train_mode: pushforward   # currently only pushforward is implemented
-  K_rollout: 8              # total window length (no-grad prefix + grad suffix)
-  K_grad: 2                 # grad'd tail length
-  window_start: random      # "random" | "zero"
-  # Optimizer toggle
-  optimizer: soap         # "adamw" | "soap"
-  soap_precondition_frequency: 10
-  soap_shampoo_beta: 0.95
-  # Training schedule
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_schedule: cosine
-  lr_min: 1.0e-5
-  batch_size: 64
-  loss_type: mae            # 'mae' | 'mse'
-  lambda_state: 1.0
-  lambda_probe: 0.01        # deep supervision on per-layer state_probe u_hats
-  checkpoint_every: 50
-  val_every: 5
-  save_path: hyperbolic_pde/runs/hypno_st4.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypno_st4
-
-shock_detector:
-  ic_points: 96
-  d_latent: 128
-  d_hidden: 128
-  n_layers: 7
-  activation: tanh              # tanh is standard for PINNs (smooth)
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_min: 1.0e-5
-  batch_size: 32
-  lambda_pde: 1.0               # PDE residual at collocation points
-  lambda_ic: 10.0               # IC enforcement: u(x,0) = u0(x)
-  lambda_data: 1.5              # supervised loss on FVM ground truth
-  n_collocation: 2048           # random (x,t) points per batch for PDE loss
-  checkpoint_every: 20
-  save_path: hyperbolic_pde/runs/shock_detector.pt
-  eval_plots: 8
-  plot_dir: hyperbolic_pde/runs/plots/shock_detector
-
-fluxgnn:
-  hidden: 196
-  layers: 4
-  activation: gelu
-  optimizer: adamw
-  #lbfgs_max_iter: 20
-  latent_dim: 196
-  flux_hidden: 196
-  interface_hidden: 196
-  use_base_flux: false
-
-  base_flux_weight: 0.0
-  flux_scale: 1.0
-  epochs: 350
-  lr: 5.0e-4
-  weight_decay: 5e-5
-  grad_clip: 0.6
-  lr_schedule: cosine
-  lr_min: 5.0e-7
-  lr_step: 700
-  lr_gamma: 0.5
-  batch_size: 32
-  checkpoint_every: 1000
-  save_path: hyperbolic_pde/runs/fluxgnn.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/fluxgnn
-
-hypfluxno:
-  stencil_k_x: 3          # only used by LiftingLayer
-  stencil_k_t: 2
-  d_latent: 64
-  d_hidden: 64
-  d_time: 64
-  n_layers: 4
-  activation: gelu
-  weno_eps: 1.0e-6
-  weno_p: 0.0              # 0.0 = no WENO gating (raw flux divergence)
-  causal_temporal: true
-  radius_x: 0.25
-  radius_t: 0.15
-  readout: gelu
-  optimizer: adamw
-  epochs: 150
-  lr: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0
-  lr_schedule: cosine
-  lr_min: 1.0e-6
-  batch_size: 32
-  lambda_state: 1.0
-  lambda_conservation: 1.0
-  lambda_tv: 0.01
-  lambda_entropy: 0.1
-  shock_weighted: false
-  shock_alpha: 3.0
-  checkpoint_every: 50
-  save_path: hyperbolic_pde/runs/hypfluxno.pt
-  eval_plots: 10
-  plot_dir: hyperbolic_pde/runs/plots/hypfluxno
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3
