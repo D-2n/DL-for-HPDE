@@ -426,6 +426,7 @@ def _dg_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarray:
     d3 = (1.0/3.0) * dofs + (2.0/3.0) * (d2 + dt * L(d2, dx, boundary))
 
     u_new = _dg_cell_means(d3)
+    np.clip(u_new, 0.0, 1.0, out=u_new)
     if boundary == "fixed":
         u_new[0] = u[0]
         u_new[-1] = u[-1]
