@@ -310,123 +310,151 @@ def _weno5_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarra
 # --------------------------------------------------------------------------- #
 # DG(1): piecewise-linear DG with local Lax-Friedrichs flux + SSP-RK3
 # --------------------------------------------------------------------------- #
-# The DG state is stored as a flat array of length 2*nx:
-#   dofs[0::2] = cell means   u_i^0  (L2-projection coefficient for phi_0=1)
-#   dofs[1::2] = cell slopes  u_i^1  (coefficient for phi_1 = sqrt(3)*(2xi-1),
-#                                      xi in [0,1] local coordinate)
+# State: flat array of length 2*nx.
+#   dofs[0::2] = cell means  u_i^0   (coefficient for phi_0 = 1)
+#   dofs[1::2] = cell slopes u_i^1   (coefficient for phi_1 = sqrt(3)*(2xi-1))
 #
-# The two Legendre basis functions on the reference cell [0,1] are:
+# Basis on reference cell [0,1] — orthonormal w.r.t. L2([0,1]):
 #   phi_0(xi) = 1
-#   phi_1(xi) = sqrt(3) * (2*xi - 1)
-# with inner products <phi_k, phi_k> = 1 (orthonormal on [0,1]).
+#   phi_1(xi) = sqrt(3) * (2*xi - 1)       dphi_1/dxi = 2*sqrt(3)
 #
-# Quadrature: 2-point Gauss on [0,1] is exact for polynomials up to degree 3,
-# sufficient for the degree-1 test function times the (nonlinear) flux.
-#   nodes:   xi_q = [0.5 - 1/(2*sqrt(3)),  0.5 + 1/(2*sqrt(3))]
-#   weights: w_q  = [0.5, 0.5]
+# Mass matrix = identity (orthonormal basis), so M^{-1} = I.
+#
+# Weak form (after integration by parts on the volume term):
+#   d u_i^k / dt = (1/dx) * [ sum_q w_q f(u_h(xi_q)) dphi_k/dxi
+#                              - phi_k(1)*fhat_{i+1/2} + phi_k(0)*fhat_{i-1/2} ]
+#
+# Stability: DG(1) + SSP-RK3 requires CFL <= 1/3.  We enforce this by
+# halving the incoming dt when necessary before starting the RK3 stages.
+#
+# Slope limiter: minmod TVB limiter applied after each RK3 stage to prevent
+# spurious oscillations near shocks.
+#
+# 2-point Gauss quadrature on [0,1] (exact for degree <= 3):
+#   xi_q = [0.5 - 1/(2*sqrt(3)),  0.5 + 1/(2*sqrt(3))],  w_q = [0.5, 0.5]
 
 _DG_SQRT3 = np.sqrt(3.0)
 _DG_XI_Q  = np.array([0.5 - 1.0 / (2.0 * _DG_SQRT3), 0.5 + 1.0 / (2.0 * _DG_SQRT3)])
 _DG_W_Q   = np.array([0.5, 0.5])
-# basis evaluated at quadrature nodes: shape (2,2) — [basis, quad]
+# Basis evaluated at quadrature nodes [2 bases x 2 nodes]
 _DG_PHI_Q = np.array([
-    np.ones(2),                          # phi_0 at quad nodes
-    _DG_SQRT3 * (2.0 * _DG_XI_Q - 1.0), # phi_1 at quad nodes
+    np.ones(2),
+    _DG_SQRT3 * (2.0 * _DG_XI_Q - 1.0),
 ])
-# basis evaluated at left (xi=0) and right (xi=1) cell boundaries
+# Basis evaluated at cell boundaries: xi=0 (left), xi=1 (right)
 _DG_PHI_L = np.array([1.0, -_DG_SQRT3])   # phi_k(0)
 _DG_PHI_R = np.array([1.0,  _DG_SQRT3])   # phi_k(1)
+# Stability limit for DG(1) + SSP-RK3
+_DG_CFL_MAX = 1.0 / 3.0
 
 
 def _dg_project(u_cell: np.ndarray) -> np.ndarray:
-    """L2-project cell-mean array u_cell [nx] onto DG(1) dofs [2*nx].
-
-    Since u is piecewise-constant (cell means), the slope dof is zero.
-    """
-    nx = u_cell.size
-    dofs = np.zeros(2 * nx, dtype=np.float64)
+    """L2-project cell-mean array [nx] onto DG(1) dofs [2*nx] (zero slopes)."""
+    dofs = np.zeros(2 * u_cell.size, dtype=np.float64)
     dofs[0::2] = u_cell
     return dofs
 
 
 def _dg_cell_means(dofs: np.ndarray) -> np.ndarray:
-    """Extract cell means from DG dofs (mean = dof[0] since phi_0=1)."""
+    """Extract cell means from DG dofs."""
     return dofs[0::2].copy()
 
 
-def _dg_eval_at(dofs: np.ndarray, xi: float) -> np.ndarray:
-    """Evaluate DG(1) polynomial in every cell at local coordinate xi in [0,1]."""
-    u0 = dofs[0::2]
-    u1 = dofs[1::2]
-    return u0 + u1 * _DG_SQRT3 * (2.0 * xi - 1.0)
+def _dg_minmod_limiter(dofs: np.ndarray) -> np.ndarray:
+    """Apply minmod slope limiter to DG(1) dofs in-place.
+
+    Replaces u_i^1 with minmod(u_i^1, u_i^0 - u_{i-1}^0, u_{i+1}^0 - u_i^0)
+    where the minmod comparison uses the physical slope = u_i^1 / sqrt(3).
+    """
+    dofs = dofs.copy()
+    u0 = dofs[0::2]   # cell means [nx]
+    u1 = dofs[1::2]   # slope dofs [nx] — physical slope = u1/sqrt(3)
+
+    # Forward and backward differences of cell means
+    du_fwd = np.empty_like(u0)
+    du_bwd = np.empty_like(u0)
+    du_fwd[:-1] = u0[1:] - u0[:-1]
+    du_fwd[-1]  = 0.0
+    du_bwd[1:]  = u0[1:] - u0[:-1]
+    du_bwd[0]   = 0.0
+
+    # Physical slope from slope dof: tilde_u = u1 / sqrt(3)
+    tilde_u = u1 / _DG_SQRT3
+
+    # minmod of three values
+    def _minmod3(a, b, c):
+        s = np.sign(a)
+        same_sign = (s == np.sign(b)) & (s == np.sign(c))
+        return np.where(same_sign, s * np.minimum(np.abs(a), np.minimum(np.abs(b), np.abs(c))), 0.0)
+
+    limited = _minmod3(tilde_u, du_fwd, du_bwd)
+    dofs[1::2] = limited * _DG_SQRT3
+    return dofs
 
 
 def _dg_rhs(dofs: np.ndarray, dx: float, boundary: str) -> np.ndarray:
-    """DG(1) spatial RHS: returns d(dofs)/dt = M^{-1} * (volume - surface) terms.
+    """DG(1) spatial RHS: d(dofs)/dt per the weak form with LF numerical flux.
 
-    For orthonormal Legendre basis on [0,1] the mass matrix is the identity,
-    so the update is simply the sum of volume and surface integrals.
+    Returns array of shape [2*nx] — same layout as dofs.
     """
-    nx = dofs.size // 2
-    u0 = dofs[0::2]   # cell means   [nx]
-    u1 = dofs[1::2]   # cell slopes  [nx]
+    u0 = dofs[0::2]   # cell means  [nx]
+    u1 = dofs[1::2]   # cell slopes [nx]
 
-    # ---- volume integral: sum_q w_q * f(u_h(xi_q)) * dphi_k/dxi * (1/dx) ----
-    # dphi_0/dxi = 0,  dphi_1/dxi = 2*sqrt(3)  (constant on cell)
-    # Volume term contributes only to k=1 dof.
-    # u_h at quad nodes: u0 + u1 * phi_1(xi_q)
-    phi1_q = _DG_PHI_Q[1]                              # [2]
-    u_q = u0[:, None] + u1[:, None] * phi1_q[None, :]  # [nx, 2]
-    f_q = flux(u_q)                                     # [nx, 2]
-    dphi1_dxi = 2.0 * _DG_SQRT3
-    vol_1 = np.sum(_DG_W_Q * f_q * dphi1_dxi, axis=1) / dx   # [nx]
+    # ---- Volume integral (only affects slope dof k=1) ----
+    # (1/dx) * sum_q w_q * f(u_h(xi_q)) * dphi_1/dxi
+    u_q = u0[:, None] + u1[:, None] * _DG_PHI_Q[1][None, :]  # [nx, 2]
+    f_q = flux(u_q)                                            # [nx, 2]
+    vol_1 = np.sum(_DG_W_Q * f_q, axis=1) * (2.0 * _DG_SQRT3) / dx  # [nx]
 
-    # ---- interface fluxes: local Lax-Friedrichs ----
-    # Boundary conditions: extend u at left/right interfaces
-    u_R_left  = u0 + u1 * _DG_PHI_R[1]   # right edge of each cell  [nx]
-    u_L_right = u0 + u1 * _DG_PHI_L[1]   # left  edge of each cell  [nx]
+    # ---- Interface states ----
+    u_R = u0 + u1 * _DG_PHI_R[1]   # u_h at right edge (xi=1) of each cell [nx]
+    u_L = u0 + u1 * _DG_PHI_L[1]   # u_h at left  edge (xi=0) of each cell [nx]
 
     if boundary == "periodic":
-        u_ext_R = np.concatenate([u_R_left, u_R_left[:1]])   # [nx+1] left states at i+1/2
-        u_ext_L = np.concatenate([u_L_right[-1:], u_L_right])# [nx+1] right states at i+1/2
+        uR_ext = np.concatenate([u_R, u_R[:1]])    # left  state at interface i+1/2 [nx+1]
+        uL_ext = np.concatenate([u_L[-1:], u_L])   # right state at interface i+1/2 [nx+1]
     else:
-        # ghost / fixed: replicate boundary cell values
-        u_ext_R = np.concatenate([u_R_left, u_R_left[-1:]])
-        u_ext_L = np.concatenate([u_L_right[:1], u_L_right])
+        uR_ext = np.concatenate([u_R, u_R[-1:]])
+        uL_ext = np.concatenate([u_L[:1], u_L])
 
-    # local LF at each of the nx+1 interfaces
-    alpha_if = np.maximum(
-        np.abs(flux_prime(u_ext_R)),
-        np.abs(flux_prime(u_ext_L)),
-    )
-    fhat = 0.5 * (flux(u_ext_R) + flux(u_ext_L)) - 0.5 * alpha_if * (u_ext_L - u_ext_R)
+    # Local Lax-Friedrichs numerical flux at each of nx+1 interfaces
+    alpha = np.maximum(np.abs(flux_prime(uR_ext)), np.abs(flux_prime(uL_ext)))
+    fhat  = 0.5 * (flux(uR_ext) + flux(uL_ext)) - 0.5 * alpha * (uL_ext - uR_ext)
 
-    # ---- surface integral for each test function ----
-    # For cell i, interface i+1/2 is on the right (xi=1), interface i-1/2 on left (xi=0).
-    # Contribution: phi_k(1)*fhat_{i+1/2} - phi_k(0)*fhat_{i-1/2}  (divided by dx)
-    fhat_r = fhat[1:]    # fhat at right interface of cell i [nx]
-    fhat_l = fhat[:-1]   # fhat at left  interface of cell i [nx]
+    fhat_r = fhat[1:]    # fhat at right interface of cell i  [nx]
+    fhat_l = fhat[:-1]   # fhat at left  interface of cell i  [nx]
 
-    surf_0 = (_DG_PHI_R[0] * fhat_r - _DG_PHI_L[0] * fhat_l) / dx   # [nx]
-    surf_1 = (_DG_PHI_R[1] * fhat_r - _DG_PHI_L[1] * fhat_l) / dx   # [nx]
+    # ---- Surface integral: -(phi_k(1)*fhat_r - phi_k(0)*fhat_l) / dx ----
+    surf_0 = (_DG_PHI_R[0] * fhat_r - _DG_PHI_L[0] * fhat_l) / dx
+    surf_1 = (_DG_PHI_R[1] * fhat_r - _DG_PHI_L[1] * fhat_l) / dx
 
     rhs = np.empty_like(dofs)
-    rhs[0::2] = vol_1 * 0.0 - surf_0    # vol term for phi_0 is zero
-    rhs[1::2] = vol_1       - surf_1
+    rhs[0::2] = -surf_0          # vol_0 = 0 (dphi_0/dxi = 0)
+    rhs[1::2] = vol_1 - surf_1
     return rhs
 
 
 def _dg_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarray:
-    """DG(1) step: project cell means -> evolve dofs via SSP-RK3 -> return cell means."""
+    """DG(1) step with SSP-RK3 and minmod slope limiter.
+
+    Takes cell means [nx], returns cell means [nx].
+    Internally subdivides dt to satisfy the DG CFL <= 1/3 stability limit.
+    """
+    amax = float(np.max(np.abs(flux_prime(u))))
+    amax = max(amax, 1e-6)
+    dt_stable = _DG_CFL_MAX * dx / amax
+    n_sub = max(1, int(np.ceil(dt / dt_stable)))
+    dt_sub = dt / n_sub
+
     dofs = _dg_project(u)
-    L = _dg_rhs
+    for _ in range(n_sub):
+        # SSP-RK3 stages with limiter after each stage
+        L = _dg_rhs
+        d1 = _dg_minmod_limiter(dofs + dt_sub * L(dofs, dx, boundary))
+        d2 = _dg_minmod_limiter(0.75 * dofs + 0.25 * (d1 + dt_sub * L(d1, dx, boundary)))
+        dofs = _dg_minmod_limiter((1.0/3.0) * dofs + (2.0/3.0) * (d2 + dt_sub * L(d2, dx, boundary)))
 
-    d1 = dofs + dt * L(dofs, dx, boundary)
-    d2 = 0.75 * dofs + 0.25 * (d1 + dt * L(d1, dx, boundary))
-    d3 = (1.0/3.0) * dofs + (2.0/3.0) * (d2 + dt * L(d2, dx, boundary))
-
-    u_new = _dg_cell_means(d3)
-    np.clip(u_new, 0.0, 1.0, out=u_new)
+    u_new = _dg_cell_means(dofs)
     if boundary == "fixed":
         u_new[0] = u[0]
         u_new[-1] = u[-1]
