@@ -92,6 +92,7 @@ _REMOTE_HOSTS: set[str] = {"dragon"}
 _HOST_CONFIGS: dict[str, str] = {
     "cleps": "hyperbolic_pde_cleps.yaml",
     "gpu0": "hyperbolic_pde_cleps.yaml",
+    "node0": "hyperbolic_pde_cleps.yaml",
 }
 
 

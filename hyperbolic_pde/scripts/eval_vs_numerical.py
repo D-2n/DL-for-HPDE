@@ -152,10 +152,10 @@ def main() -> None:
 
     # accumulate metrics
     metrics: dict[str, list[float]] = {
-        "HypNO-ST3": [], "WENO5": [], "Godunov": [],
+        "HypNO-ST3": [], "WENO5": [], "Godunov": [], "DG(1)": [],
     }
     per_t_errors: dict[str, list[np.ndarray]] = {
-        "HypNO-ST3": [], "WENO5": [], "Godunov": [],
+        "HypNO-ST3": [], "WENO5": [], "Godunov": [], "DG(1)": [],
     }
 
     plot_dir = (run_dir / "plots_vs_numerical") if run_dir else Path("hyperbolic_pde/runs/plots/vs_numerical")
@@ -178,6 +178,11 @@ def main() -> None:
             u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="godunov"
         )
 
+        # DG(1)
+        _, _, dg = solve_conservation_fvm(
+            u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="dg"
+        )
+
         # HypNO-ST3
         u0_t = torch.tensor(u0_np, dtype=torch.float32, device=device).unsqueeze(0)
         if not skip_ef:
@@ -190,14 +195,13 @@ def main() -> None:
             pred_t, _, _, _ = model(u0_t, x_grid, t_grid, edge_feats_adj=ef_adj, edge_feats_nonadj=ef_nonadj)
         hypno_np = pred_t[0].cpu().numpy()
 
-        for name, pred in [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]:
+        for name, pred in [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov), ("DG(1)", dg)]:
             metrics[name].append(mae(pred, lh))
             per_t_errors[name].append(per_t_mae(pred, lh))
 
         if plot_i < args.n_plots:
             vmin, vmax = float(lh.min()), float(lh.max())
-            solvers = [("Lax-Hopf (GT)", lh), ("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
-            n_cols = len(solvers) + 3  # solutions + 3 error maps
+            solvers = [("Lax-Hopf (GT)", lh), ("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov), ("DG(1)", dg)]
             fig, axes = plt.subplots(2, len(solvers), figsize=(4 * len(solvers), 8), constrained_layout=True)
 
             for c, (name, sol) in enumerate(solvers):
@@ -219,20 +223,24 @@ def main() -> None:
                 fig.colorbar(im, ax=axes[1, c])
             axes[1, 0].axis("off")
 
-            fig.suptitle(f"Sample {idx} — MAE: HypNO={metrics['HypNO-ST3'][-1]:.3e}  WENO5={metrics['WENO5'][-1]:.3e}  Godunov={metrics['Godunov'][-1]:.3e}")
+            fig.suptitle(
+                f"Sample {idx} — MAE: HypNO={metrics['HypNO-ST3'][-1]:.3e}  "
+                f"WENO5={metrics['WENO5'][-1]:.3e}  Godunov={metrics['Godunov'][-1]:.3e}  "
+                f"DG(1)={metrics['DG(1)'][-1]:.3e}"
+            )
             fig.savefig(plot_dir / f"compare_sample_{idx}.png", dpi=150)
             plt.close(fig)
 
     # summary metrics
     print("\n=== Summary (MAE vs Lax-Hopf) ===")
-    for name in ["HypNO-ST3", "WENO5", "Godunov"]:
+    for name in ["HypNO-ST3", "WENO5", "Godunov", "DG(1)"]:
         vals = metrics[name]
         print(f"  {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}  min={np.min(vals):.4e}  max={np.max(vals):.4e}")
 
     # error vs time plot
     fig_t, ax_t = plt.subplots(figsize=(8, 4), constrained_layout=True)
-    colors = {"HypNO-ST3": "tab:blue", "WENO5": "tab:orange", "Godunov": "tab:green"}
-    for name in ["HypNO-ST3", "WENO5", "Godunov"]:
+    colors = {"HypNO-ST3": "tab:blue", "WENO5": "tab:orange", "Godunov": "tab:green", "DG(1)": "tab:red"}
+    for name in ["HypNO-ST3", "WENO5", "Godunov", "DG(1)"]:
         mean_curve = np.stack(per_t_errors[name]).mean(axis=0)
         ax_t.plot(t_np, mean_curve, label=name, color=colors[name])
     ax_t.set_xlabel("t")
@@ -249,7 +257,7 @@ def main() -> None:
     with metrics_path.open("w", encoding="utf-8") as f:
         f.write("MAE vs Lax-Hopf exact solution\n")
         f.write(f"N samples: {len(test_idx)}\n\n")
-        for name in ["HypNO-ST3", "WENO5", "Godunov"]:
+        for name in ["HypNO-ST3", "WENO5", "Godunov", "DG(1)"]:
             vals = metrics[name]
             f.write(f"{name}:\n")
             f.write(f"  mean = {np.mean(vals):.6e}\n")
