@@ -540,6 +540,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         causal_temporal: bool = True,
         use_char_cone: bool = False,
         d_hidden_nonadj: int | None = None,
+        mask_same_t_nonadj: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -549,6 +550,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.radius_t = radius_t
         self.causal = causal_temporal
         self.use_char_cone = use_char_cone
+        self.mask_same_t_nonadj = mask_same_t_nonadj
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
@@ -578,6 +580,9 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
     ) -> torch.Tensor:
         is_adj_sp = (dm == 0) and (abs(di) == 1)
         is_pure_sp = (dm == 0)
+
+        if is_pure_sp and not is_adj_sp:
+            return torch.zeros_like(rel_x)
 
         if is_adj_sp:
             temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
@@ -706,6 +711,8 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         adj_gates:    list[torch.Tensor] = []
         nonadj_gates: list[torch.Tensor] = []
         for di, dm in offsets:
+            if self.mask_same_t_nonadj and dm == 0 and abs(di) > 1:
+                continue
             msg_in, is_adj_sp, gate, rel_x, rel_t = _build_edge(di, dm)
             if self.radius_x is not None:
                 gate = gate.masked_fill(rel_x.abs() > self.radius_x, 0.0)
@@ -775,6 +782,7 @@ class HypNO_ST3(nn.Module):
         use_char_cone: bool = False,
         d_hidden_nonadj: int | None = None,
         use_checkpoint: bool = True,
+        mask_same_t_nonadj: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -803,6 +811,7 @@ class HypNO_ST3(nn.Module):
                 causal_temporal=causal_temporal,
                 use_char_cone=use_char_cone,
                 d_hidden_nonadj=d_hidden_nonadj,
+                mask_same_t_nonadj=mask_same_t_nonadj,
             )
             for _ in range(n_layers)
         ])
