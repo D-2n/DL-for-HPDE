@@ -440,19 +440,24 @@ def _dg_step(u: np.ndarray, dx: float, dt: float, boundary: str) -> np.ndarray:
     Takes cell means [nx], returns cell means [nx].
     Internally subdivides dt to satisfy the DG CFL <= 1/3 stability limit.
     """
-    amax = float(np.max(np.abs(flux_prime(u))))
+    u = np.asarray(u, dtype=np.float64)
+    amax = float(np.nanmax(np.abs(flux_prime(u))))
     amax = max(amax, 1e-6)
+    dt = float(dt)
+    if not np.isfinite(dt) or dt <= 0.0:
+        return u.astype(np.float32)
     dt_stable = _DG_CFL_MAX * dx / amax
     n_sub = max(1, int(np.ceil(dt / dt_stable)))
     dt_sub = dt / n_sub
 
     dofs = _dg_project(u)
     for _ in range(n_sub):
-        # SSP-RK3 stages with limiter after each stage
-        L = _dg_rhs
-        d1 = _dg_minmod_limiter(dofs + dt_sub * L(dofs, dx, boundary))
-        d2 = _dg_minmod_limiter(0.75 * dofs + 0.25 * (d1 + dt_sub * L(d1, dx, boundary)))
-        dofs = _dg_minmod_limiter((1.0/3.0) * dofs + (2.0/3.0) * (d2 + dt_sub * L(d2, dx, boundary)))
+        d1 = _dg_minmod_limiter(dofs + dt_sub * _dg_rhs(dofs, dx, boundary))
+        d2 = _dg_minmod_limiter(0.75 * dofs + 0.25 * (d1 + dt_sub * _dg_rhs(d1, dx, boundary)))
+        dofs = _dg_minmod_limiter((1.0/3.0) * dofs + (2.0/3.0) * (d2 + dt_sub * _dg_rhs(d2, dx, boundary)))
+        if not np.isfinite(dofs).all():
+            dofs = _dg_project(u)
+            break
 
     u_new = _dg_cell_means(dofs)
     if boundary == "fixed":
