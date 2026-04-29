@@ -13,7 +13,7 @@ data:
   x_max: 1.0
   t_max: 1.0
   cfl: 0.25
-  num_samples: 5000
+  num_samples: 2000
   test_num_samples: 10
   test_sine_pieces: 20
   ic_types: [piecewise_constant, piecewise_sine, riemann]

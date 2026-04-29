@@ -10,6 +10,7 @@
 #SBATCH --exclude=gpu012
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 mkdir -p /home/dzdrale/scratch/logs
 
 CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde.yaml}

@@ -68,7 +68,7 @@ def main() -> None:
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--n_samples", type=int, default=10, help="Number of test samples to evaluate")
     parser.add_argument("--n_plots", type=int, default=3, help="Number of samples to plot")
-    parser.add_argument("--no-dg", action="store_true", help="Skip DG(1) solver")
+    #parser.add_argument("--no-dg", action="store_true", help="Skip DG(1) solver")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -152,7 +152,7 @@ def main() -> None:
     skip_ef = encoder_type == "mlp"
 
     # accumulate metrics
-    solvers_to_run = ["HypNO-ST3", "WENO5", "Godunov"] + ([] if args.no_dg else ["DG(1)"])
+    solvers_to_run = ["HypNO-ST3", "WENO5", "Godunov"] #+ ([] if args.no_dg else ["DG(1)"])
     metrics: dict[str, list[float]] = {k: [] for k in solvers_to_run}
     per_t_errors: dict[str, list[np.ndarray]] = {k: [] for k in solvers_to_run}
 
@@ -180,6 +180,8 @@ def main() -> None:
         )
 
         # DG(1)
+        dg = None
+        '''
         if not args.no_dg:
             print(f"  running DG...", flush=True)
             try:
@@ -191,7 +193,7 @@ def main() -> None:
                 dg = np.full((nt, len(x_np)), float("nan"))
         else:
             dg = None
-
+        '''
         # HypNO-ST3
         print(f"  running HypNO...", flush=True)
         u0_t = torch.tensor(u0_np, dtype=torch.float32, device=device).unsqueeze(0)
@@ -206,7 +208,8 @@ def main() -> None:
         hypno_np = pred_t[0].cpu().numpy()
 
         pairs = [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
-        if not args.no_dg:
+        #if not args.no_dg:
+        if False:
             pairs.append(("DG(1)", dg))
         for name, pred in pairs:
             metrics[name].append(mae(pred, lh))
@@ -215,7 +218,8 @@ def main() -> None:
         if plot_i < args.n_plots:
             vmin, vmax = float(lh.min()), float(lh.max())
             solvers = [("Lax-Hopf (GT)", lh), ("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
-            if not args.no_dg:
+            #if not args.no_dg:
+            if False:
                 solvers.append(("DG(1)", dg))
             fig, axes = plt.subplots(2, len(solvers), figsize=(4 * len(solvers), 8), constrained_layout=True)
 
@@ -241,7 +245,7 @@ def main() -> None:
             fig.suptitle(
                 f"Sample {idx} — MAE: HypNO={metrics['HypNO-ST3'][-1]:.3e}  "
                 f"WENO5={metrics['WENO5'][-1]:.3e}  Godunov={metrics['Godunov'][-1]:.3e}  "
-                f"DG(1)={metrics['DG(1)'][-1]:.3e}"
+                #f"DG(1)={metrics['DG(1)'][-1]:.3e}"
             )
             fig.savefig(plot_dir / f"compare_sample_{idx}.png", dpi=150)
             plt.close(fig)
