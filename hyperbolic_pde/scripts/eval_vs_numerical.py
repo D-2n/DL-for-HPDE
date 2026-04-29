@@ -68,6 +68,7 @@ def main() -> None:
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--n_samples", type=int, default=10, help="Number of test samples to evaluate")
     parser.add_argument("--n_plots", type=int, default=3, help="Number of samples to plot")
+    parser.add_argument("--no-dg", action="store_true", help="Skip DG(1) solver")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -151,12 +152,9 @@ def main() -> None:
     skip_ef = encoder_type == "mlp"
 
     # accumulate metrics
-    metrics: dict[str, list[float]] = {
-        "HypNO-ST3": [], "WENO5": [], "Godunov": [], "DG(1)": [],
-    }
-    per_t_errors: dict[str, list[np.ndarray]] = {
-        "HypNO-ST3": [], "WENO5": [], "Godunov": [], "DG(1)": [],
-    }
+    solvers_to_run = ["HypNO-ST3", "WENO5", "Godunov"] + ([] if args.no_dg else ["DG(1)"])
+    metrics: dict[str, list[float]] = {k: [] for k in solvers_to_run}
+    per_t_errors: dict[str, list[np.ndarray]] = {k: [] for k in solvers_to_run}
 
     plot_dir = (run_dir / "plots_vs_numerical") if run_dir else Path("hyperbolic_pde/runs/plots/vs_numerical")
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -182,14 +180,17 @@ def main() -> None:
         )
 
         # DG(1)
-        print(f"  running DG...", flush=True)
-        try:
-            _, _, dg = solve_conservation_fvm(
-                u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="dg"
-            )
-        except RuntimeError as e:
-            print(f"  DG diverged: {e} — skipping", flush=True)
-            dg = np.full((nt, len(x_np)), float("nan"))
+        if not args.no_dg:
+            print(f"  running DG...", flush=True)
+            try:
+                _, _, dg = solve_conservation_fvm(
+                    u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="dg"
+                )
+            except RuntimeError as e:
+                print(f"  DG diverged: {e} — skipping", flush=True)
+                dg = np.full((nt, len(x_np)), float("nan"))
+        else:
+            dg = None
 
         # HypNO-ST3
         print(f"  running HypNO...", flush=True)
@@ -204,13 +205,18 @@ def main() -> None:
             pred_t, _, _, _ = model(u0_t, x_grid, t_grid, edge_feats_adj=ef_adj, edge_feats_nonadj=ef_nonadj)
         hypno_np = pred_t[0].cpu().numpy()
 
-        for name, pred in [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov), ("DG(1)", dg)]:
+        pairs = [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
+        if not args.no_dg:
+            pairs.append(("DG(1)", dg))
+        for name, pred in pairs:
             metrics[name].append(mae(pred, lh))
             per_t_errors[name].append(per_t_mae(pred, lh))
 
         if plot_i < args.n_plots:
             vmin, vmax = float(lh.min()), float(lh.max())
-            solvers = [("Lax-Hopf (GT)", lh), ("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov), ("DG(1)", dg)]
+            solvers = [("Lax-Hopf (GT)", lh), ("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
+            if not args.no_dg:
+                solvers.append(("DG(1)", dg))
             fig, axes = plt.subplots(2, len(solvers), figsize=(4 * len(solvers), 8), constrained_layout=True)
 
             for c, (name, sol) in enumerate(solvers):
@@ -242,14 +248,14 @@ def main() -> None:
 
     # summary metrics
     print("\n=== Summary (MAE vs Lax-Hopf) ===")
-    for name in ["HypNO-ST3", "WENO5", "Godunov", "DG(1)"]:
+    for name in solvers_to_run:
         vals = metrics[name]
         print(f"  {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}  min={np.min(vals):.4e}  max={np.max(vals):.4e}")
 
     # error vs time plot
     fig_t, ax_t = plt.subplots(figsize=(8, 4), constrained_layout=True)
     colors = {"HypNO-ST3": "tab:blue", "WENO5": "tab:orange", "Godunov": "tab:green", "DG(1)": "tab:red"}
-    for name in ["HypNO-ST3", "WENO5", "Godunov", "DG(1)"]:
+    for name in solvers_to_run:
         mean_curve = np.stack(per_t_errors[name]).mean(axis=0)
         ax_t.plot(t_np, mean_curve, label=name, color=colors[name])
     ax_t.set_xlabel("t")
@@ -266,7 +272,7 @@ def main() -> None:
     with metrics_path.open("w", encoding="utf-8") as f:
         f.write("MAE vs Lax-Hopf exact solution\n")
         f.write(f"N samples: {len(test_idx)}\n\n")
-        for name in ["HypNO-ST3", "WENO5", "Godunov", "DG(1)"]:
+        for name in solvers_to_run:
             vals = metrics[name]
             f.write(f"{name}:\n")
             f.write(f"  mean = {np.mean(vals):.6e}\n")
