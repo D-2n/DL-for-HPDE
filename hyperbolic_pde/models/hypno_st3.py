@@ -29,7 +29,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -59,10 +58,7 @@ def load_config(path: Path) -> dict:
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
-parser = argparse.ArgumentParser(description="Instantiate HypNO-ST v3")
-parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
-args, _ = parser.parse_known_args()
-cfg = load_config(Path(args.config))
+cfg = load_config(resolve_config_path(ROOT / "configs"))
 cfg = apply_runtime_overrides(cfg)
 
 
