@@ -30,7 +30,7 @@ data:
 
 
 hypno_st2:
-  stencil_k_x: 1
+  stencil_k_x: 4
   stencil_k_t: 5
   d_latent: 64
   d_hidden: 96
@@ -74,7 +74,7 @@ hypno_st2:
   plot_dir: hyperbolic_pde/runs/plots/hypno_st2
 
 hypno_st3:
-  stencil_k_x: 2
+  stencil_k_x: 5
   stencil_k_t: 4
   t_window: null        # random temporal window length during training (null = full nt)
   compile: false      # torch.compile the model for faster kernel fusion
@@ -87,6 +87,7 @@ hypno_st3:
   encoder_type: gnn
   encoder_scaling: classic
   shock_mode: physics
+  mask_same_t_nonadj: true 
   use_char_cone: false      # enable Gaussian char-cone component of physics gate
   shock_delta: 0.1
   shock_threshold: 0.3
@@ -100,13 +101,13 @@ hypno_st3:
   radius_x: null
   radius_t: null
   optimizer: adamw
-  epochs: 150
+  epochs: 200
   lr: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 1.0e-5
-  batch_size: 16
+  batch_size: 8
   loss_type: mae             # 'mae' (L1) or 'mse' (L2) — applies to state/mass/pinn/probe terms
   lambda_state: 1.0
   lambda_conservation: 1.0
