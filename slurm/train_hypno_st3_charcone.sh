@@ -13,4 +13,10 @@ export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
 mkdir -p /home/dzdrale/scratch/logs
 
 CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde.yaml}
-/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3_charcone.py --config $CONFIG
+RESUME=${2:-}
+
+if [ -n "$RESUME" ]; then
+    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3_charcone.py --config $CONFIG --resume-run $RESUME
+else
+    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3_charcone.py --config $CONFIG
+fi

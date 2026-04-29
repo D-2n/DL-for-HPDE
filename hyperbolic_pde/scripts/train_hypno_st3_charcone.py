@@ -267,16 +267,38 @@ def gpu_status() -> str:
 # --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
+def _find_latest_checkpoint(run_dir: Path) -> tuple[Path | None, int]:
+    """Return (checkpoint_path, epoch) for the highest-epoch checkpoint in run_dir."""
+    ckpts = sorted(run_dir.glob("checkpoint_epoch*.pt"))
+    if not ckpts:
+        return None, 0
+    latest = ckpts[-1]
+    epoch = int(latest.stem.replace("checkpoint_epoch", ""))
+    return latest, epoch
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train HypNO-ST3-CharCone on hyperbolic PDE dataset.")
     parser.add_argument(
         "--config", type=str,
         default=str(resolve_config_path(ROOT / "configs")),
     )
+    parser.add_argument(
+        "--resume-run", type=str, default=None,
+        help="Path to a previous run directory. Resumes from its latest checkpoint.",
+    )
     args = parser.parse_args()
     print('--- STARTING HYPNO_ST3_CHARCONE TRAINING ---')
-    cfg = load_config(Path(args.config))
+
+    resume_run_dir = Path(args.resume_run) if args.resume_run else None
+    if resume_run_dir and (resume_run_dir / "config.yaml").exists():
+        with (resume_run_dir / "config.yaml").open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        print(f"Resuming from run: {resume_run_dir}")
+    else:
+        cfg = load_config(Path(args.config))
     cfg = apply_runtime_overrides(cfg)
+
     data_cfg = cfg["data"]
     model_cfg = cfg.get("hypno_st3", cfg.get("hypno_st2", cfg.get("hypno_st")))
 
@@ -284,7 +306,10 @@ def main() -> None:
     torch.manual_seed(int(cfg.get("seed", 42)))
     np.random.seed(int(cfg.get("seed", 42)))
 
-    run_dir = create_run_dir()
+    if resume_run_dir:
+        run_dir = resume_run_dir
+    else:
+        run_dir = create_run_dir()
     log = setup_logging(run_dir)
     log.info(f"Run directory: {run_dir}")
     log.info(f"Device: {device}")
@@ -349,13 +374,26 @@ def main() -> None:
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
     t_grid = torch.tensor(dataset.t, dtype=torch.float32, device=device)
 
-    resume_path = model_cfg.get("resume_from", None)
-    if resume_path and Path(resume_path).exists():
-        ckpt = torch.load(resume_path, map_location=device, weights_only=True)
-        if any(k.startswith("_orig_mod.") for k in ckpt):
-            ckpt = {k.removeprefix("_orig_mod."): v for k, v in ckpt.items()}
-        model.load_state_dict(ckpt)
-        log.info(f"Resumed weights from {resume_path}")
+    start_epoch = 1
+    if resume_run_dir:
+        ckpt_path, resumed_epoch = _find_latest_checkpoint(resume_run_dir)
+        if ckpt_path:
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+            if any(k.startswith("_orig_mod.") for k in ckpt):
+                ckpt = {k.removeprefix("_orig_mod."): v for k, v in ckpt.items()}
+            model.load_state_dict(ckpt)
+            start_epoch = resumed_epoch + 1
+            log.info(f"Resumed from {ckpt_path} (epoch {resumed_epoch}), continuing from epoch {start_epoch}")
+        else:
+            log.warning(f"No checkpoints found in {resume_run_dir}, starting from scratch")
+    else:
+        resume_path = model_cfg.get("resume_from", None)
+        if resume_path and Path(resume_path).exists():
+            ckpt = torch.load(resume_path, map_location=device, weights_only=True)
+            if any(k.startswith("_orig_mod.") for k in ckpt):
+                ckpt = {k.removeprefix("_orig_mod."): v for k, v in ckpt.items()}
+            model.load_state_dict(ckpt)
+            log.info(f"Resumed weights from {resume_path}")
 
     torch.set_float32_matmul_precision("high")
     torch._dynamo.config.capture_scalar_outputs = True
@@ -378,10 +416,16 @@ def main() -> None:
     if schedule == "cosine":
         lr_min = float(model_cfg.get("lr_min", 1.0e-5))
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
+        if start_epoch > 1:
+            for _ in range((start_epoch - 1) * len(loader)):
+                scheduler.step()
     elif schedule == "step":
         lr_step = int(model_cfg.get("lr_step", 1000))
         lr_gamma = float(model_cfg.get("lr_gamma", 0.5))
         scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step, gamma=lr_gamma)
+        if start_epoch > 1:
+            for _ in range((start_epoch - 1) * len(loader)):
+                scheduler.step()
 
     lambda_state = float(model_cfg.get("lambda_state", 1.0))
     lambda_conservation = float(model_cfg.get("lambda_conservation", 1.0))
@@ -398,7 +442,7 @@ def main() -> None:
         raise ValueError(f"hypno_st3.loss_type must be 'mae' or 'mse', got {loss_type!r}")
     log.info(f"Training objective: {loss_type.upper()}")
 
-    step = 0
+    step = (start_epoch - 1) * len(loader)
     model.train()
     start_time = time.perf_counter()
     checkpoint_every = int(model_cfg.get("checkpoint_every", 50))
@@ -417,7 +461,7 @@ def main() -> None:
         nonadj = ef_nonadj.to(device) if ef_nonadj.numel() > 0 else None
         return adj, nonadj
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         epoch_loss_sum = 0.0
         epoch_mse_sum = 0.0
         epoch_count = 0
