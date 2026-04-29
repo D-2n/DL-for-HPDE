@@ -166,24 +166,29 @@ def main() -> None:
         print(f"Sample {plot_i + 1}/{len(test_idx)} (dataset idx {idx}) ...")
 
         # Lax-Hopf exact solution (ground truth)
+        print(f"  running Lax-Hopf...", flush=True)
         _, _, lh = solve_lax_hopf(u0_np, x_min, x_max, t_max, nt, boundary=boundary)
 
         # WENO5
+        print(f"  running WENO5...", flush=True)
         _, _, weno = solve_conservation_fvm(
             u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="weno5"
         )
 
         # Godunov
+        print(f"  running Godunov...", flush=True)
         _, _, godunov = solve_conservation_fvm(
             u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="godunov"
         )
 
         # DG(1)
+        print(f"  running DG...", flush=True)
         _, _, dg = solve_conservation_fvm(
             u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="dg"
         )
 
         # HypNO-ST3
+        print(f"  running HypNO...", flush=True)
         u0_t = torch.tensor(u0_np, dtype=torch.float32, device=device).unsqueeze(0)
         if not skip_ef:
             ef_adj, ef_nonadj = precompute_lwr_edge_features_v3(u0_t, x_grid, stencil_k_x)
