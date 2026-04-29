@@ -16,7 +16,7 @@ CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde.yaml}
 RESUME=${2:-}
 
 if [ -n "$RESUME" ]; then
-    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3_charcone.py --config $CONFIG --resume-run $RESUME
+    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3_charcone.py --config $CONFIG --resume_run $RESUME
 else
     /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3_charcone.py --config $CONFIG
 fi
