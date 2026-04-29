@@ -508,6 +508,10 @@ def solve_conservation_fvm(
         u_prev = u.copy()
         t_prev = t
         u = step_fn(u, dx, dt, boundary)
+        if not np.isfinite(u).all():
+            raise RuntimeError(
+                f"FVM solver diverged at t={t:.4f} (method produced non-finite values)"
+            )
         t += dt
 
         while k < nt_out and t >= t_out[k] - 1e-12:

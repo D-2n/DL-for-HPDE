@@ -183,9 +183,13 @@ def main() -> None:
 
         # DG(1)
         print(f"  running DG...", flush=True)
-        _, _, dg = solve_conservation_fvm(
-            u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="dg"
-        )
+        try:
+            _, _, dg = solve_conservation_fvm(
+                u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="dg"
+            )
+        except RuntimeError as e:
+            print(f"  DG diverged: {e} — skipping", flush=True)
+            dg = np.full((nt, len(x_np)), float("nan"))
 
         # HypNO-ST3
         print(f"  running HypNO...", flush=True)
