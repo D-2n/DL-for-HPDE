@@ -576,6 +576,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         use_char_cone: bool = False,
         d_hidden_nonadj: int | None = None,
         mask_same_t_nonadj: bool = True,
+        temporal_gate_type: str = "cfl",
         **_ignored,
     ) -> None:
         super().__init__()
@@ -586,6 +587,12 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.causal = causal_temporal
         self.use_char_cone = use_char_cone
         self.mask_same_t_nonadj = mask_same_t_nonadj
+        if temporal_gate_type not in {"cfl", "none", "time"}:
+            raise ValueError(
+                f"temporal_gate_type must be one of 'cfl', 'none', 'time'; "
+                f"got {temporal_gate_type!r}."
+            )
+        self.temporal_gate_type = temporal_gate_type
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
@@ -596,6 +603,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         if use_char_cone:
             self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
+        self.phys_time_decay = nn.Parameter(torch.tensor(0.0))
 
         # adj:    h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind, sign(rel_x) = 2d+10
         self.adj_msg = _make_mlp(2 * d_latent + 10, d_hidden, d_latent, 3, activation)
@@ -640,10 +648,17 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             gate = torch.ones_like(rel_x)
 
         if not is_pure_sp:                                                     # dm != 0
-            cfl_scale = F.softplus(self.phys_cfl_scale).clamp(min=1e-6)
-            cfl = a_i.abs() * rel_t.abs() / dx_grid
-            g_cfl = torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
-            gate = gate * g_cfl
+            if self.temporal_gate_type == "cfl":
+                cfl_scale = F.softplus(self.phys_cfl_scale).clamp(min=1e-6)
+                cfl = a_i.abs() * rel_t.abs() / dx_grid
+                g_cfl = torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
+                gate = gate * g_cfl
+            elif self.temporal_gate_type == "time":
+                alpha_t = F.softplus(self.phys_time_decay).clamp(min=1e-6)
+                r_t = float(abs(dm))
+                g_time = 1.0 / (1.0 + alpha_t * r_t)
+                gate = gate * g_time
+            # "none" -> no temporal attenuation
 
         if self.use_char_cone:
             char_w = F.softplus(self.phys_char_width).clamp(min=1e-6)
@@ -850,6 +865,7 @@ class HypNO_ST3(nn.Module):
         d_hidden_nonadj: int | None = None,
         use_checkpoint: bool = True,
         mask_same_t_nonadj: bool = True,
+        temporal_gate_type: str = "cfl",
         **_ignored,
     ) -> None:
         super().__init__()
@@ -879,6 +895,7 @@ class HypNO_ST3(nn.Module):
                 use_char_cone=use_char_cone,
                 d_hidden_nonadj=d_hidden_nonadj,
                 mask_same_t_nonadj=mask_same_t_nonadj,
+                temporal_gate_type=temporal_gate_type,
             )
             for _ in range(n_layers)
         ])

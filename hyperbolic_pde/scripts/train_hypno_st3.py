@@ -369,6 +369,7 @@ def main() -> None:
         detector_cfg=cfg.get("shock_detector", {}),
         d_hidden_nonadj=d_hidden_nonadj,
         use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
+        temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
     ).to(device)
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
