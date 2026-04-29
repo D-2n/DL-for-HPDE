@@ -10,4 +10,5 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
 mkdir -p /home/dzdrale/scratch/lwr_1d
 
-/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_data.py
+CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde.yaml}
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_data.py --config $CONFIG
