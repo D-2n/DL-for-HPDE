@@ -284,7 +284,7 @@ def main() -> None:
         default=str(resolve_config_path(ROOT / "configs")),
     )
     parser.add_argument(
-        "--resume-run", type=str, default=None,
+        "--resume_run", type=str, default=None,
         help="Path to a previous run directory. Resumes from its latest checkpoint.",
     )
     args = parser.parse_args()
