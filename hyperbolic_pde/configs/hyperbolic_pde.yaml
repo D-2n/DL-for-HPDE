@@ -87,7 +87,7 @@ hypno_st3:
   encoder_type: gnn
   encoder_scaling: classic
   shock_mode: physics
-  mask_same_t_nonadj: true 
+  mask_same_t_nonadj: false
   use_char_cone: false      # enable Gaussian char-cone component of physics gate
   shock_delta: 0.1
   shock_threshold: 0.3
