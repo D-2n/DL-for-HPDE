@@ -132,6 +132,7 @@ def main() -> None:
         detector_path=None,
         detector_cfg={},
         d_hidden_nonadj=d_hidden_nonadj,
+        include_flux=bool(model_cfg.get("include_flux", True)),
     ).to(device)
 
     if run_dir and (run_dir / "model_final.pt").exists():

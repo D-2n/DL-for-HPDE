@@ -289,6 +289,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         encoder_type: str = "gnn",
         use_char_cone: bool = False,
         causal_temporal: bool = True,
+        include_flux: bool = True,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
@@ -299,12 +300,14 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.encoder_type = encoder_type
         self.use_char_cone = use_char_cone
         self.causal = causal_temporal
-        self.node_mlp = _make_mlp(5, d_hidden, d_latent, 2, activation)
+        self.include_flux = include_flux
+        node_in = 5 if include_flux else 4
+        self.node_mlp = _make_mlp(node_in, d_hidden, d_latent, 2, activation)
         if encoder_type == "mlp":
             return
 
-        # Static edge feature dim = 14 (see class docstring).
-        edge_in = 14
+        # Static edge feature dim = 14 (12 if include_flux=False, dropping f0_i, f0_j).
+        edge_in = 14 if include_flux else 12
         self.edge_mlp = _make_mlp(edge_in, d_hidden, d_latent, 2, activation)
 
         if encoder_scaling == "classic":
@@ -396,7 +399,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
 
         f0_i_node = u0_bc * (1.0 - u0_bc)
         a0_i_node = 1.0 - 2.0 * u0_bc
-        node_in = torch.cat([u0_bc, x_bc, t_bc, f0_i_node, a0_i_node], dim=-1)
+        if self.include_flux:
+            node_in = torch.cat([u0_bc, x_bc, t_bc, f0_i_node, a0_i_node], dim=-1)
+        else:
+            node_in = torch.cat([u0_bc, x_bc, t_bc, a0_i_node], dim=-1)
         h_node  = self.node_mlp(node_in)
 
         if self.encoder_type == "mlp":
@@ -455,16 +461,27 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 sign_a0 = torch.zeros_like(du0)
             is_adj_flag = u0_bc.new_full(u0_bc.shape, 1.0 if is_adj_sp else 0.0)
             sign_rel_x = torch.sign(rel_x)
-            edge_in = torch.cat([
-                u0_bc, u0_j,
-                f0_i, f0_j,
-                a0_i, a0_j,
-                du0,
-                sign_rel_x, rel_t,
-                t_bc, t_j,
-                a0_ij, sign_a0,
-                is_adj_flag,
-            ], dim=-1)                                                          # [..., 14]
+            if self.include_flux:
+                edge_in = torch.cat([
+                    u0_bc, u0_j,
+                    f0_i, f0_j,
+                    a0_i, a0_j,
+                    du0,
+                    sign_rel_x, rel_t,
+                    t_bc, t_j,
+                    a0_ij, sign_a0,
+                    is_adj_flag,
+                ], dim=-1)                                                      # [..., 14]
+            else:
+                edge_in = torch.cat([
+                    u0_bc, u0_j,
+                    a0_i, a0_j,
+                    du0,
+                    sign_rel_x, rel_t,
+                    t_bc, t_j,
+                    a0_ij, sign_a0,
+                    is_adj_flag,
+                ], dim=-1)                                                      # [..., 12]
             if self.encoder_scaling == "classic":
                 gate = torch.ones_like(rel_x)
             else:  # physics
@@ -538,6 +555,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         d_hidden_nonadj: int | None = None,
         mask_same_t_nonadj: bool = True,
         temporal_gate_type: str = "cfl",
+        include_flux: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -548,6 +566,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.causal = causal_temporal
         self.use_char_cone = use_char_cone
         self.mask_same_t_nonadj = mask_same_t_nonadj
+        self.include_flux = include_flux
         if temporal_gate_type not in {"cfl", "none", "time"}:
             raise ValueError(
                 f"temporal_gate_type must be one of 'cfl', 'none', 'time'; "
@@ -566,10 +585,12 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
         self.phys_time_decay = nn.Parameter(torch.tensor(0.0))
 
-        # adj:    h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind, sign(rel_x) = 2d+10
-        self.adj_msg = _make_mlp(2 * d_latent + 10, d_hidden, d_latent, 3, activation)
-        # nonadj: h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi = 2d+11
-        self.nonadj_msg = _make_mlp(2 * d_latent + 11, dh_na, d_latent, 3, activation)
+        # adj:    h_i, h_j, u_i, u_j, [f_i, f_j,] a_i, a_j, a_ij, sign_a, upwind, sign(rel_x)
+        adj_extra = 10 if include_flux else 8
+        self.adj_msg = _make_mlp(2 * d_latent + adj_extra, d_hidden, d_latent, 3, activation)
+        # nonadj: h_i, h_j, u_i, u_j, [f_i, f_j,] a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi
+        nonadj_extra = 11 if include_flux else 9
+        self.nonadj_msg = _make_mlp(2 * d_latent + nonadj_extra, dh_na, d_latent, 3, activation)
 
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
         self.W = nn.Linear(d_latent, d_latent)
@@ -688,24 +709,43 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             if is_adj_sp:
                 _, _, _, _, _, _, a_ij, sign_a, upwind = \
                     _compute_adj_spatial_edge_feats(u_hat_i, u_hat_j, rel_x)
-                msg_in = torch.cat([
-                    h, h_j,
-                    u_hat_i.expand_as(rel_x), u_hat_j,
-                    f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
-                    a_ij, sign_a, upwind,
-                    torch.sign(rel_x),
-                ], dim=-1)                                                      # 2d + 12
+                if self.include_flux:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        u_hat_i.expand_as(rel_x), u_hat_j,
+                        f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
+                        a_ij, sign_a, upwind,
+                        torch.sign(rel_x),
+                    ], dim=-1)                                                  # 2d + 10
+                else:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        u_hat_i.expand_as(rel_x), u_hat_j,
+                        a_hat_i.expand_as(rel_x), a_j,
+                        a_ij, sign_a, upwind,
+                        torch.sign(rel_x),
+                    ], dim=-1)                                                  # 2d + 8
             else:
                 a_ij = torch.zeros_like(rel_x)
                 xi = x_i / t_i.clamp(min=1e-6)
-                msg_in = torch.cat([
-                    h, h_j,
-                    u_hat_i.expand_as(rel_x), u_hat_j,
-                    f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
-                    rel_x, rel_t, cfl,
-                    torch.sign(rel_x),
-                    xi,
-                ], dim=-1)                                                      # 2d + 11
+                if self.include_flux:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        u_hat_i.expand_as(rel_x), u_hat_j,
+                        f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
+                        rel_x, rel_t, cfl,
+                        torch.sign(rel_x),
+                        xi,
+                    ], dim=-1)                                                  # 2d + 11
+                else:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        u_hat_i.expand_as(rel_x), u_hat_j,
+                        a_hat_i.expand_as(rel_x), a_j,
+                        rel_x, rel_t, cfl,
+                        torch.sign(rel_x),
+                        xi,
+                    ], dim=-1)                                                  # 2d + 9
 
             gate = self._ball_physics_gate(
                 di=di, dm=dm,
@@ -795,6 +835,7 @@ class HypNO_ST3(nn.Module):
         use_checkpoint: bool = True,
         mask_same_t_nonadj: bool = True,
         temporal_gate_type: str = "cfl",
+        include_flux: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -804,6 +845,7 @@ class HypNO_ST3(nn.Module):
         self.radius_t = radius_t
         self.skip = skip
         self.use_checkpoint = use_checkpoint
+        self.include_flux = include_flux
         self.has_external_detector = False
 
         self.lifting = _SpaceTimeLiftingLayer(
@@ -814,6 +856,7 @@ class HypNO_ST3(nn.Module):
             encoder_scaling=encoder_scaling, encoder_type=encoder_type,
             use_char_cone=use_char_cone,
             causal_temporal=causal_temporal,
+            include_flux=include_flux,
         )
 
         self.mp_layers = nn.ModuleList([
@@ -825,6 +868,7 @@ class HypNO_ST3(nn.Module):
                 d_hidden_nonadj=d_hidden_nonadj,
                 mask_same_t_nonadj=mask_same_t_nonadj,
                 temporal_gate_type=temporal_gate_type,
+                include_flux=include_flux,
             )
             for _ in range(n_layers)
         ])
