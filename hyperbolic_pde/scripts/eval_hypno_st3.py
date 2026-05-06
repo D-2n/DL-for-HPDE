@@ -264,6 +264,25 @@ def main() -> None:
         out_path = plot_dir / f"hypno_st3_sample_{plots_made}.png"
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
+
+        per_t_mae_sample = err_np.mean(axis=1)
+        per_t_mse_sample = (err_np ** 2).mean(axis=1)
+        fig_t, ax_t = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+        ax_t[0].plot(dataset.t, per_t_mse_sample)
+        ax_t[0].set_xlabel("t")
+        ax_t[0].set_ylabel("MSE")
+        ax_t[0].set_title(f"Sample {plots_made} — MSE vs time")
+        ax_t[0].set_yscale("log")
+        ax_t[0].grid(True, alpha=0.3)
+        ax_t[1].plot(dataset.t, per_t_mae_sample)
+        ax_t[1].set_xlabel("t")
+        ax_t[1].set_ylabel("MAE")
+        ax_t[1].set_title(f"Sample {plots_made} — MAE vs time")
+        ax_t[1].set_yscale("log")
+        ax_t[1].grid(True, alpha=0.3)
+        fig_t.savefig(plot_dir / f"hypno_st3_sample_{plots_made}_error_vs_time.png", dpi=150)
+        plt.close(fig_t)
+
         plots_made += 1
 
     metrics_path = plot_dir.parent / "metrics.txt" if run_dir else plot_dir / "metrics.txt"
