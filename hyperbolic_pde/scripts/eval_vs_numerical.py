@@ -66,8 +66,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
     parser.add_argument("--run-dir", type=str, default=None)
-    parser.add_argument("--n_samples", type=int, default=10, help="Number of test samples to evaluate")
-    parser.add_argument("--n_plots", type=int, default=3, help="Number of samples to plot")
+    parser.add_argument("--n_samples", type=int, default=70, help="Number of test samples to evaluate")
+    parser.add_argument("--n_plots", type=int, default=5, help="Number of samples to plot")
     #parser.add_argument("--no-dg", action="store_true", help="Skip DG(1) solver")
     args = parser.parse_args()
 

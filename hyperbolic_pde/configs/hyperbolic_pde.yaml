@@ -91,6 +91,7 @@ hypno_st3:
   use_char_cone: false      # enable Gaussian char-cone component of physics gate
   shock_delta: 0.1
   shock_threshold: 0.3
+  include_flux: false
   weno_eps: 1.0e-6
   weno_p: 0.5
   unified_mp: true
