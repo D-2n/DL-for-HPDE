@@ -227,10 +227,11 @@ def main() -> None:
             fig, axes = plt.subplots(2, len(solvers), figsize=(4 * len(solvers), 8), constrained_layout=True)
 
             for c, (name, sol) in enumerate(solvers):
-                axes[0, c].pcolormesh(x_np, t_np, sol, shading="auto", cmap="jet", vmin=vmin, vmax=vmax)
+                im_sol = axes[0, c].pcolormesh(x_np, t_np, sol, shading="auto", cmap="jet", vmin=vmin, vmax=vmax)
                 axes[0, c].set_title(name)
                 axes[0, c].set_xlabel("x")
                 axes[0, c].set_ylabel("t")
+                fig.colorbar(im_sol, ax=axes[0, c], label="u")
 
             # absolute error maps (row 1)
             err_vmax = None
