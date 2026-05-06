@@ -839,6 +839,31 @@ class HypNO_ST3(nn.Module):
         **_ignored,
     ) -> None:
         super().__init__()
+        print("=" * 60)
+        print("[HypNO_ST3] constructing with parameters:")
+        print(f"  stencil_k_x        = {stencil_k_x}")
+        print(f"  stencil_k_t        = {stencil_k_t}")
+        print(f"  d_latent           = {d_latent}")
+        print(f"  d_hidden           = {d_hidden}")
+        print(f"  d_hidden_nonadj    = {d_hidden_nonadj}")
+        print(f"  n_layers           = {n_layers}")
+        print(f"  activation         = {activation}")
+        print(f"  causal_temporal    = {causal_temporal}")
+        print(f"  radius_x           = {radius_x}")
+        print(f"  radius_t           = {radius_t}")
+        print(f"  encoder_scaling    = {encoder_scaling}")
+        print(f"  encoder_type       = {encoder_type}")
+        print(f"  readout            = {readout}")
+        print(f"  skip               = {skip}")
+        print(f"  use_char_cone      = {use_char_cone}")
+        print(f"  use_checkpoint     = {use_checkpoint}")
+        print(f"  mask_same_t_nonadj = {mask_same_t_nonadj}")
+        print(f"  temporal_gate_type = {temporal_gate_type}")
+        print(f"  include_flux       = {include_flux}")
+        print(f"  detector_path      = {detector_path}")
+        if _ignored:
+            print(f"  IGNORED kwargs     = {sorted(_ignored.keys())}")
+        print("=" * 60)
         self.stencil_k_x = stencil_k_x
         self.stencil_k_t = stencil_k_t
         self.radius_x = radius_x
