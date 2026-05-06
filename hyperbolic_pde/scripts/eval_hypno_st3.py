@@ -127,6 +127,8 @@ def main() -> None:
         detector_cfg=cfg.get("shock_detector", {}),
         d_hidden_nonadj=d_hidden_nonadj,
         include_flux=bool(model_cfg.get("include_flux", True)),
+        mask_same_t_nonadj=bool(model_cfg.get("mask_same_t_nonadj", True)),
+        temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
     ).to(device)
 
     if run_dir and (run_dir / "model_final.pt").exists():
