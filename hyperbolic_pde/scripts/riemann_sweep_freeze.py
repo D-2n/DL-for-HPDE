@@ -212,22 +212,41 @@ def _evaluate_run(
     inv_s_arr  = 1.0 / np.abs(s_arr)
 
     # ---- Plot 1: t_freeze vs 1/|s| with theoretical line --------------- #
+    # Reliable measurements: not clipped at t_max, and not at the t=0 false
+    # positive of the argmax detector (very small t means the detector locked
+    # onto a noisy off-shock cell at the first frame, not a real freeze).
+    not_clipped = tf_arr < t_max - 1e-6
+    not_zero    = tf_arr > 2.0 * (t_np[1] - t_np[0])      # > 2*dt
+    reliable    = not_clipped & not_zero
+    glitch      = not_clipped & ~not_zero                 # to mark separately
+
     fig, ax = plt.subplots(figsize=(7, 5), constrained_layout=True)
-    ax.scatter(inv_s_arr, tf_arr, c="tab:blue", s=40, label="measured t_freeze",
-               zorder=3)
+    ax.scatter(inv_s_arr[reliable], tf_arr[reliable], c="tab:blue", s=40,
+               label="measured t_freeze (reliable)", zorder=3)
+    if glitch.any():
+        ax.scatter(inv_s_arr[glitch], tf_arr[glitch], c="tab:gray",
+                   s=40, marker="x",
+                   label="detector glitch (t≈0)  — excluded from fit", zorder=3)
+    if (~not_clipped).any():
+        ax.scatter(inv_s_arr[~not_clipped], tf_arr[~not_clipped],
+                   c="tab:green", s=40, marker="^", alpha=0.6,
+                   label="no freeze observed (t = t_max)", zorder=2)
+
     inv_s_dense = np.linspace(inv_s_arr.min(), inv_s_arr.max(), 200)
     theory_dense = np.minimum(cone_reach * inv_s_dense, t_max)
     ax.plot(inv_s_dense, theory_dense, "k--",
             label=f"theory: n_layers·k_x·dx / |s|  = {cone_reach:.3f} / |s|  "
                   f"(clipped at t_max={t_max:.2f})")
-    # also fit a line through measurements (no intercept) for slope sanity
-    not_clipped = tf_arr < t_max - 1e-6
-    if not_clipped.sum() >= 2:
-        slope_fit = (tf_arr[not_clipped] / inv_s_arr[not_clipped]).mean()
-        ax.plot(inv_s_dense, slope_fit * inv_s_dense, "tab:red", alpha=0.5,
-                label=f"empirical slope (mean t_f·|s|) = {slope_fit:.3f}")
+    if reliable.sum() >= 2:
+        slope_fit = (tf_arr[reliable] / inv_s_arr[reliable]).mean()
+        slope_dense = np.minimum(slope_fit * inv_s_dense, t_max)
+        ax.plot(inv_s_dense, slope_dense, "tab:red", alpha=0.6,
+                label=f"empirical slope = {slope_fit:.3f}  "
+                      f"(ratio to cone = {slope_fit/cone_reach:.2f})")
+
     ax.set_xlabel("1 / |s|")
     ax.set_ylabel("t_freeze")
+    ax.set_ylim(0.0, t_max * 1.1)
     ax.set_title(f"{run_dir.name} — Riemann sweep, u_L=0, u_R∈[{U_R_MIN}, {U_R_MAX}]\n"
                  f"n_layers={n_layers}, k_x={k_x}, dx={dx:.4f}")
     ax.grid(True, alpha=0.3)
