@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import yaml
+from hyperbolic_pde.utils.runtime import apply_runtime_overrides, resolve_config_path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT.parent))
+
+from hyperbolic_pde.data.fvm import generate_dataset, save_dataset
+
+
+def _deep_update(base: dict, override: dict) -> dict:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def load_config(path: Path) -> dict:
+    base_path = ROOT / "configs" / "hyperbolic_pde.yaml"
+    with base_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if path.resolve() == base_path.resolve():
+        return cfg
+    with path.open("r", encoding="utf-8") as f:
+        override = yaml.safe_load(f)
+    return _deep_update(cfg, override or {})
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Generate out-of-distribution (OOD) hyperbolic PDE dataset."
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=str(resolve_config_path(ROOT / "configs")),
+        help="Path to YAML config.",
+    )
+    args = parser.parse_args()
+
+    cfg = load_config(Path(args.config))
+    cfg = apply_runtime_overrides(cfg)
+
+    if "ood_data" not in cfg or cfg["ood_data"] is None:
+        raise KeyError(
+            "Config has no 'ood_data:' block. Add one to the YAML "
+            "(parallel to 'data:'), with all keys required by "
+            "generate_dataset (path, nx, nt, x_min, x_max, t_max, cfl, "
+            "num_samples, num_segments, u_min, u_max, ic_points, ...)."
+        )
+    data_cfg = cfg["ood_data"]
+
+    ic_types = data_cfg.get("ic_types", ["piecewise_constant"])
+    if isinstance(ic_types, str):
+        ic_types = [ic_types]
+
+    bundle = generate_dataset(
+        num_samples=int(data_cfg["num_samples"]),
+        nx=int(data_cfg["nx"]),
+        nt=int(data_cfg["nt"]),
+        x_min=float(data_cfg["x_min"]),
+        x_max=float(data_cfg["x_max"]),
+        t_max=float(data_cfg["t_max"]),
+        cfl=float(data_cfg["cfl"]),
+        num_segments=data_cfg["num_segments"],
+        u_min=float(data_cfg["u_min"]),
+        u_max=float(data_cfg["u_max"]),
+        ic_points=int(data_cfg["ic_points"]),
+        boundary=str(data_cfg.get("boundary", "periodic")),
+        seed=int(cfg.get("seed", 42)),
+        num_workers=(
+            int(data_cfg["num_workers"])
+            if data_cfg.get("num_workers", None) is not None
+            else None
+        ),
+        ic_types=ic_types,
+        method=str(data_cfg.get("method", "godunov")),
+    )
+
+    out_path = Path(data_cfg["path"])
+    save_dataset(bundle, out_path)
+    print(f"[OOD] Saved dataset to {out_path}")
+    print(
+        f"[OOD] u shape: {bundle.u.shape}, "
+        f"u0 shape: {bundle.u0.shape}, ic shape: {bundle.ic.shape}"
+    )
+
+
+if __name__ == "__main__":
+    main()

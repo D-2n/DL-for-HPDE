@@ -370,6 +370,7 @@ def main() -> None:
         d_hidden_nonadj=d_hidden_nonadj,
         use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
         temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
+        include_flux=bool(model_cfg.get("include_flux", True)),
     ).to(device)
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
