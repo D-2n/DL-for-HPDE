@@ -33,7 +33,7 @@ from hyperbolic_pde.models.hypno_st3 import HypNO_ST3, precompute_lwr_edge_featu
 # --------------------------------------------------------------------- #
 RUNS_TO_TEST: list[str] = [
     "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_095544",
-    "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_105313"
+    "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_181417"
     # "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_095544",
     # "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260506_000000",
 ]
