@@ -32,14 +32,14 @@ from hyperbolic_pde.models.hypno_st3 import HypNO_ST3, precompute_lwr_edge_featu
 # Each entry must contain config.yaml and model_final.pt.
 # --------------------------------------------------------------------- #
 RUNS_TO_TEST: list[str] = [
-    "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_095544",
+    #"/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_095544",
     "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_181417"
     # "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260505_095544",
     # "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260506_000000",
 ]
 
 N_SAMPLES: int = 100   # number of OOD samples to evaluate per run
-N_PLOTS:   int = 15     # per-run side-by-side plots (rest are metrics-only)
+N_PLOTS:   int = 30     # per-run side-by-side plots (rest are metrics-only)
 
 
 def _deep_update(base: dict, override: dict) -> dict:

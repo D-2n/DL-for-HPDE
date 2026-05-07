@@ -2,7 +2,7 @@
 #SBATCH --job-name=riemann_sweep_mirror
 
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
