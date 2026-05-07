@@ -272,6 +272,9 @@ def _evaluate_run(
         ax.axhline(t_freeze_values[i], color="red",   lw=0.8, alpha=0.6)
         ax.axhline(th_arr[i],          color="cyan",  lw=0.8, alpha=0.6,
                    linestyle=":")
+        # Receptive-cone walls: x = X_SPLIT +- L*k_x*dx
+        ax.axvline(X_SPLIT + cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
+        ax.axvline(X_SPLIT - cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
         ax.set_title(f"u_R={u_R:.2f}, s={s_i:.2f}", fontsize=9)
         ax.set_xlabel("x"); ax.set_ylabel("t")
     for j in range(N_U_R, len(axes)):
