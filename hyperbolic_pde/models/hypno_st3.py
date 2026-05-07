@@ -531,7 +531,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 gate = gate.masked_fill(rel_t.abs() > self.radius_t, 0.0)
             gates.append(gate)
             edge_inputs.append(edge_in)
-        gate_sum = torch.stack(gates, dim=-2).sum(dim=-2).clamp(min=1e-12)      # [B, nt, nx, 1]
+        # Additive floor (NOT clamp): when all edges legitimately suppress, the
+        # aggregate attenuates to zero rather than blowing up via 1/eps. This
+        # was the source of isolated salt-and-pepper spikes in smooth regions.
+        gate_sum = torch.stack(gates, dim=-2).sum(dim=-2) + 1e-3                # [B, nt, nx, 1]
 
         # ---- single batched MLP call over all offsets ----
         n_offsets = len(edge_inputs)
@@ -838,8 +841,11 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 nonadj_gates.append(gate)
 
         # gate normalisation over all edges
+        # Additive floor (NOT clamp): when all edges legitimately suppress, the
+        # aggregate attenuates to zero rather than blowing up via 1/eps. This
+        # was the source of isolated salt-and-pepper spikes in smooth regions.
         all_gates = adj_gates + nonadj_gates                                      # [B, nt, nx, 1] each
-        gate_sum = torch.stack(all_gates, dim=-2).sum(dim=-2).clamp(min=1e-12)   # [B, nt, nx, 1]
+        gate_sum = torch.stack(all_gates, dim=-2).sum(dim=-2) + 1e-3              # [B, nt, nx, 1]
 
         # ---- batched MLP pass: 2 adj calls fused, 24 nonadj calls fused ----
         n_adj    = len(adj_feats)

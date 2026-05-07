@@ -68,6 +68,10 @@ def main() -> None:
     parser.add_argument("--run-dir", type=str, default=None)
     parser.add_argument("--n_samples", type=int, default=70, help="Number of test samples to evaluate")
     parser.add_argument("--n_plots", type=int, default=5, help="Number of samples to plot")
+    parser.add_argument(
+        "--diagnose_uhat", action="store_true",
+        help="Save per-layer u_hat (state_probe) diagnostic alongside compare_sample plots.",
+    )
     #parser.add_argument("--no-dg", action="store_true", help="Skip DG(1) solver")
     args = parser.parse_args()
 
@@ -207,8 +211,10 @@ def main() -> None:
         else:
             ef_adj, ef_nonadj = None, None
         with torch.no_grad():
-            pred_t, _, _, _ = model(u0_t, x_grid, t_grid, edge_feats_adj=ef_adj, edge_feats_nonadj=ef_nonadj)
+            pred_t, _, _, u_hats_t = model(u0_t, x_grid, t_grid, edge_feats_adj=ef_adj, edge_feats_nonadj=ef_nonadj)
         hypno_np = pred_t[0].cpu().numpy()
+        # u_hats_t: list of [B, nt, nx] tensors, one per MP layer
+        u_hats_np = [uh[0].cpu().numpy() for uh in u_hats_t] if u_hats_t else []
 
         pairs = [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
         #if not args.no_dg:
@@ -253,6 +259,41 @@ def main() -> None:
             )
             fig.savefig(plot_dir / f"compare_sample_{idx}.png", dpi=150)
             plt.close(fig)
+
+            if args.diagnose_uhat and u_hats_np:
+                # Two rows per layer: top = u_hat at that layer, bottom = |u_hat - GT|.
+                # The MP layers' state_probe is the model's internal "current best
+                # decoded state" — if salt-and-pepper cells flip from correct to
+                # wrong between consecutive layers, this plot shows it directly.
+                n_layers_uh = len(u_hats_np)
+                err_vmax_uh = max(np.abs(uh - lh).max() for uh in u_hats_np)
+                fig_d, axes_d = plt.subplots(
+                    2, n_layers_uh,
+                    figsize=(3.2 * n_layers_uh, 6.5),
+                    constrained_layout=True,
+                )
+                if n_layers_uh == 1:
+                    axes_d = axes_d.reshape(2, 1)
+                for li, uh in enumerate(u_hats_np):
+                    im_top = axes_d[0, li].pcolormesh(
+                        x_np, t_np, uh, shading="auto", cmap="jet", vmin=vmin, vmax=vmax,
+                    )
+                    axes_d[0, li].set_title(f"u_hat L{li}")
+                    axes_d[0, li].set_xlabel("x")
+                    axes_d[0, li].set_ylabel("t")
+                    fig_d.colorbar(im_top, ax=axes_d[0, li])
+
+                    im_bot = axes_d[1, li].pcolormesh(
+                        x_np, t_np, np.abs(uh - lh),
+                        shading="auto", cmap="magma", vmin=0, vmax=err_vmax_uh,
+                    )
+                    axes_d[1, li].set_title(f"|u_hat L{li} - GT|")
+                    axes_d[1, li].set_xlabel("x")
+                    axes_d[1, li].set_ylabel("t")
+                    fig_d.colorbar(im_bot, ax=axes_d[1, li])
+                fig_d.suptitle(f"Sample {idx} — per-layer state_probe diagnostic")
+                fig_d.savefig(plot_dir / f"compare_sample_{idx}_uhat.png", dpi=150)
+                plt.close(fig_d)
 
     # summary metrics
     print("\n=== Summary (MAE vs Lax-Hopf) ===")
