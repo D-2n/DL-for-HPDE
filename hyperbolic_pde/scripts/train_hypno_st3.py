@@ -301,6 +301,12 @@ def main() -> None:
 
     data_cfg = cfg["data"]
     model_cfg = cfg.get("hypno_st3", cfg.get("hypno_st2", cfg.get("hypno_st")))
+    print(
+        f"[train] config={args.config}  "
+        f"hypno_st3.include_flux={model_cfg.get('include_flux', '<unset, default True>')!r}  "
+        f"hypno_st3.temporal_gate_type={model_cfg.get('temporal_gate_type', '<unset, default cfl>')!r}  "
+        f"hypno_st3.pure_pairwise_edges={model_cfg.get('pure_pairwise_edges', '<unset, default False>')!r}"
+    )
 
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     torch.manual_seed(int(cfg.get("seed", 42)))
@@ -371,6 +377,7 @@ def main() -> None:
         use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
         temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
         include_flux=bool(model_cfg.get("include_flux", True)),
+        pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
     ).to(device)
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)

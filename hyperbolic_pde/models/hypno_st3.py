@@ -290,6 +290,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         use_char_cone: bool = False,
         causal_temporal: bool = True,
         include_flux: bool = True,
+        pure_pairwise_edges: bool = False,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
@@ -301,14 +302,31 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.use_char_cone = use_char_cone
         self.causal = causal_temporal
         self.include_flux = include_flux
+        self.pure_pairwise_edges = pure_pairwise_edges
         node_in = 5 if include_flux else 4
         self.node_mlp = _make_mlp(node_in, d_hidden, d_latent, 2, activation)
+        print(
+            f"[Lifting] include_flux={include_flux} pure_pairwise_edges={pure_pairwise_edges} | "
+            f"node_mlp in={node_in} (5 with flux, 4 without)"
+        )
         if encoder_type == "mlp":
             return
 
-        # Static edge feature dim = 14 (12 if include_flux=False, dropping f0_i, f0_j).
-        edge_in = 14 if include_flux else 12
+        # Edge MLP input dim:
+        #   pure_pairwise_edges=True:  8  -> [du0, sign(rel_x), rel_t, t_bc, t_j, a0_ij, sign(a0_ij), is_adj_flag]
+        #   include_flux=True:        14  -> + u0_i, u0_j, f0_i, f0_j, a0_i, a0_j
+        #   include_flux=False:       12  -> + u0_i, u0_j, a0_i, a0_j  (drops f0_i, f0_j)
+        if pure_pairwise_edges:
+            edge_in = 8
+        elif include_flux:
+            edge_in = 14
+        else:
+            edge_in = 12
         self.edge_mlp = _make_mlp(edge_in, d_hidden, d_latent, 2, activation)
+        print(
+            f"[Lifting] edge_mlp in={edge_in} "
+            f"(8 pure-pairwise, 14 with flux, 12 without flux)"
+        )
 
         if encoder_scaling == "classic":
             pass
@@ -461,7 +479,15 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 sign_a0 = torch.zeros_like(du0)
             is_adj_flag = u0_bc.new_full(u0_bc.shape, 1.0 if is_adj_sp else 0.0)
             sign_rel_x = torch.sign(rel_x)
-            if self.include_flux:
+            if self.pure_pairwise_edges:
+                edge_in = torch.cat([
+                    du0,
+                    sign_rel_x, rel_t,
+                    t_bc, t_j,
+                    a0_ij, sign_a0,
+                    is_adj_flag,
+                ], dim=-1)                                                      # [..., 8]
+            elif self.include_flux:
                 edge_in = torch.cat([
                     u0_bc, u0_j,
                     f0_i, f0_j,
@@ -556,6 +582,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         mask_same_t_nonadj: bool = True,
         temporal_gate_type: str = "cfl",
         include_flux: bool = True,
+        pure_pairwise_edges: bool = False,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -567,6 +594,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.use_char_cone = use_char_cone
         self.mask_same_t_nonadj = mask_same_t_nonadj
         self.include_flux = include_flux
+        self.pure_pairwise_edges = pure_pairwise_edges
         if temporal_gate_type not in {"cfl", "none", "time"}:
             raise ValueError(
                 f"temporal_gate_type must be one of 'cfl', 'none', 'time'; "
@@ -585,12 +613,33 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
         self.phys_time_decay = nn.Parameter(torch.tensor(0.0))
 
-        # adj:    h_i, h_j, u_i, u_j, [f_i, f_j,] a_i, a_j, a_ij, sign_a, upwind, sign(rel_x)
-        adj_extra = 10 if include_flux else 8
+        # adj edge extras:
+        #   pure_pairwise_edges=True: 4 -> [a_ij, sign(a_ij), upwind, sign(rel_x)]
+        #   include_flux=True:       10 -> + u_i, u_j, f_i, f_j, a_i, a_j
+        #   include_flux=False:       8 -> + u_i, u_j, a_i, a_j
+        # nonadj edge extras:
+        #   pure_pairwise_edges=True: 3 -> [rel_x, rel_t, sign(rel_x)]   (cfl,xi dropped: depend on a_i)
+        #   include_flux=True:       11 -> + u_i, u_j, f_i, f_j, a_i, a_j, cfl, xi
+        #   include_flux=False:       9 -> + u_i, u_j, a_i, a_j, cfl, xi
+        if pure_pairwise_edges:
+            adj_extra = 4
+            nonadj_extra = 3
+        elif include_flux:
+            adj_extra = 10
+            nonadj_extra = 11
+        else:
+            adj_extra = 8
+            nonadj_extra = 9
         self.adj_msg = _make_mlp(2 * d_latent + adj_extra, d_hidden, d_latent, 3, activation)
-        # nonadj: h_i, h_j, u_i, u_j, [f_i, f_j,] a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi
-        nonadj_extra = 11 if include_flux else 9
         self.nonadj_msg = _make_mlp(2 * d_latent + nonadj_extra, dh_na, d_latent, 3, activation)
+        print(
+            f"[MP] include_flux={include_flux} pure_pairwise_edges={pure_pairwise_edges} | "
+            f"adj_msg in=2*{d_latent}+{adj_extra}={2 * d_latent + adj_extra} "
+            f"(extra: 4 pure-pairwise, 10 with flux, 8 without) | "
+            f"nonadj_msg in=2*{d_latent}+{nonadj_extra}={2 * d_latent + nonadj_extra} "
+            f"(extra: 3 pure-pairwise, 11 with flux, 9 without) | "
+            f"temporal_gate_type={temporal_gate_type}"
+        )
 
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
         self.W = nn.Linear(d_latent, d_latent)
@@ -709,7 +758,13 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             if is_adj_sp:
                 _, _, _, _, _, _, a_ij, sign_a, upwind = \
                     _compute_adj_spatial_edge_feats(u_hat_i, u_hat_j, rel_x)
-                if self.include_flux:
+                if self.pure_pairwise_edges:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        a_ij, sign_a, upwind,
+                        torch.sign(rel_x),
+                    ], dim=-1)                                                  # 2d + 4
+                elif self.include_flux:
                     msg_in = torch.cat([
                         h, h_j,
                         u_hat_i.expand_as(rel_x), u_hat_j,
@@ -728,7 +783,13 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             else:
                 a_ij = torch.zeros_like(rel_x)
                 xi = x_i / t_i.clamp(min=1e-6)
-                if self.include_flux:
+                if self.pure_pairwise_edges:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        rel_x, rel_t,
+                        torch.sign(rel_x),
+                    ], dim=-1)                                                  # 2d + 3
+                elif self.include_flux:
                     msg_in = torch.cat([
                         h, h_j,
                         u_hat_i.expand_as(rel_x), u_hat_j,
@@ -836,6 +897,7 @@ class HypNO_ST3(nn.Module):
         mask_same_t_nonadj: bool = True,
         temporal_gate_type: str = "cfl",
         include_flux: bool = True,
+        pure_pairwise_edges: bool = False,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -860,6 +922,7 @@ class HypNO_ST3(nn.Module):
         print(f"  mask_same_t_nonadj = {mask_same_t_nonadj}")
         print(f"  temporal_gate_type = {temporal_gate_type}")
         print(f"  include_flux       = {include_flux}")
+        print(f"  pure_pairwise_edges= {pure_pairwise_edges}")
         print(f"  detector_path      = {detector_path}")
         if _ignored:
             print(f"  IGNORED kwargs     = {sorted(_ignored.keys())}")
@@ -871,6 +934,7 @@ class HypNO_ST3(nn.Module):
         self.skip = skip
         self.use_checkpoint = use_checkpoint
         self.include_flux = include_flux
+        self.pure_pairwise_edges = pure_pairwise_edges
         self.has_external_detector = False
 
         self.lifting = _SpaceTimeLiftingLayer(
@@ -882,6 +946,7 @@ class HypNO_ST3(nn.Module):
             use_char_cone=use_char_cone,
             causal_temporal=causal_temporal,
             include_flux=include_flux,
+            pure_pairwise_edges=pure_pairwise_edges,
         )
 
         self.mp_layers = nn.ModuleList([
@@ -894,6 +959,7 @@ class HypNO_ST3(nn.Module):
                 mask_same_t_nonadj=mask_same_t_nonadj,
                 temporal_gate_type=temporal_gate_type,
                 include_flux=include_flux,
+                pure_pairwise_edges=pure_pairwise_edges,
             )
             for _ in range(n_layers)
         ])
