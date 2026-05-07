@@ -158,7 +158,15 @@ def _sweep_direction(model, x_grid, t_grid, x_np, t_np, k_x, dx, t_max,
     }
 
 
-def _plot_tracks(res: dict, x_np, t_np, t_max, out_path: Path, title: str) -> None:
+def _plot_tracks(res: dict, x_np, t_np, t_max, out_path: Path, title: str,
+                 cone_reach: float = 0.0, x0: float = 0.0) -> None:
+    """Per-IC tracks, with optional receptive-cone walls overlaid.
+
+    cone_reach = L * k_x * dx (physical-space spatial reach). When > 0,
+    draws two vertical cyan dashed lines at x0 +- cone_reach: nodes outside
+    this strip cannot depend on the IC discontinuity at x0, so any
+    predicted shock crossing those lines is in the freeze region.
+    """
     n_cols = 5
     n_rows = int(np.ceil(N_U / n_cols))
     fig, axes = plt.subplots(n_rows, n_cols,
@@ -172,10 +180,18 @@ def _plot_tracks(res: dict, x_np, t_np, t_max, out_path: Path, title: str) -> No
                       vmin=0.0, vmax=max(0.05, u_i))
         ax.plot(res["truth_tracks"][i], t_np, "k-",  lw=1.2)
         ax.plot(res["pred_tracks"][i],  t_np, "w--", lw=1.0)
+        if cone_reach > 0:
+            ax.axvline(x0 + cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
+            ax.axvline(x0 - cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
+            # Mark T_freeze = cone_reach / |s| on the time axis
+            if abs(s_i) > 1e-9:
+                t_f = min(cone_reach / abs(s_i), t_max)
+                ax.axhline(t_f, color="magenta", lw=0.8, ls=":", alpha=0.7)
         ax.set_title(f"u={u_i:.2f}, s={s_i:+.2f}", fontsize=9)
     for j in range(N_U, len(axes)):
         axes[j].axis("off")
-    fig.suptitle(title, fontsize=10)
+    fig.suptitle(title + "  (cyan: receptive-field walls x=x₀±L·k_x·Δx;  "
+                 "magenta: T_freeze=L·k_x·Δx/|s|)", fontsize=9)
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
 
@@ -248,9 +264,11 @@ def _evaluate_run(run_dir: Path, device: torch.device) -> None:
     plt.close(fig)
 
     _plot_tracks(res_R, x_np, t_np, t_max, out_dir / "tracks_right.png",
-                 f"{run_dir.name} — right-going (u_L=0)")
+                 f"{run_dir.name} — right-going (u_L=0)",
+                 cone_reach=cone_reach, x0=X_SPLIT)
     _plot_tracks(res_L, x_np, t_np, t_max, out_dir / "tracks_left.png",
-                 f"{run_dir.name} — left-going (u_R=0)")
+                 f"{run_dir.name} — left-going (u_R=0)",
+                 cone_reach=cone_reach, x0=X_SPLIT)
 
     with (out_dir / "metrics.txt").open("w", encoding="utf-8") as f:
         f.write(f"Run: {run_dir}\n")
