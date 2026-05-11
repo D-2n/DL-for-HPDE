@@ -136,7 +136,13 @@ def _gates_for_query(
     k_x = layer.k_x
     k_t = layer.k_t
 
-    u_hat = torch.sigmoid(layer.state_probe(h)).squeeze(-1)             # [B, nt, nx]
+    # Per-layer u_hat: fall back to the shared decoder if the layer doesn't
+    # carry its own state_probe (new architecture removes per-layer probes).
+    if hasattr(layer, "state_probe"):
+        u_hat = torch.sigmoid(layer.state_probe(h)).squeeze(-1)         # [B, nt, nx]
+    else:
+        # Shared decoder; clamp to [0, 1] for gate-internal sanity.
+        u_hat = layer._shared_decoder(h).squeeze(-1).clamp(0.0, 1.0)
     u_hat_pad = _pad_space_time(u_hat.unsqueeze(-1), k_x, k_t).squeeze(-1)
     x_pad = torch.nn.functional.pad(x.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)
     t_pad = torch.nn.functional.pad(
@@ -459,7 +465,10 @@ def main() -> None:
 
     def _apply_probe(layer: _PhysicsSpaceTimeMPLayer, h_in: torch.Tensor) -> np.ndarray:
         with torch.no_grad():
-            return torch.sigmoid(layer.state_probe(h_in)).squeeze(-1)[0].cpu().numpy()
+            if hasattr(layer, "state_probe"):
+                return torch.sigmoid(layer.state_probe(h_in)).squeeze(-1)[0].cpu().numpy()
+            # Fall back to shared decoder (new architecture).
+            return layer._shared_decoder(h_in).squeeze(-1).clamp(0.0, 1.0)[0].cpu().numpy()
 
     # Build (label, probe_field, decoder_field) per stage.
     rows: list[tuple[str, np.ndarray, np.ndarray]] = []

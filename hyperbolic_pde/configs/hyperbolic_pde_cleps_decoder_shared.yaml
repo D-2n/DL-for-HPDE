@@ -1,0 +1,25 @@
+# Config for the "shared decoder readout" run.
+# Changes vs base hyperbolic_pde.yaml::hypno_st3:
+#   - readout: gelu          (inner decoder activations: GELU instead of ReLU)
+#   - pure_pairwise_edges: true   (canonical MPGNN edge features)
+#   - include_flux: true     (keep flux scalars in edge features)
+#   - skip: false            (no u0 skip; decoder reconstructs from scratch)
+#   - lambda_probe: 0.05     (deep supervision via decoder, not state_probe)
+#
+# Per-layer state_probes are REMOVED by the code refactor — the shared decoder
+# is used for both (a) the internal u_hat that feeds physics gates and (b) the
+# deep-supervision readouts that lambda_probe penalizes.
+
+data:
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz
+  test_path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz
+
+hypno_st3:
+  compile: false
+  readout: gelu
+  pure_pairwise_edges: true
+  include_flux: true
+  skip: false
+  lambda_probe: 0.05
+  save_path: /home/dzdrale/scratch/runs/hypno_st3_decoder_shared.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3_decoder_shared

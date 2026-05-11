@@ -593,6 +593,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         temporal_gate_type: str = "cfl",
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
+        shared_decoder: nn.Module | None = None,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -614,7 +615,18 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
-        self.state_probe = nn.Linear(d_latent, 1)
+        # Shared decoder used for the internal u_hat that feeds the physics
+        # gates. Stored as a plain attribute (not via add_module) so it does
+        # NOT register the decoder's parameters as belonging to this MP layer.
+        # The decoder lives on the top-level HypNO_ST3 module and is shared by
+        # reference across all MP layers.
+        if shared_decoder is None:
+            raise ValueError(
+                "_PhysicsSpaceTimeMPLayer now requires a shared_decoder "
+                "(per-layer state_probe has been removed)."
+            )
+        # Bypass nn.Module.__setattr__ so parameters aren't double-registered.
+        object.__setattr__(self, "_shared_decoder", shared_decoder)
 
         self.phys_temperature = nn.Parameter(torch.tensor(0.0))
         self.phys_gamma_entropy = nn.Parameter(torch.tensor(-2.0))
@@ -734,7 +746,13 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             if self.radius_t is not None else self.k_t
         )
 
-        u_hat = torch.sigmoid(self.state_probe(h)).squeeze(-1)                  # [B, nt, nx]
+        # Internal u_hat for physics gates: run the shared decoder, then clamp
+        # to [0, 1] so gate computations (CFL, upwind, entropy) see physically
+        # admissible densities even early in training when the decoder is
+        # unconverged. The clamp is detached gradient-wise on the bounds but
+        # not on the body; torch.clamp does this naturally.
+        u_hat_raw = self._shared_decoder(h).squeeze(-1)                         # [B, nt, nx]
+        u_hat = u_hat_raw.clamp(0.0, 1.0)
         u_hat_i = u_hat.unsqueeze(-1)                                           # [B, nt, nx, 1]
 
         # Joint space-time padding.
@@ -962,6 +980,11 @@ class HypNO_ST3(nn.Module):
             pure_pairwise_edges=pure_pairwise_edges,
         )
 
+        # Build the decoder BEFORE the MP layers so we can pass it as the shared
+        # readout used inside each layer's gate computation (replaces per-layer
+        # state_probe). One readout function used everywhere.
+        self.decoder = _make_mlp(d_latent, d_hidden, 1, 3, readout)
+
         self.mp_layers = nn.ModuleList([
             _PhysicsSpaceTimeMPLayer(
                 d_latent, d_hidden, stencil_k_x, stencil_k_t, activation,
@@ -973,11 +996,10 @@ class HypNO_ST3(nn.Module):
                 temporal_gate_type=temporal_gate_type,
                 include_flux=include_flux,
                 pure_pairwise_edges=pure_pairwise_edges,
+                shared_decoder=self.decoder,
             )
             for _ in range(n_layers)
         ])
-
-        self.decoder = _make_mlp(d_latent, d_hidden, 1, 3, readout)
 
         if detector_path is not None:
             from hyperbolic_pde.models.shock_detector import ShockDetector
@@ -1036,31 +1058,34 @@ class HypNO_ST3(nn.Module):
         u_hats: list[torch.Tensor] = []
         u_coarse = torch.zeros(B, nt, nx, device=h.device)
 
-        # When diagnosing lifting, prepend two pre-MP probes so the diagnostic
-        # stack becomes [post_node, post_full, MP_0, MP_1, ...]. Both pre-MP
-        # probes use MP-0's state_probe (biased — trained on post-MP-0 latents
-        # — but the spatial pattern is what matters for diagnostics). When
-        # diagnose_lifting=False, u_hats is the original per-MP-layer list,
-        # so deep-supervision in train scripts is unchanged.
+        def _decode_one(h_in: torch.Tensor) -> torch.Tensor:
+            """Apply the shared decoder (+ u0 skip if self.skip) to one latent."""
+            d_out = self.decoder(h_in).squeeze(-1)                          # [B, nt, nx]
+            if self.skip:
+                u0_exp = u0.unsqueeze(1).expand(B, nt, nx)
+                d_out = u0_exp + d_out
+            return d_out
+
+        # When diagnosing lifting, prepend two pre-MP decoder readouts so the
+        # diagnostic stack becomes [post_node, post_full, MP_0, MP_1, ...].
+        # When diagnose_lifting=False, u_hats is the per-MP-layer list, used
+        # by train scripts for deep supervision (lambda_probe).
         if diagnose_lifting:
-            probe0 = self.mp_layers[0].state_probe
-            u_hats.append(torch.sigmoid(probe0(h_node_only)).squeeze(-1))
-            u_hats.append(torch.sigmoid(probe0(h_full_lift)).squeeze(-1))
+            u_hats.append(_decode_one(h_node_only))
+            u_hats.append(_decode_one(h_full_lift))
 
         for layer in self.mp_layers:
             if self.use_checkpoint:
                 h = torch_checkpoint(layer, h, x, t, u0, use_reentrant=False)
             else:
                 h = layer(h, x, t, u0)
-            u_hats.append(torch.sigmoid(layer.state_probe(h)).squeeze(-1))
+            u_hats.append(_decode_one(h))
 
         shock_indicator = torch.zeros(B, nt, nx, device=h.device)
 
-        out = self.decoder(h).squeeze(-1)
-        if self.skip:
-            u0_exp = u0.unsqueeze(1).expand(B, nt, nx)
-            u_pred = u0_exp + out
-        else:
-            u_pred = out
+        # u_pred is the decoder readout at the final latent, which is the last
+        # entry we already pushed into u_hats. Reuse it instead of running the
+        # decoder a second time.
+        u_pred = u_hats[-1]
 
         return u_pred, u_coarse, shock_indicator, u_hats
