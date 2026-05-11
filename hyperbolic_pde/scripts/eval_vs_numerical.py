@@ -71,27 +71,44 @@ def print_large_error_cells(
     label: str = "",
     max_lines: int = 200,
     exclude_t0: bool = True,
+    boundary_buffer: int = 5,
 ) -> int:
     """Print every cell where |pred - truth| > threshold.
 
-    Prints a table of (t_idx, x_idx, t, x, pred, truth, abs_err) sorted by
-    descending error. Returns the count of offending cells (useful for the
-    caller to log / decide whether to keep going).
+    Prints a table of (t_idx, x_idx, t, x, pred, truth, abs_err, near_bd) sorted
+    by descending error. Returns the count of offending cells.
 
-    If `exclude_t0` is True (default), cells at t_idx == 0 are excluded from
-    consideration; the t=0 row is an IC-regression failure mode handled
-    separately and isn't useful in shock-aliasing diagnostics.
+    Filters:
+      exclude_t0      — drop the t_idx == 0 row (IC-regression failure, handled
+                        separately).
+      boundary_buffer — number of cells at each spatial edge to mark with a
+                        flag in the output. Cells with x_idx < boundary_buffer
+                        or x_idx >= nx - boundary_buffer are tagged "bd" so
+                        boundary-condition mismatches between Lax-Hopf and the
+                        solver under test are visible. Set to 0 to disable
+                        tagging. (Cells are NOT excluded by this flag — they're
+                        only labeled.)
     """
     err = np.abs(pred - truth)
     bad_mask = err > threshold
     if exclude_t0:
         bad_mask[0, :] = False
     n_bad = int(bad_mask.sum())
-    n_considered = pred.size - (pred.shape[1] if exclude_t0 else 0)
+    nt_total, nx_total = pred.shape
+    n_considered = pred.size - (nx_total if exclude_t0 else 0)
+    # Count how many bad cells fall in the boundary buffer (for the header).
+    if boundary_buffer > 0 and n_bad > 0:
+        ti_all, xi_all = np.where(bad_mask)
+        bd_cnt = int(np.sum(
+            (xi_all < boundary_buffer) | (xi_all >= nx_total - boundary_buffer)
+        ))
+        bd_suffix = f" ({bd_cnt} near boundary, {n_bad - bd_cnt} interior)"
+    else:
+        bd_suffix = ""
     header = (f"Cells with |pred - truth| > {threshold}"
               f"{(' [' + label + ']') if label else ''}"
               f"{' (excl. t=0)' if exclude_t0 else ''}: "
-              f"{n_bad} cells (of {n_considered} considered)")
+              f"{n_bad} cells (of {n_considered} considered){bd_suffix}")
     print(header)
     if n_bad == 0:
         return 0
@@ -102,13 +119,15 @@ def print_large_error_cells(
     n_show = min(n_bad, max_lines)
     print(f"  showing top {n_show} (sorted by abs_err desc):")
     print(f"    {'t_idx':>5}  {'x_idx':>5}  {'t':>8}  {'x':>9}  "
-          f"{'pred':>10}  {'truth':>10}  {'abs_err':>10}")
+          f"{'pred':>10}  {'truth':>10}  {'abs_err':>10}  {'bd':>3}")
     for k in order[:n_show]:
         i_t, i_x = int(ti[k]), int(xi[k])
+        near_bd = (i_x < boundary_buffer) or (i_x >= nx_total - boundary_buffer)
+        tag = "bd" if near_bd else ""
         print(f"    {i_t:>5d}  {i_x:>5d}  {float(t[i_t]):>8.4f}  "
               f"{float(x[i_x]):>9.4f}  {float(pred[i_t, i_x]):>10.5f}  "
               f"{float(truth[i_t, i_x]):>10.5f}  "
-              f"{float(err[i_t, i_x]):>10.5f}")
+              f"{float(err[i_t, i_x]):>10.5f}  {tag:>3}")
     if n_bad > n_show:
         print(f"    ... {n_bad - n_show} more cells suppressed")
     return n_bad

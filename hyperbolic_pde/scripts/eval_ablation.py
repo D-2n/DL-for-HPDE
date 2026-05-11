@@ -39,12 +39,15 @@ def identify_variant(cfg: dict) -> str:
     include_flux = bool(model_cfg.get("include_flux", True))
     temporal_gate = str(model_cfg.get("temporal_gate_type", "cfl"))
     pure_pairwise = bool(model_cfg.get("pure_pairwise_edges", False))
+    skip = bool(model_cfg.get("skip", False))
     if pure_pairwise:
         return "pure_pairwise"
     if temporal_gate == "time":
         return "temporal_time"
     if not include_flux:
         return "no_flux"
+    if skip:
+        return "skip"
     return "baseline"
 
 
@@ -178,7 +181,7 @@ def main() -> None:
         "--data_path", type=str,
         default=str(ROOT / "data" / "hyperbolic_dataset.npz"),
     )
-    parser.add_argument("--n_samples", type=int, default=100)
+    parser.add_argument("--n_samples", type=int, default=20)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--plot_idx", type=str, default="1547,1753",
                         help="Comma-separated dataset indices to ALWAYS plot, in addition to N random.")
@@ -226,7 +229,7 @@ def main() -> None:
             continue
         loaded[variant] = (d, model, cfg)
 
-    variants_order = ["baseline", "no_flux", "temporal_time", "pure_pairwise"]
+    variants_order = ["baseline", "no_flux", "temporal_time", "pure_pairwise", "skip"]
     variants_present = [v for v in variants_order if v in loaded]
     if not variants_present:
         raise SystemExit("No recognised variants among run dirs.")
