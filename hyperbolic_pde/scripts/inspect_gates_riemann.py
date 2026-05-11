@@ -194,10 +194,10 @@ def _gates_for_query(
 
 def main() -> None:
     # ---- HARDCODED PARAMETERS (edit here) ---- #
-    RUN_DIR = "/home/dzdrale/scratch/runs/hypno_st3/run_20260507_123353"
+    RUN_DIR = "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260507_123353"
     U_R     = 0.2
     X_0     = 0.0
-    QUERY_X = 0.5
+    QUERY_X = 0.6
     TIMES   = [0.25, 0.5, 0.75, 1.0]
     LAYERS  = None        # None = all MP layers
     # ------------------------------------------ #
