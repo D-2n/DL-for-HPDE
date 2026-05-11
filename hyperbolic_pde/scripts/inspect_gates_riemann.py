@@ -184,20 +184,25 @@ def _gates_for_query(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--run-dir", type=str, required=True)
-    parser.add_argument("--u_R", type=float, default=0.2,
-                        help="Right state of Riemann IC. u_L is fixed at 0.")
-    parser.add_argument("--x_0", type=float, default=0.0,
-                        help="Riemann split location.")
-    parser.add_argument("--query_x", type=float, default=0.5,
-                        help="Physical x-coordinate of the query point.")
-    parser.add_argument("--times", type=float, nargs="+",
-                        default=[0.25, 0.5, 0.75, 1.0],
-                        help="Physical t-values at which to inspect gates.")
-    parser.add_argument("--layers", type=int, nargs="*", default=None,
-                        help="MP layer indices to inspect. Default: all.")
-    args = parser.parse_args()
+    # ---- HARDCODED PARAMETERS (edit here) ---- #
+    RUN_DIR = "/home/dzdrale/scratch/runs/hypno_st3/run_20260507_123353"
+    U_R     = 0.2
+    X_0     = 0.0
+    QUERY_X = 0.5
+    TIMES   = [0.25, 0.5, 0.75, 1.0]
+    LAYERS  = None        # None = all MP layers
+    # ------------------------------------------ #
+
+    # Compatibility shim so the rest of main() can keep using args.*
+    class _Args:
+        pass
+    args = _Args()
+    args.run_dir = RUN_DIR
+    args.u_R     = U_R
+    args.x_0     = X_0
+    args.query_x = QUERY_X
+    args.times   = TIMES
+    args.layers  = LAYERS
 
     run_dir = Path(args.run_dir)
     cfg_path = run_dir / "config.yaml"
