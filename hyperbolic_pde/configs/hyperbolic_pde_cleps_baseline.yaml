@@ -11,7 +11,9 @@ hypno_st3:
   d_hidden: 64
   d_hidden_nonadj: 64
   epochs: 70
+  batch_size: 16
   include_flux: true
+  readout: gelu
   temporal_gate_type: "cfl"
   pure_pairwise_edges: false
   save_path: /home/dzdrale/scratch/runs/hypno_st3_baseline.pt

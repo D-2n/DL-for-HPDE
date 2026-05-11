@@ -98,8 +98,8 @@ hypno_st3:
   use_checkpoint: true  # gradient checkpointing on MP layers to reduce activation memory
   d_latent: 96
   d_hidden: 96
-  d_hidden_nonadj: 48     # if null, defaults to d_hidden; can be set smaller (e.g. 48) since non-adj edges use 8-dim features
-  n_layers: 6
+  d_hidden_nonadj: 96     # if null, defaults to d_hidden; can be set smaller (e.g. 48) since non-adj edges use 8-dim features
+  n_layers: 9
   activation: gelu
   encoder_type: gnn
   encoder_scaling: classic

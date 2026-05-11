@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=32G
-#SBATCH --time=48:00:00
+#SBATCH --time=4:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/hypno_st3_%j.log
 
 cd /home/dzdrale/DL-for-HPDE
