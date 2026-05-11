@@ -18,10 +18,4 @@ RUN_DIR=${1:-}
 N_SAMPLES=${2:-10}
 N_PLOTS=${3:-3}
 
-if [ -n "$RUN_DIR" ]; then
-    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/eval_vs_numerical_charcone.py \
-        --run-dir "$RUN_DIR" --n_samples "$N_SAMPLES" --n_plots "$N_PLOTS"
-else
-    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/eval_vs_numerical_charcone.py \
-        --n_samples "$N_SAMPLES" --n_plots "$N_PLOTS"
-fi
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/eval_vs_numerical_charcone.py 
