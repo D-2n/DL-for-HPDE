@@ -89,20 +89,29 @@ def _build_model(model_cfg: dict, device: torch.device) -> HypNO_ST3:
 
 
 def _capture_layer_inputs(model: HypNO_ST3) -> list[torch.Tensor]:
-    """Hook every _PhysicsSpaceTimeMPLayer to capture its input h^(ell-1)."""
-    captured: list[torch.Tensor] = []
+    """Hook every _PhysicsSpaceTimeMPLayer to capture its input h^(ell-1).
+
+    Also captures the output of the last MP layer (i.e. h^(L)) by appending it
+    to the returned list. Final list length is n_layers + 1:
+      captured[0]   = h^(0)   (after lifting, before MP)
+      captured[ell] = h^(ell) (after ell MP layers)  for ell = 1..L
+    """
+    inputs_captured: list[torch.Tensor] = []
+    final_output: list[torch.Tensor] = []
     handles = []
 
-    def make_hook(idx: int):
-        def hook(_module, inputs):
-            # forward signature: (h, x, t, u0, shock_indicator)
-            captured.append(inputs[0].detach())
-        return hook
+    def pre_hook(_module, inputs):
+        inputs_captured.append(inputs[0].detach())
 
-    for ell, layer in enumerate(model.mp_layers):
-        h = layer.register_forward_pre_hook(make_hook(ell))
-        handles.append(h)
-    return captured, handles
+    def last_post_hook(_module, _inputs, output):
+        final_output.append(output.detach())
+
+    for layer in model.mp_layers:
+        handles.append(layer.register_forward_pre_hook(pre_hook))
+    # Post-hook on the *last* MP layer to grab h^(L).
+    handles.append(model.mp_layers[-1].register_forward_hook(last_post_hook))
+
+    return (inputs_captured, final_output), handles
 
 
 def _gates_for_query(
@@ -263,7 +272,7 @@ def main() -> None:
         ef_adj, ef_nonadj = None, None
 
     # Forward pass with hooks; pass x as 1D — model expands internally.
-    captured, handles = _capture_layer_inputs(model)
+    (inputs_cap, output_cap), handles = _capture_layer_inputs(model)
     with torch.no_grad():
         pred_t, _, _, _ = model(
             u0_t, x_grid_1d, t_grid,
@@ -272,6 +281,10 @@ def main() -> None:
     for h in handles:
         h.remove()
     pred_np = pred_t[0].cpu().numpy()                                  # [nt, nx]
+    # Gates need h^(ell-1) -- the input to layer ell -- so we keep inputs_cap as `captured`.
+    captured = inputs_cap
+    # h-list spanning all stages: h^(0) (input to layer 0) ... h^(L) (output of last layer).
+    all_h = inputs_cap + output_cap
     print(f"  Captured h for {len(captured)} MP layers; pred shape {pred_np.shape}")
 
     # Resolve query indices
@@ -379,6 +392,87 @@ def main() -> None:
     fig.savefig(fig_path2, dpi=140)
     plt.close(fig)
     print(f"  wrote {fig_path2}")
+
+    # --- Plot 3: per-layer probed u_hat^(ell) over space-time ---
+    # For each layer, apply that layer's state_probe to h^(ell-1); also probe
+    # the final h^(L) using the last layer's probe (a reasonable proxy for the
+    # decoder's view, since the decoder operates on h^(L) directly).
+    u_hats = []
+    for ell, h_in in enumerate(captured):
+        layer = model.mp_layers[ell]
+        with torch.no_grad():
+            uh = torch.sigmoid(layer.state_probe(h_in)).squeeze(-1)[0].cpu().numpy()  # [nt, nx]
+        u_hats.append((f"u_hat^({ell})  (before layer {ell})", uh))
+    # Final h^(L): use the last layer's state_probe
+    if len(output_cap) > 0:
+        with torch.no_grad():
+            uh_L = torch.sigmoid(
+                model.mp_layers[-1].state_probe(output_cap[0])
+            ).squeeze(-1)[0].cpu().numpy()
+        u_hats.append((f"u_hat^({n_layers})  (after last MP, probe of last layer)", uh_L))
+    # Final prediction
+    u_hats.append(("u_pred (decoder)", pred_np))
+
+    n_panels = len(u_hats)
+    n_cols_uh = min(4, n_panels)
+    n_rows_uh = int(np.ceil(n_panels / n_cols_uh))
+    fig, axes = plt.subplots(
+        n_rows_uh, n_cols_uh,
+        figsize=(3.4 * n_cols_uh, 2.6 * n_rows_uh),
+        squeeze=False, constrained_layout=True,
+    )
+    vmax_uh = max(0.05, float(args.u_R))
+    for idx, (title, field) in enumerate(u_hats):
+        r, c = idx // n_cols_uh, idx % n_cols_uh
+        ax = axes[r][c]
+        pcm = ax.pcolormesh(x_np, t_np, field, shading="auto",
+                            cmap="jet", vmin=0.0, vmax=vmax_uh)
+        ax.plot(args.x_0 + s * t_np, t_np, "k-", lw=0.9, alpha=0.8)
+        ax.axvline(x_np[query_i], color="white", ls=":", lw=0.6, alpha=0.9)
+        ax.axvline(x_np[query_i] - cone_reach, color="cyan", lw=0.6, ls="--", alpha=0.6)
+        ax.axvline(x_np[query_i] + cone_reach, color="cyan", lw=0.6, ls="--", alpha=0.6)
+        ax.axhline(t_freeze_theory, color="red", lw=0.6, alpha=0.6)
+        ax.set_title(title, fontsize=8)
+        ax.set_xlabel("x"); ax.set_ylabel("t")
+    for idx in range(n_panels, n_rows_uh * n_cols_uh):
+        r, c = idx // n_cols_uh, idx % n_cols_uh
+        axes[r][c].axis("off")
+    fig.colorbar(pcm, ax=axes, shrink=0.6, label="u_hat / u_pred")
+    fig.suptitle(
+        f"Per-layer probed u_hat^(ell) — smearing/oversmoothing diagnostic\n"
+        f"u_R={args.u_R}, s={s:.3f}, t_freeze_theory={t_freeze_theory:.3f}",
+        fontsize=10,
+    )
+    fig_path3 = out_dir / f"u_hat_per_layer_uR{args.u_R}.png"
+    fig.savefig(fig_path3, dpi=140)
+    plt.close(fig)
+    print(f"  wrote {fig_path3}")
+
+    # --- Plot 4: u_hat^(ell)(x_*, t) at the query column, all layers overlaid ---
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    cmap_layers = plt.get_cmap("viridis", len(u_hats))
+    for idx, (title, field) in enumerate(u_hats):
+        col = field[:, query_i]                                  # [nt]
+        ax.plot(t_np, col, color=cmap_layers(idx),
+                lw=1.2, alpha=0.85, label=title.split("  ")[0])
+    # Truth: u_L=0 for t < (x* - x_0)/s, then u_R after shock passes.
+    t_shock_passes = (x_np[query_i] - args.x_0) / s if s > 0 else np.inf
+    truth_col = np.where(t_np < t_shock_passes, 0.0, args.u_R)
+    ax.plot(t_np, truth_col, "k--", lw=1.5, label=f"truth (shock passes at t={t_shock_passes:.3f})")
+    ax.axvline(t_freeze_theory, color="red", lw=0.8, alpha=0.7,
+               label=f"t_freeze_theory={t_freeze_theory:.3f}")
+    ax.set_xlabel(f"t (at x_* = {x_np[query_i]:.3f})")
+    ax.set_ylabel("u_hat^(ell)")
+    ax.set_title(
+        f"Per-layer probed u_hat at the query column\n"
+        f"u_R={args.u_R}, s={s:.3f}, x_0={args.x_0}, x_*={x_np[query_i]:.3f}"
+    )
+    ax.legend(loc="best", fontsize=8, ncol=2)
+    ax.grid(True, alpha=0.3)
+    fig_path4 = out_dir / f"u_hat_query_column_uR{args.u_R}_x{args.query_x}.png"
+    fig.savefig(fig_path4, dpi=140)
+    plt.close(fig)
+    print(f"  wrote {fig_path4}")
 
     # --- Also print learned gate hyperparams for context ---
     print("\n  Learned gate parameters per MP layer:")
