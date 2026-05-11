@@ -70,19 +70,28 @@ def print_large_error_cells(
     threshold: float = 0.5,
     label: str = "",
     max_lines: int = 200,
+    exclude_t0: bool = True,
 ) -> int:
     """Print every cell where |pred - truth| > threshold.
 
     Prints a table of (t_idx, x_idx, t, x, pred, truth, abs_err) sorted by
     descending error. Returns the count of offending cells (useful for the
     caller to log / decide whether to keep going).
+
+    If `exclude_t0` is True (default), cells at t_idx == 0 are excluded from
+    consideration; the t=0 row is an IC-regression failure mode handled
+    separately and isn't useful in shock-aliasing diagnostics.
     """
     err = np.abs(pred - truth)
     bad_mask = err > threshold
+    if exclude_t0:
+        bad_mask[0, :] = False
     n_bad = int(bad_mask.sum())
+    n_considered = pred.size - (pred.shape[1] if exclude_t0 else 0)
     header = (f"Cells with |pred - truth| > {threshold}"
-              f"{(' [' + label + ']') if label else ''}: "
-              f"{n_bad} cells (of {pred.size} total)")
+              f"{(' [' + label + ']') if label else ''}"
+              f"{' (excl. t=0)' if exclude_t0 else ''}: "
+              f"{n_bad} cells (of {n_considered} considered)")
     print(header)
     if n_bad == 0:
         return 0
