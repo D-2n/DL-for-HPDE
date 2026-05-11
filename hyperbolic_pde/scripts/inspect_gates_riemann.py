@@ -235,14 +235,25 @@ def main() -> None:
     n_layers = int(model_cfg.get("n_layers", 6))
     k_x = int(model_cfg.get("stencil_k_x", 3))
     k_t = int(model_cfg.get("stencil_k_t", 2))
+    dt = float(t_np[1] - t_np[0])
     cone_reach = n_layers * k_x * dx
+    temporal_reach = n_layers * k_t * dt          # how far back in time the query can read
     s = 1.0 - args.u_R
-    t_freeze_theory = cone_reach / max(abs(s), 1e-12)
+    t_freeze_spatial = cone_reach / max(abs(s), 1e-12)
+    t_freeze_temporal = temporal_reach            # past this t, IC at m=0 is unreachable
+    t_freeze_theory = min(t_freeze_spatial, t_freeze_temporal)
     print(f"Run: {run_dir}")
-    print(f"  Architecture: n_layers={n_layers}, k_x={k_x}, k_t={k_t}, dx={dx:.5f}")
-    print(f"  Receptive spatial half-reach (per query): L*k_x*dx = {cone_reach:.4f}")
+    print(f"  Architecture: n_layers={n_layers}, k_x={k_x}, k_t={k_t}, "
+          f"dx={dx:.5f}, dt={dt:.5f}")
+    print(f"  Spatial half-reach     : L*k_x*dx = {cone_reach:.4f}")
+    print(f"  Temporal reach (to IC) : L*k_t*dt = {temporal_reach:.4f}   (T_max={t_max:.4f})")
+    if temporal_reach < t_max:
+        print(f"  !! L*k_t*dt < T_max: queries beyond t={temporal_reach:.4f} "
+              f"cannot read the IC at all (TEMPORAL FREEZE active).")
     print(f"  Shock speed s = 1 - (u_L+u_R) = {s:.3f}")
-    print(f"  Theoretical t_freeze = L*k_x*dx / |s| = {t_freeze_theory:.4f}")
+    print(f"  Spatial  t_freeze  = L*k_x*dx / |s| = {t_freeze_spatial:.4f}")
+    print(f"  Temporal t_freeze  = L*k_t*dt        = {t_freeze_temporal:.4f}")
+    print(f"  Binding  t_freeze  = min(spatial, temporal) = {t_freeze_theory:.4f}")
 
     # Build & load model
     model = _build_model(model_cfg, device)
@@ -289,13 +300,21 @@ def main() -> None:
 
     # Resolve query indices
     query_i = int(np.argmin(np.abs(x_np - args.query_x)))
+    spatial_inside = abs(args.x_0 - x_np[query_i]) <= cone_reach
     print(f"  Query point: x={x_np[query_i]:.4f} (idx {query_i})")
     print(f"  Receptive strip at query: [{x_np[query_i] - cone_reach:.4f}, "
           f"{x_np[query_i] + cone_reach:.4f}]")
     print(f"  IC discontinuity at x_0={args.x_0:.4f} is "
-          f"{'INSIDE' if abs(args.x_0 - x_np[query_i]) <= cone_reach else 'OUTSIDE'} the strip.")
+          f"{'spatially INSIDE' if spatial_inside else 'spatially OUTSIDE'} the strip.")
 
     query_ns = [int(np.argmin(np.abs(t_np - tq))) for tq in args.times]
+    # For each query time, the IC at m=0 is temporally reachable iff t_q <= L*k_t*dt.
+    print(f"  Per-query temporal reachability of the IC (m=0):")
+    for tq, qn in zip(args.times, query_ns):
+        t_q = float(t_np[qn])
+        temp_inside = t_q <= temporal_reach + 1e-9
+        verdict = "REACHES IC" if temp_inside else "CANNOT REACH IC (temporal freeze)"
+        print(f"    t={t_q:.4f}  (qn={qn})  ->  {verdict}")
 
     layer_indices = args.layers if args.layers is not None else list(range(n_layers))
 
@@ -377,8 +396,10 @@ def main() -> None:
     ax.axvline(x_np[query_i] - cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8,
                label=f"recept. strip (±{cone_reach:.3f})")
     ax.axvline(x_np[query_i] + cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
-    ax.axhline(t_freeze_theory, color="red", lw=0.8, alpha=0.7,
-               label=f"t_freeze_theory={t_freeze_theory:.3f}")
+    ax.axhline(t_freeze_spatial, color="red", lw=0.8, alpha=0.7,
+               label=f"t_freeze_spatial=L·k_x·dx/|s|={t_freeze_spatial:.3f}")
+    ax.axhline(t_freeze_temporal, color="orange", lw=0.8, alpha=0.7,
+               label=f"t_freeze_temporal=L·k_t·dt={t_freeze_temporal:.3f}")
     # Draw the neighborhood patch for each (query_x, t_q): exactly the cells
     # whose gate values appear in the heatmap at that (layer, t_q).
     # Patch spans di in [-k_x, +k_x] and dm in [-k_t, 0] from the query node.
@@ -452,40 +473,46 @@ def main() -> None:
         dec_field   = _apply_decoder(h_L)
         rows.append((f"h^({n_layers})  (after last MP)", probe_field, dec_field))
 
-    n_rows_uh = len(rows)
-    n_cols_uh = 2  # probe | decoder
-    fig, axes = plt.subplots(
-        n_rows_uh, n_cols_uh,
-        figsize=(3.6 * n_cols_uh, 2.4 * n_rows_uh),
-        squeeze=False, constrained_layout=True,
-    )
+    # One image per layer (probe vs decoder side-by-side).
     vmax_uh = max(0.05, float(args.u_R))
+    layer_plots_dir = out_dir / f"u_hat_per_layer_uR{args.u_R}"
+    layer_plots_dir.mkdir(parents=True, exist_ok=True)
     for ri, (label, probe_field, dec_field) in enumerate(rows):
-        for ci, (col_label, field) in enumerate(
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
+        for ax, (col_label, field) in zip(
+            axes,
             [("probe (own state_probe)", probe_field),
-             ("decoder (final MLP" + (" + skip u0" if use_skip else "") + ")", dec_field)]
+             ("decoder (final MLP" + (" + skip u0" if use_skip else "") + ")", dec_field)],
         ):
-            ax = axes[ri][ci]
             pcm = ax.pcolormesh(x_np, t_np, field, shading="auto",
                                 cmap="jet", vmin=0.0, vmax=vmax_uh)
-            ax.plot(args.x_0 + s * t_np, t_np, "k-", lw=0.9, alpha=0.8)
-            ax.axvline(x_np[query_i], color="white", ls=":", lw=0.6, alpha=0.9)
-            ax.axvline(x_np[query_i] - cone_reach, color="cyan", lw=0.6, ls="--", alpha=0.6)
-            ax.axvline(x_np[query_i] + cone_reach, color="cyan", lw=0.6, ls="--", alpha=0.6)
-            ax.axhline(t_freeze_theory, color="red", lw=0.6, alpha=0.6)
-            ax.set_title(f"{label}\n{col_label}", fontsize=8)
+            ax.plot(args.x_0 + s * t_np, t_np, "k-", lw=1.0, alpha=0.85,
+                    label="truth shock")
+            ax.axvline(x_np[query_i], color="white", ls=":", lw=0.9, alpha=0.9,
+                       label=f"query x*={x_np[query_i]:.3f}")
+            ax.axvline(x_np[query_i] - cone_reach, color="cyan", lw=0.9, ls="--", alpha=0.7,
+                       label=f"recept. strip ±{cone_reach:.3f}")
+            ax.axvline(x_np[query_i] + cone_reach, color="cyan", lw=0.9, ls="--", alpha=0.7)
+            ax.axhline(t_freeze_theory, color="red", lw=0.8, alpha=0.7,
+                       label=f"t_freeze={t_freeze_theory:.3f}")
+            ax.set_title(col_label, fontsize=11)
             ax.set_xlabel("x"); ax.set_ylabel("t")
-    fig.colorbar(pcm, ax=axes, shrink=0.6, label="u (clipped to vmax=u_R)")
-    fig.suptitle(
-        f"Per-layer readouts: own probe vs decoder applied to h^(ell)\n"
-        f"u_R={args.u_R}, s={s:.3f}, t_freeze_theory={t_freeze_theory:.3f}, "
-        f"skip={'on' if use_skip else 'off'}",
-        fontsize=10,
-    )
-    fig_path3 = out_dir / f"u_hat_per_layer_uR{args.u_R}.png"
-    fig.savefig(fig_path3, dpi=140)
-    plt.close(fig)
-    print(f"  wrote {fig_path3}")
+            fig.colorbar(pcm, ax=ax, shrink=0.85, label="u (vmax=u_R)")
+        axes[0].legend(loc="upper right", fontsize=7)
+        fig.suptitle(
+            f"{label}    u_R={args.u_R}, s={s:.3f}, "
+            f"skip={'on' if use_skip else 'off'}",
+            fontsize=11,
+        )
+        # Filename ordered by ell index (00..0L) for natural sorting.
+        if ri < n_layers:
+            stem = f"layer_{ri:02d}_input"          # h^(ri) is input to layer ri
+        else:
+            stem = f"layer_{n_layers:02d}_output"   # h^(L) after last MP
+        fig_path_layer = layer_plots_dir / f"{stem}.png"
+        fig.savefig(fig_path_layer, dpi=140)
+        plt.close(fig)
+    print(f"  wrote {len(rows)} per-layer images to {layer_plots_dir}/")
 
     # Also keep u_hats list for Plot 4 (query-column lines): use decoder readout.
     u_hats: list[tuple[str, np.ndarray]] = []
