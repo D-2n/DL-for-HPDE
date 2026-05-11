@@ -82,6 +82,43 @@ def per_t_mae(pred: np.ndarray, truth: np.ndarray) -> np.ndarray:
     return np.abs(pred - truth).mean(axis=1)
 
 
+def print_large_error_cells(
+    pred: np.ndarray,
+    truth: np.ndarray,
+    x: np.ndarray,
+    t: np.ndarray,
+    threshold: float = 0.5,
+    label: str = "",
+    max_lines: int = 50,
+) -> int:
+    """Print every cell where |pred - truth| > threshold (sorted by |err| desc)."""
+    err = np.abs(pred - truth)
+    bad_mask = err > threshold
+    n_bad = int(bad_mask.sum())
+    header = (f"Cells with |pred - truth| > {threshold}"
+              f"{(' [' + label + ']') if label else ''}: "
+              f"{n_bad} cells (of {pred.size} total)")
+    print(header)
+    if n_bad == 0:
+        return 0
+    ti, xi = np.where(bad_mask)
+    errs = err[ti, xi]
+    order = np.argsort(-errs)
+    n_show = min(n_bad, max_lines)
+    print(f"  showing top {n_show} (sorted by abs_err desc):")
+    print(f"    {'t_idx':>5}  {'x_idx':>5}  {'t':>8}  {'x':>9}  "
+          f"{'pred':>10}  {'truth':>10}  {'abs_err':>10}")
+    for k in order[:n_show]:
+        i_t, i_x = int(ti[k]), int(xi[k])
+        print(f"    {i_t:>5d}  {i_x:>5d}  {float(t[i_t]):>8.4f}  "
+              f"{float(x[i_x]):>9.4f}  {float(pred[i_t, i_x]):>10.5f}  "
+              f"{float(truth[i_t, i_x]):>10.5f}  "
+              f"{float(err[i_t, i_x]):>10.5f}")
+    if n_bad > n_show:
+        print(f"    ... {n_bad - n_show} more cells suppressed")
+    return n_bad
+
+
 def _capture_layer_inputs(model: HypNO_ST3):
     """Pre-hook every MP layer to capture its input h^(ell-1); post-hook the last
     MP layer to capture h^(L). Returns (inputs_list, output_list, handles)."""
@@ -280,6 +317,15 @@ def main() -> None:
             mae_list[ell].append(mae(field, lh))
             rl2_list[ell].append(rel_l2(field, lh))
             pt_list[ell].append(per_t_mae(field, lh))
+
+        # Print cells with very large absolute error for each layer's readout.
+        for ell, field in enumerate(readouts):
+            print_large_error_cells(
+                field, lh, x_np, t_np,
+                threshold=0.5,
+                label=f"sample {idx} | {layer_labels[ell]}",
+                max_lines=30,
+            )
 
         # Per-sample plot: show all layer fields side-by-side vs GT for first n_plots
         if plot_i < args.n_plots:

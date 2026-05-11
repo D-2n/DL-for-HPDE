@@ -62,6 +62,49 @@ def per_t_mae(pred: np.ndarray, truth: np.ndarray) -> np.ndarray:
     return np.abs(pred - truth).mean(axis=1)
 
 
+def print_large_error_cells(
+    pred: np.ndarray,
+    truth: np.ndarray,
+    x: np.ndarray,
+    t: np.ndarray,
+    threshold: float = 0.5,
+    label: str = "",
+    max_lines: int = 200,
+) -> int:
+    """Print every cell where |pred - truth| > threshold.
+
+    Prints a table of (t_idx, x_idx, t, x, pred, truth, abs_err) sorted by
+    descending error. Returns the count of offending cells (useful for the
+    caller to log / decide whether to keep going).
+    """
+    err = np.abs(pred - truth)
+    bad_mask = err > threshold
+    n_bad = int(bad_mask.sum())
+    header = (f"Cells with |pred - truth| > {threshold}"
+              f"{(' [' + label + ']') if label else ''}: "
+              f"{n_bad} cells (of {pred.size} total)")
+    print(header)
+    if n_bad == 0:
+        return 0
+    ti, xi = np.where(bad_mask)
+    errs = err[ti, xi]
+    # Sort by descending error.
+    order = np.argsort(-errs)
+    n_show = min(n_bad, max_lines)
+    print(f"  showing top {n_show} (sorted by abs_err desc):")
+    print(f"    {'t_idx':>5}  {'x_idx':>5}  {'t':>8}  {'x':>9}  "
+          f"{'pred':>10}  {'truth':>10}  {'abs_err':>10}")
+    for k in order[:n_show]:
+        i_t, i_x = int(ti[k]), int(xi[k])
+        print(f"    {i_t:>5d}  {i_x:>5d}  {float(t[i_t]):>8.4f}  "
+              f"{float(x[i_x]):>9.4f}  {float(pred[i_t, i_x]):>10.5f}  "
+              f"{float(truth[i_t, i_x]):>10.5f}  "
+              f"{float(err[i_t, i_x]):>10.5f}")
+    if n_bad > n_show:
+        print(f"    ... {n_bad - n_show} more cells suppressed")
+    return n_bad
+
+
 def find_shock_positions(u_row: np.ndarray, x: np.ndarray, level: float = 0.5) -> np.ndarray:
     """Find continuous x-positions where u_row crosses `level` from low to high or
     high to low. Linear interpolation between bracketing cells gives sub-cell
@@ -300,6 +343,15 @@ def main() -> None:
         for name, pred in pairs:
             metrics[name].append(mae(pred, lh))
             per_t_errors[name].append(per_t_mae(pred, lh))
+
+        # Print cells with very large absolute error (per solver, per sample).
+        for name, pred in pairs:
+            print_large_error_cells(
+                pred, lh, x_np, t_np,
+                threshold=0.5,
+                label=f"sample {idx} | {name}",
+                max_lines=50,
+            )
 
         if plot_i < args.n_plots:
             vmin, vmax = float(lh.min()), float(lh.max())
