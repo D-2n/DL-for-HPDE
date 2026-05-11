@@ -401,6 +401,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         t: torch.Tensor,
         edge_feats_adj_pre: torch.Tensor | None = None,
         edge_feats_nonadj_pre: torch.Tensor | None = None,
+        return_intermediates: bool = False,
     ) -> torch.Tensor:
         # Precomputed edge tensors are ignored -- they only cover pure-
         # spatial offsets at t=0 and don't apply to the space-time ball.
@@ -424,6 +425,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
         h_node  = self.node_mlp(node_in)
 
         if self.encoder_type == "mlp":
+            if return_intermediates:
+                # In MLP mode "post-node" and "post-full" coincide.
+                return h_node, h_node, h_node
             return h_node
 
         # Resolve neighbourhood extents.
@@ -545,7 +549,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
         gates_t = torch.stack(gates, dim=3)                                      # [B, nt, nx, n_offsets, 1]
         agg = (gates_t / gate_sum.unsqueeze(3) * msgs).sum(dim=3)               # [B, nt, nx, d]
 
-        return self.combine(torch.cat([h_node, agg], dim=-1))
+        h_full = self.combine(torch.cat([h_node, agg], dim=-1))
+        if return_intermediates:
+            return h_full, h_node, h_full
+        return h_full
 
 
 # --------------------------------------------------------------------------- #
@@ -996,6 +1003,7 @@ class HypNO_ST3(nn.Module):
         t: torch.Tensor,
         edge_feats_adj: torch.Tensor | None = None,
         edge_feats_nonadj: torch.Tensor | None = None,
+        diagnose_lifting: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
         """
         u0                : [B, nx]
@@ -1011,14 +1019,33 @@ class HypNO_ST3(nn.Module):
         if x.dim() == 1:
             x = x.unsqueeze(0).expand(B, -1)
 
-        h = self.lifting(
-            u0, x, t,
-            edge_feats_adj_pre=edge_feats_adj,
-            edge_feats_nonadj_pre=edge_feats_nonadj,
-        )
+        if diagnose_lifting:
+            h, h_node_only, h_full_lift = self.lifting(
+                u0, x, t,
+                edge_feats_adj_pre=edge_feats_adj,
+                edge_feats_nonadj_pre=edge_feats_nonadj,
+                return_intermediates=True,
+            )
+        else:
+            h = self.lifting(
+                u0, x, t,
+                edge_feats_adj_pre=edge_feats_adj,
+                edge_feats_nonadj_pre=edge_feats_nonadj,
+            )
 
         u_hats: list[torch.Tensor] = []
         u_coarse = torch.zeros(B, nt, nx, device=h.device)
+
+        # When diagnosing lifting, prepend two pre-MP probes so the diagnostic
+        # stack becomes [post_node, post_full, MP_0, MP_1, ...]. Both pre-MP
+        # probes use MP-0's state_probe (biased — trained on post-MP-0 latents
+        # — but the spatial pattern is what matters for diagnostics). When
+        # diagnose_lifting=False, u_hats is the original per-MP-layer list,
+        # so deep-supervision in train scripts is unchanged.
+        if diagnose_lifting:
+            probe0 = self.mp_layers[0].state_probe
+            u_hats.append(torch.sigmoid(probe0(h_node_only)).squeeze(-1))
+            u_hats.append(torch.sigmoid(probe0(h_full_lift)).squeeze(-1))
 
         for layer in self.mp_layers:
             if self.use_checkpoint:

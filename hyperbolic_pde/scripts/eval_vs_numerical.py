@@ -62,6 +62,59 @@ def per_t_mae(pred: np.ndarray, truth: np.ndarray) -> np.ndarray:
     return np.abs(pred - truth).mean(axis=1)
 
 
+def find_shock_positions(u_row: np.ndarray, x: np.ndarray, level: float = 0.5) -> np.ndarray:
+    """Find continuous x-positions where u_row crosses `level` from low to high or
+    high to low. Linear interpolation between bracketing cells gives sub-cell
+    resolution.
+
+    Returns an array of crossing positions (may be empty).
+    """
+    diffs = (u_row - level)
+    # Bracketing pairs: sign changes between consecutive cells (strict, so exact
+    # zeros at cell centers don't double-count).
+    sign = np.sign(diffs)
+    # Treat exact zero as +eps so we don't get spurious crossings at flat regions.
+    sign = np.where(sign == 0, 1.0, sign)
+    crossings = np.where(sign[:-1] != sign[1:])[0]
+    if crossings.size == 0:
+        return np.empty(0, dtype=np.float64)
+    # Linear interpolation: u_left + alpha*(u_right - u_left) = level
+    u_l = u_row[crossings]
+    u_r = u_row[crossings + 1]
+    x_l = x[crossings]
+    x_r = x[crossings + 1]
+    denom = (u_r - u_l)
+    # |denom| is guaranteed > 0 because sign changed.
+    alpha = (level - u_l) / denom
+    return x_l + alpha * (x_r - x_l)
+
+
+def shock_position_error(
+    pred: np.ndarray, truth: np.ndarray, x: np.ndarray, level: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """For each timestep, match each GT shock crossing to the nearest predicted
+    crossing and report |x_pred - x_gt|. Returns (per_t_mean_err, per_t_max_err)
+    arrays of shape [nt]. NaN at timesteps with no GT crossings.
+    """
+    nt = pred.shape[0]
+    mean_err = np.full(nt, np.nan, dtype=np.float64)
+    max_err = np.full(nt, np.nan, dtype=np.float64)
+    for k in range(nt):
+        gt_x = find_shock_positions(truth[k], x, level)
+        pr_x = find_shock_positions(pred[k], x, level)
+        if gt_x.size == 0:
+            continue
+        if pr_x.size == 0:
+            # GT has shocks, prediction missed all of them — flag with grid extent.
+            err = np.full(gt_x.size, x[-1] - x[0])
+        else:
+            # Greedy nearest match: for each GT crossing find closest pred crossing.
+            err = np.array([np.min(np.abs(pr_x - g)) for g in gt_x])
+        mean_err[k] = err.mean()
+        max_err[k] = err.max()
+    return mean_err, max_err
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
@@ -71,6 +124,16 @@ def main() -> None:
     parser.add_argument(
         "--diagnose_uhat", action="store_true",
         help="Save per-layer u_hat (state_probe) diagnostic alongside compare_sample plots.",
+    )
+    parser.add_argument(
+        "--only_idx", type=str, default=None,
+        help="Comma-separated dataset indices to evaluate (e.g. '1547,1753'). "
+             "Bypasses --n_samples and the train/test split, runs only these.",
+    )
+    parser.add_argument(
+        "--data_path", type=str, default=None,
+        help="Override the dataset path from config.yaml (handy when the run was "
+             "trained on a cluster path that doesn't exist locally).",
     )
     #parser.add_argument("--no-dg", action="store_true", help="Skip DG(1) solver")
     args = parser.parse_args()
@@ -96,9 +159,17 @@ def main() -> None:
     model_cfg = cfg.get("hypno_st3", cfg.get("hypno_st2", cfg.get("hypno_st")))
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
 
-    dataset = load_dataset(Path(data_cfg["path"]))
-    _, test_idx = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
-    test_idx = test_idx[:args.n_samples]  # noqa: already underscore
+    data_path = Path(args.data_path) if args.data_path else Path(data_cfg["path"])
+    print(f"Loading dataset from {data_path}")
+    dataset = load_dataset(data_path)
+    if args.only_idx:
+        test_idx = np.array([int(s) for s in args.only_idx.split(",") if s.strip()])
+        print(f"Using --only_idx override: indices={test_idx.tolist()}")
+        # When only_idx is set, plot every requested sample.
+        args.n_plots = max(args.n_plots, len(test_idx))
+    else:
+        _, test_idx = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
+        test_idx = test_idx[:args.n_samples]  # noqa: already underscore
 
     x_np = dataset.x
     t_np = dataset.t
@@ -211,9 +282,15 @@ def main() -> None:
         else:
             ef_adj, ef_nonadj = None, None
         with torch.no_grad():
-            pred_t, _, _, u_hats_t = model(u0_t, x_grid, t_grid, edge_feats_adj=ef_adj, edge_feats_nonadj=ef_nonadj)
+            pred_t, _, _, u_hats_t = model(
+                u0_t, x_grid, t_grid,
+                edge_feats_adj=ef_adj, edge_feats_nonadj=ef_nonadj,
+                diagnose_lifting=args.diagnose_uhat,
+            )
         hypno_np = pred_t[0].cpu().numpy()
-        # u_hats_t: list of [B, nt, nx] tensors, one per MP layer
+        # u_hats_t layout depends on diagnose_lifting:
+        #   diagnose_lifting=False -> [MP_0, MP_1, ...]                 (one per MP layer)
+        #   diagnose_lifting=True  -> [post_node, post_full, MP_0, ...] (lifting probes prepended)
         u_hats_np = [uh[0].cpu().numpy() for uh in u_hats_t] if u_hats_t else []
 
         pairs = [("HypNO-ST3", hypno_np), ("WENO5", weno), ("Godunov", godunov)]
@@ -260,25 +337,84 @@ def main() -> None:
             fig.savefig(plot_dir / f"compare_sample_{idx}.png", dpi=150)
             plt.close(fig)
 
+            # Continuous shock-position error: aliasing test.
+            # If the salt-and-pepper at single cells is just sub-cell shock
+            # mis-positioning, the *continuous* shock position should be much
+            # more accurate than the cell-wise value error suggests.
+            try:
+                hypno_mean, hypno_max = shock_position_error(hypno_np, lh, x_np)
+                weno_mean, weno_max = shock_position_error(weno, lh, x_np)
+                godu_mean, godu_max = shock_position_error(godunov, lh, x_np)
+                dx_grid = x_np[1] - x_np[0]
+                fig_s, axes_s = plt.subplots(
+                    1, 2, figsize=(11, 4), constrained_layout=True,
+                )
+                # Mean per-t shock-position error in units of dx
+                axes_s[0].plot(t_np, hypno_mean / dx_grid, label="HypNO-ST3", color="tab:blue")
+                axes_s[0].plot(t_np, weno_mean / dx_grid, label="WENO5", color="tab:orange")
+                axes_s[0].plot(t_np, godu_mean / dx_grid, label="Godunov", color="tab:green")
+                axes_s[0].axhline(0.5, color="k", ls="--", lw=0.7, label="half-cell")
+                axes_s[0].set_xlabel("t")
+                axes_s[0].set_ylabel("mean shock-position error / dx")
+                axes_s[0].set_title("Continuous shock-position error (mean)")
+                axes_s[0].legend()
+                axes_s[0].grid(True, alpha=0.3)
+                # Max
+                axes_s[1].plot(t_np, hypno_max / dx_grid, label="HypNO-ST3", color="tab:blue")
+                axes_s[1].plot(t_np, weno_max / dx_grid, label="WENO5", color="tab:orange")
+                axes_s[1].plot(t_np, godu_max / dx_grid, label="Godunov", color="tab:green")
+                axes_s[1].axhline(0.5, color="k", ls="--", lw=0.7, label="half-cell")
+                axes_s[1].set_xlabel("t")
+                axes_s[1].set_ylabel("max shock-position error / dx")
+                axes_s[1].set_title("Continuous shock-position error (max)")
+                axes_s[1].legend()
+                axes_s[1].grid(True, alpha=0.3)
+                fig_s.suptitle(
+                    f"Sample {idx} — Continuous shock localization "
+                    f"(below half-cell ⇒ pixel error is sub-cell aliasing)"
+                )
+                fig_s.savefig(plot_dir / f"compare_sample_{idx}_shockpos.png", dpi=150)
+                plt.close(fig_s)
+
+                # Print summary line
+                def _nm(a):
+                    a = a[~np.isnan(a)]
+                    return float(a.mean()) if a.size else float("nan")
+                print(
+                    f"  shock-pos err (mean over t, units=dx): "
+                    f"HypNO={_nm(hypno_mean) / dx_grid:.3f}  "
+                    f"WENO={_nm(weno_mean) / dx_grid:.3f}  "
+                    f"Godunov={_nm(godu_mean) / dx_grid:.3f}"
+                )
+            except Exception as e:
+                print(f"  (shock-pos diagnostic skipped: {e})")
+
             if args.diagnose_uhat and u_hats_np:
-                # Two rows per layer: top = u_hat at that layer, bottom = |u_hat - GT|.
-                # The MP layers' state_probe is the model's internal "current best
-                # decoded state" — if salt-and-pepper cells flip from correct to
-                # wrong between consecutive layers, this plot shows it directly.
-                n_layers_uh = len(u_hats_np)
+                # u_hats_np layout (set in HypNO_ST3.forward):
+                #   [0] post_node    — lifting node_mlp output, probed by MP-0's state_probe
+                #   [1] post_full    — full lifting (node + edge + combine), same probe
+                #   [2..]            — after each MP layer, that layer's own state_probe
+                # Both pre-MP probes use MP-0's state_probe and are biased; the
+                # spatial *pattern* (where the model has committed vs. where it's
+                # still smooth) is what matters for diagnostics.
+                n_cols = len(u_hats_np)
+                col_titles = ["post_node", "post_full"] + [
+                    f"MP_{k}" for k in range(n_cols - 2)
+                ]
                 err_vmax_uh = max(np.abs(uh - lh).max() for uh in u_hats_np)
                 fig_d, axes_d = plt.subplots(
-                    2, n_layers_uh,
-                    figsize=(3.2 * n_layers_uh, 6.5),
+                    2, n_cols,
+                    figsize=(3.2 * n_cols, 6.5),
                     constrained_layout=True,
                 )
-                if n_layers_uh == 1:
+                if n_cols == 1:
                     axes_d = axes_d.reshape(2, 1)
                 for li, uh in enumerate(u_hats_np):
+                    title = col_titles[li]
                     im_top = axes_d[0, li].pcolormesh(
                         x_np, t_np, uh, shading="auto", cmap="jet", vmin=vmin, vmax=vmax,
                     )
-                    axes_d[0, li].set_title(f"u_hat L{li}")
+                    axes_d[0, li].set_title(f"u_hat {title}")
                     axes_d[0, li].set_xlabel("x")
                     axes_d[0, li].set_ylabel("t")
                     fig_d.colorbar(im_top, ax=axes_d[0, li])
@@ -287,11 +423,13 @@ def main() -> None:
                         x_np, t_np, np.abs(uh - lh),
                         shading="auto", cmap="magma", vmin=0, vmax=err_vmax_uh,
                     )
-                    axes_d[1, li].set_title(f"|u_hat L{li} - GT|")
+                    axes_d[1, li].set_title(f"|u_hat {title} - GT|")
                     axes_d[1, li].set_xlabel("x")
                     axes_d[1, li].set_ylabel("t")
                     fig_d.colorbar(im_bot, ax=axes_d[1, li])
-                fig_d.suptitle(f"Sample {idx} — per-layer state_probe diagnostic")
+                fig_d.suptitle(
+                    f"Sample {idx} — state_probe diagnostic (lifting + per-MP-layer)"
+                )
                 fig_d.savefig(plot_dir / f"compare_sample_{idx}_uhat.png", dpi=150)
                 plt.close(fig_d)
 
