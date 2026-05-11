@@ -112,16 +112,21 @@ def _decode_with_skip(model: HypNO_ST3, h: torch.Tensor, u0_t: torch.Tensor) -> 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
-    parser.add_argument("--run-dir", type=str, default=None)
-    parser.add_argument("--n_samples", type=int, default=50,
-                        help="Number of test samples to evaluate.")
-    parser.add_argument("--n_plots", type=int, default=3,
-                        help="Number of per-sample per-layer plots to save.")
-    parser.add_argument("--data_path", type=str, default=None,
-                        help="Override dataset path from config.yaml.")
-    args = parser.parse_args()
+    # ---- HARDCODED PARAMETERS (edit here) ---- #
+    RUN_DIR    = "/home/dzdrale/scratch/runs/hypno_st3/run_20260507_123353"
+    N_SAMPLES  = 50
+    N_PLOTS    = 3
+    DATA_PATH  = None       # None = use the run's config.yaml data.path
+    # ------------------------------------------ #
+
+    class _Args:
+        pass
+    args = _Args()
+    args.run_dir   = RUN_DIR
+    args.n_samples = N_SAMPLES
+    args.n_plots   = N_PLOTS
+    args.data_path = DATA_PATH
+    args.config    = str(resolve_config_path(ROOT / "configs"))
 
     # ---- Load config / run dir ----
     if args.run_dir:
