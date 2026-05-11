@@ -367,8 +367,8 @@ def main() -> None:
     plt.close(fig)
     print(f"  wrote {fig_path}")
 
-    # --- Plot 2: prediction field with query marker and shock track ---
-    fig, ax = plt.subplots(figsize=(7, 5), constrained_layout=True)
+    # --- Plot 2: prediction field with query marker, shock track, and patch outlines ---
+    fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
     pcm = ax.pcolormesh(x_np, t_np, pred_np, shading="auto",
                         cmap="jet", vmin=0.0, vmax=max(0.05, float(args.u_R)))
     ax.plot(args.x_0 + s * t_np, t_np, "k-", lw=1.2, label="truth shock")
@@ -377,15 +377,41 @@ def main() -> None:
     ax.axvline(x_np[query_i] - cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8,
                label=f"recept. strip (±{cone_reach:.3f})")
     ax.axvline(x_np[query_i] + cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
-    for tq in args.times:
-        ax.axhline(tq, color="orange", ls=":", lw=0.6, alpha=0.6)
     ax.axhline(t_freeze_theory, color="red", lw=0.8, alpha=0.7,
                label=f"t_freeze_theory={t_freeze_theory:.3f}")
+    # Draw the neighborhood patch for each (query_x, t_q): exactly the cells
+    # whose gate values appear in the heatmap at that (layer, t_q).
+    # Patch spans di in [-k_x, +k_x] and dm in [-k_t, 0] from the query node.
+    half_dx = 0.5 * dx
+    half_dt = 0.5 * (t_np[1] - t_np[0])
+    for ti, qn in enumerate(query_ns):
+        x_q = x_np[query_i]
+        t_q = t_np[qn]
+        # Spatial bounds: cells i_q+di for di in [-k_x, k_x]
+        left  = x_q - k_x * dx - half_dx
+        right = x_q + k_x * dx + half_dx
+        # Temporal bounds: cells n_q+dm for dm in [-k_t, 0]  (causal)
+        bottom = t_q - k_t * (t_np[1] - t_np[0]) - half_dt
+        top    = t_q + half_dt
+        rect = plt.Rectangle(
+            (left, bottom), right - left, top - bottom,
+            fill=False, edgecolor="magenta", lw=1.4, ls="-", alpha=0.9,
+        )
+        ax.add_patch(rect)
+        # Mark the query cell itself with a small dot
+        ax.plot(x_q, t_q, marker="o", color="magenta", markersize=4,
+                markeredgecolor="black", markeredgewidth=0.4)
+        ax.annotate(
+            f"t={t_q:.3f}",
+            xy=(right, t_q), xytext=(3, 0), textcoords="offset points",
+            color="magenta", fontsize=8, va="center",
+        )
     ax.set_xlabel("x")
     ax.set_ylabel("t")
     ax.set_title(
         f"Prediction field — Riemann u_L=0, u_R={args.u_R}, "
-        f"x_0={args.x_0}\nquery times: {args.times}")
+        f"x_0={args.x_0}\nmagenta boxes = neighborhood patches "
+        f"(±k_x={k_x} in space, k_t={k_t} causal back in time) for each query t")
     ax.legend(loc="upper right", fontsize=8)
     fig.colorbar(pcm, ax=ax, label="u")
     fig_path2 = out_dir / f"pred_field_uR{args.u_R}.png"
