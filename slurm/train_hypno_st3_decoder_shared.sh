@@ -6,11 +6,79 @@
 #SBATCH --mem=32G
 #SBATCH --time=48:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/hypno_st3_decoder_shared_%j.log
+#SBATCH --requeue
+#SBATCH --signal=B:SIGTERM@90
+#SBATCH --open-mode=append
 
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
+export PYTHONUNBUFFERED=1
 mkdir -p /home/dzdrale/scratch/logs
 
 CONFIG=hyperbolic_pde/configs/hyperbolic_pde_cleps_decoder_shared.yaml
 
-/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3.py --config $CONFIG
+# Per-job marker file; survives across requeues for THIS slurm script only.
+MARKER=/home/dzdrale/scratch/runs/hypno_st3_decoder_shared.run_dir
+
+# --- resume detection ---
+RESUME_ARG=""
+if [ -f "$MARKER" ]; then
+    RUN_DIR=$(tr -d '[:space:]' < "$MARKER")
+    if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
+        if ls "$RUN_DIR"/checkpoint_epoch*.pt >/dev/null 2>&1; then
+            RESUME_ARG="--resume_run $RUN_DIR"
+            echo "[slurm] auto-resume from $RUN_DIR (marker: $MARKER)"
+        else
+            echo "[slurm] $RUN_DIR has no checkpoints yet; starting fresh"
+            rm -f "$MARKER"
+        fi
+    else
+        echo "[slurm] marker points to missing dir; starting fresh"
+        rm -f "$MARKER"
+    fi
+else
+    echo "[slurm] no marker; starting fresh"
+fi
+
+# Record job start time BEFORE launching python so we can identify our own
+# run dir even if a parallel HypNO-ST3 run with the same save_path exists.
+# Any run dir created at or after this time is ours; older ones belong to
+# other jobs (e.g. the 7-layer ablation running in parallel).
+T_START=$(($(date +%s) - 5))
+
+# --- launch training in background ---
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3.py \
+    --config $CONFIG $RESUME_ARG &
+PYPID=$!
+
+# If we started fresh, identify OUR run dir by mtime — it must have been
+# created at or after T_START (so it's not from a pre-existing parallel run).
+# We don't rely on save_path matching because parallel configs may have the
+# same save_path. Pick the newest dir whose mtime is >= T_START.
+if [ -z "$RESUME_ARG" ]; then
+    (
+        RUNS_BASE="hyperbolic_pde/runs/hypno_st3"
+        for i in $(seq 1 120); do
+            # Find run_* dirs created since T_START, newest first.
+            CANDIDATE=$(find "$RUNS_BASE" -maxdepth 1 -mindepth 1 -type d \
+                       -newermt "@$T_START" -name 'run_*' 2>/dev/null | sort -r | head -n 1)
+            if [ -n "$CANDIDATE" ] && [ -d "$CANDIDATE" ]; then
+                echo "$CANDIDATE" > "$MARKER"
+                echo "[slurm] pinned run dir to marker (by mtime >= $T_START): $CANDIDATE -> $MARKER"
+                exit 0
+            fi
+            sleep 1
+        done
+        echo "[slurm] WARNING: could not identify run dir within 120s"
+    ) &
+fi
+
+# --- signal forwarding for graceful shutdown ---
+term_handler() {
+    echo "[slurm] received SIGTERM, forwarding to python (pid $PYPID) and waiting"
+    kill -TERM "$PYPID" 2>/dev/null
+    wait "$PYPID"
+}
+trap term_handler SIGTERM
+
+wait "$PYPID"

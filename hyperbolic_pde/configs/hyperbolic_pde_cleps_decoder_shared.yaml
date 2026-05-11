@@ -21,5 +21,5 @@ hypno_st3:
   include_flux: true
   skip: false
   lambda_probe: 0.05
-  save_path: /home/dzdrale/scratch/runs/hypno_st3_decoder_shared.pt
-  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3_decoder_shared
+  save_path: /home/dzdrale/scratch/runs/hypno_st3_decoder_shared_9L.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3_decoder_shared_9L
