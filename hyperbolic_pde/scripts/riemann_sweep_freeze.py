@@ -275,14 +275,21 @@ def _evaluate_run(
         # Receptive-cone walls: x = X_SPLIT +- L*k_x*dx
         ax.axvline(X_SPLIT + cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
         ax.axvline(X_SPLIT - cone_reach, color="cyan", lw=1.0, ls="--", alpha=0.8)
+        # Continuous characteristic cone from (X_SPLIT, 0) with slope +- c_max = +- 1.
+        c_max = 1.0
+        ax.plot(X_SPLIT + c_max * t_np, t_np, color="yellow", lw=0.9, ls="-", alpha=0.7)
+        ax.plot(X_SPLIT - c_max * t_np, t_np, color="yellow", lw=0.9, ls="-", alpha=0.7)
+        ax.set_xlim(x_np[0], x_np[-1])
+        ax.set_ylim(t_np[0], t_np[-1])
         ax.set_title(f"u_R={u_R:.2f}, s={s_i:.2f}", fontsize=9)
         ax.set_xlabel("x"); ax.set_ylabel("t")
     for j in range(N_U_R, len(axes)):
         axes[j].axis("off")
-    fig.suptitle(f"{run_dir.name} — prediction with truth (black) "
-                 f"and predicted shock track (white dashed). "
-                 f"Red=measured t_freeze, cyan=theory.",
-                 fontsize=10)
+    fig.suptitle(f"{run_dir.name} — truth (black), pred (white dashed). "
+                 f"Red=measured t_freeze, cyan dotted=theory t_freeze, "
+                 f"cyan dashed verticals=receptive-field walls (x=X_SPLIT±L·k_x·dx), "
+                 f"yellow=continuous characteristic cone (|x-X_SPLIT|=c_max·t).",
+                 fontsize=9)
     fig.savefig(plot_dir / "tracks.png", dpi=130)
     plt.close(fig)
 
