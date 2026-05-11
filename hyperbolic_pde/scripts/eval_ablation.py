@@ -34,12 +34,19 @@ from hyperbolic_pde.models.hypno_st3 import HypNO_ST3, precompute_lwr_edge_featu
 
 # ─── variant identification ─────────────────────────────────────────────── #
 def identify_variant(cfg: dict) -> str:
-    """Map a run config to a variant label by inspecting the model flags."""
+    """Map a run config to a variant label by inspecting the model flags.
+
+    Priority: pure_pairwise > temporal_time > no_flux > skip > gelu > baseline.
+    The gelu bucket only fires when all other baseline-defining flags hold
+    (include_flux=true, temporal_gate=cfl, pure_pairwise=false, skip=false)
+    and the readout is GELU rather than the other ablations' ReLU.
+    """
     model_cfg = cfg.get("hypno_st3", cfg.get("hypno_st2", cfg.get("hypno_st", {})))
     include_flux = bool(model_cfg.get("include_flux", True))
     temporal_gate = str(model_cfg.get("temporal_gate_type", "cfl"))
     pure_pairwise = bool(model_cfg.get("pure_pairwise_edges", False))
     skip = bool(model_cfg.get("skip", False))
+    readout = str(model_cfg.get("readout", "gelu")).lower()
     if pure_pairwise:
         return "pure_pairwise"
     if temporal_gate == "time":
@@ -48,6 +55,8 @@ def identify_variant(cfg: dict) -> str:
         return "no_flux"
     if skip:
         return "skip"
+    if readout == "gelu":
+        return "gelu"
     return "baseline"
 
 
@@ -229,7 +238,7 @@ def main() -> None:
             continue
         loaded[variant] = (d, model, cfg)
 
-    variants_order = ["baseline", "no_flux", "temporal_time", "pure_pairwise", "skip"]
+    variants_order = ["baseline", "no_flux", "temporal_time", "pure_pairwise", "skip", "gelu"]
     variants_present = [v for v in variants_order if v in loaded]
     if not variants_present:
         raise SystemExit("No recognised variants among run dirs.")
