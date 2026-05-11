@@ -316,6 +316,11 @@ def main() -> None:
         run_dir = resume_run_dir
     else:
         run_dir = create_run_dir()
+        # Update latest_run.txt *immediately* (not just at the end of training)
+        # so that slurm-requeued jobs can locate the run dir to resume from.
+        latest_path = Path("hyperbolic_pde/runs/hypno_st3/latest_run.txt")
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        latest_path.write_text(str(run_dir), encoding="utf-8")
     log = setup_logging(run_dir)
     log.info(f"Run directory: {run_dir}")
     log.info(f"Device: {device}")
