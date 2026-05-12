@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=16G
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/eval_vs_numerical_%j.log
 
 #SBATCH --exclude=gpu012

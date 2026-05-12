@@ -17,6 +17,9 @@ data:
 hypno_st3:
   compile: false
   readout: gelu
+  n_layers: 13
+  k_x: 6
+  batch_size: 16
   pure_pairwise_edges: true
   include_flux: true
   skip: false

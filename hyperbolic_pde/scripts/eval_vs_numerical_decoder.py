@@ -177,7 +177,7 @@ def _decode_with_skip(model: HypNO_ST3, h: torch.Tensor, u0_t: torch.Tensor) -> 
 
 def main() -> None:
     # ---- HARDCODED PARAMETERS (edit here) ---- #
-    RUN_DIR    = "/home/dzdrale/scratch/runs/hypno_st3/run_20260507_123353"
+    RUN_DIR    = "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260511_170037"
     N_SAMPLES  = 50
     N_PLOTS    = 3
     DATA_PATH  = None       # None = use the run's config.yaml data.path
