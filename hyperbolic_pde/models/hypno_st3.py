@@ -366,7 +366,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
             temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
             gamma_ent = torch.sigmoid(self.phys_gamma_entropy)
 
-            g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+            g_upwind = torch.sigmoid(-a_ij * torch.sign(rel_x) / temperature)
 
             u_L = torch.where(rel_x > 0, u_i, u_j)
             u_R = torch.where(rel_x > 0, u_j, u_i)
@@ -684,7 +684,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             temperature = F.softplus(self.phys_temperature).clamp(min=1e-6)
             gamma_ent = torch.sigmoid(self.phys_gamma_entropy)
 
-            g_upwind = torch.sigmoid(-a_ij * rel_x / temperature)
+            g_upwind = torch.sigmoid(-a_ij * torch.sign(rel_x) / temperature)
 
             u_L = torch.where(rel_x > 0, u_i, u_j)
             u_R = torch.where(rel_x > 0, u_j, u_i)
