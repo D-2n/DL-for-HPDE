@@ -21,23 +21,31 @@ CONFIG=hyperbolic_pde/configs/hyperbolic_pde_cleps_decoder_shared.yaml
 MARKER=/home/dzdrale/scratch/runs/hypno_st3_decoder_shared.run_dir
 
 # --- resume detection ---
+# Resume is OPT-IN: pass `--resume` as the first sbatch arg to enable.
+# A bare `sbatch slurm/train_hypno_st3_decoder_shared.sh` always starts fresh
+# and clears any stale marker from a previous run.
+# Slurm requeues (SIGTERM -> requeue) re-exec the script with the same args,
+# so a job started with `--resume` will continue to auto-resume across requeues.
 RESUME_ARG=""
-if [ -f "$MARKER" ]; then
-    RUN_DIR=$(tr -d '[:space:]' < "$MARKER")
-    if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
-        if ls "$RUN_DIR"/checkpoint_epoch*.pt >/dev/null 2>&1; then
+if [ "${1:-}" = "--resume" ]; then
+    if [ -f "$MARKER" ]; then
+        RUN_DIR=$(tr -d '[:space:]' < "$MARKER")
+        if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ] && ls "$RUN_DIR"/checkpoint_epoch*.pt >/dev/null 2>&1; then
             RESUME_ARG="--resume_run $RUN_DIR"
-            echo "[slurm] auto-resume from $RUN_DIR (marker: $MARKER)"
+            echo "[slurm] --resume requested; auto-resume from $RUN_DIR (marker: $MARKER)"
         else
-            echo "[slurm] $RUN_DIR has no checkpoints yet; starting fresh"
+            echo "[slurm] --resume requested but marker invalid or no checkpoints; starting fresh"
             rm -f "$MARKER"
         fi
     else
-        echo "[slurm] marker points to missing dir; starting fresh"
-        rm -f "$MARKER"
+        echo "[slurm] --resume requested but no marker found; starting fresh"
     fi
 else
-    echo "[slurm] no marker; starting fresh"
+    if [ -f "$MARKER" ]; then
+        echo "[slurm] clearing stale marker $MARKER (pass --resume to resume)"
+        rm -f "$MARKER"
+    fi
+    echo "[slurm] starting fresh run"
 fi
 
 # Record job start time BEFORE launching python so we can identify our own
