@@ -456,6 +456,19 @@ def main() -> None:
         raise ValueError(f"hypno_st3.loss_type must be 'mae' or 'mse', got {loss_type!r}")
     log.info(f"Training objective: {loss_type.upper()}")
 
+    amp_dtype_str = str(model_cfg.get("amp_dtype", "none")).lower()
+    if amp_dtype_str in ("bf16", "bfloat16"):
+        amp_dtype = torch.bfloat16
+    elif amp_dtype_str in ("none", "fp32", "off", ""):
+        amp_dtype = None
+    else:
+        raise ValueError(f"hypno_st3.amp_dtype must be 'bf16' or 'none', got {amp_dtype_str!r}")
+    amp_enabled = amp_dtype is not None and device.type == "cuda"
+    if amp_enabled:
+        log.info(f"Mixed precision: torch.autocast(cuda, dtype={amp_dtype})")
+    else:
+        log.info("Mixed precision: off (fp32)")
+
     step = (start_epoch - 1) * len(loader)
     model.train()
     start_time = time.perf_counter()
@@ -493,23 +506,24 @@ def main() -> None:
             else:
                 t_slice = t_grid
                 u_target = u_full
-            pred, u_coarse, _, u_hats = model(
-                u0, x_grid, t_slice,
-                edge_feats_adj=ef_adj_d,
-                edge_feats_nonadj=ef_nonadj_d,
-            )
-            loss, _ = hypno_pinn_loss(
-                pred, u_target, u_coarse,
-                u_hats=u_hats,
-                lambda_state=lambda_state,
-                lambda_conservation=lambda_conservation,
-                lambda_tv=lambda_tv,
-                lambda_pinn=lambda_pinn,
-                lambda_probe=lambda_probe,
-                shock_weighted=shock_weighted,
-                shock_alpha=shock_alpha,
-                loss_type=loss_type,
-            )
+            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
+                pred, u_coarse, _, u_hats = model(
+                    u0, x_grid, t_slice,
+                    edge_feats_adj=ef_adj_d,
+                    edge_feats_nonadj=ef_nonadj_d,
+                )
+                loss, _ = hypno_pinn_loss(
+                    pred, u_target, u_coarse,
+                    u_hats=u_hats,
+                    lambda_state=lambda_state,
+                    lambda_conservation=lambda_conservation,
+                    lambda_tv=lambda_tv,
+                    lambda_pinn=lambda_pinn,
+                    lambda_probe=lambda_probe,
+                    shock_weighted=shock_weighted,
+                    shock_alpha=shock_alpha,
+                    loss_type=loss_type,
+                )
             loss.backward()
             grad_clip = model_cfg.get("grad_clip")
             if grad_clip is not None:
@@ -555,23 +569,24 @@ def main() -> None:
                     v_u0 = v_u0.to(device)
                     v_u = v_u.to(device)
                     v_ef_adj_d, v_ef_nonadj_d = _prep_ef(v_ef_adj, v_ef_nonadj)
-                    v_pred, v_coarse, _, v_u_hats = model(
-                        v_u0, x_grid, t_grid,
-                        edge_feats_adj=v_ef_adj_d,
-                        edge_feats_nonadj=v_ef_nonadj_d,
-                    )
-                    v_l, _ = hypno_pinn_loss(
-                        v_pred, v_u, v_coarse,
-                        u_hats=v_u_hats,
-                        lambda_state=lambda_state,
-                        lambda_conservation=lambda_conservation,
-                        lambda_tv=lambda_tv,
-                        lambda_pinn=lambda_pinn,
-                        lambda_probe=lambda_probe,
-                        shock_weighted=shock_weighted,
-                        shock_alpha=shock_alpha,
-                        loss_type=loss_type,
-                    )
+                    with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
+                        v_pred, v_coarse, _, v_u_hats = model(
+                            v_u0, x_grid, t_grid,
+                            edge_feats_adj=v_ef_adj_d,
+                            edge_feats_nonadj=v_ef_nonadj_d,
+                        )
+                        v_l, _ = hypno_pinn_loss(
+                            v_pred, v_u, v_coarse,
+                            u_hats=v_u_hats,
+                            lambda_state=lambda_state,
+                            lambda_conservation=lambda_conservation,
+                            lambda_tv=lambda_tv,
+                            lambda_pinn=lambda_pinn,
+                            lambda_probe=lambda_probe,
+                            shock_weighted=shock_weighted,
+                            shock_alpha=shock_alpha,
+                            loss_type=loss_type,
+                        )
                     v_mse_batch = (v_pred - v_u).pow(2).mean().item()
                     val_loss += v_l.item() * v_u0.size(0)
                     val_mse += v_mse_batch * v_u0.size(0)
