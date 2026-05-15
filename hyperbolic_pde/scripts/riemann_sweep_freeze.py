@@ -37,7 +37,7 @@ from hyperbolic_pde.scripts.eval_riemann_shock import riemann_ic
 # Each entry must contain config.yaml and model_final.pt.
 # --------------------------------------------------------------------- #
 RUNS_TO_TEST: list[str] = [
-    "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260511_170037"
+    "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260513_140206"
 ]
 
 N_U_R: int               = 20
