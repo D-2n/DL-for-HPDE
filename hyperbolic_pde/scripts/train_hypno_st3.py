@@ -383,6 +383,7 @@ def main() -> None:
         temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
         include_flux=bool(model_cfg.get("include_flux", True)),
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
+        dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
     ).to(device)
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)

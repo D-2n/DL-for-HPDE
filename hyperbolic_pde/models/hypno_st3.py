@@ -223,36 +223,66 @@ def _compute_nonadj_pair_feats(
     return f_i, f_j, a_i, a_j
 
 
-def _enumerate_ball_offsets(k_x: int, k_t: int, causal: bool) -> list[tuple[int, int]]:
+def _dilated_spatial_offsets(k_x: int) -> list[int]:
+    """One-sided dilated spatial offsets: `[1, 3, 5, ..., 2*k_x - 1]`.
+
+    `k_x` neighbours per side: the adjacent cell, then a 1-cell gap each
+    step after. The full per-axis offset set (incl. centre and the mirror)
+    is `{0} U {+/-o for o in this list}`.
+    """
+    return [1 + 2 * j for j in range(k_x)]
+
+
+def _spatial_pad_width(k_x: int, dilated_spatial: bool) -> int:
+    """Spatial padding needed to cover the stencil's maximum `|di|`.
+
+    Dense stencil reaches `k_x`; dilated stencil reaches `2*k_x - 1`.
+    """
+    return (2 * k_x - 1) if dilated_spatial else k_x
+
+
+def _enumerate_ball_offsets(
+    k_x: int, k_t: int, causal: bool, dilated_spatial: bool = False
+) -> list[tuple[int, int]]:
     """Product-box space-time stencil (Chebyshev ball).
 
-    Returns all `(di, dm)` with `|di| <= k_x` and `|dm| <= k_t`, excluding
-    the centre `(0, 0)`. When `causal=True`, only edges with `dm <= 0`
-    (past or present in time) are returned -- diagonals respect the same
-    causality as pure-temporal edges.
+    Returns all `(di, dm)` excluding the centre `(0, 0)`. The temporal
+    range is `|dm| <= k_t` (or `dm <= 0` when `causal=True`).
+
+    Spatial range:
+      * `dilated_spatial=False`: dense `|di| <= k_x`.
+      * `dilated_spatial=True` : `di in {0, +/-1, +/-3, ..., +/-(2*k_x-1)}`
+        -- `k_x` neighbours per side, adjacent then 1-cell gaps.
     """
     m_range = range(-k_t, 1) if causal else range(-k_t, k_t + 1)
+    if dilated_spatial:
+        pos = _dilated_spatial_offsets(k_x)
+        di_range = [0] + pos + [-o for o in pos]
+        di_range.sort()
+    else:
+        di_range = list(range(-k_x, k_x + 1))
     out: list[tuple[int, int]] = []
     for dm in m_range:
-        for di in range(-k_x, k_x + 1):
+        for di in di_range:
             if di == 0 and dm == 0:
                 continue
             out.append((di, dm))
     return out
 
 
-def _pad_space_time(h: torch.Tensor, k_x: int, k_t: int) -> torch.Tensor:
-    """Replicate-pad `h [B, nt, nx, d]` to `[B, nt+2k_t, nx+2k_x, d]`.
+def _pad_space_time(h: torch.Tensor, pad_x: int, k_t: int) -> torch.Tensor:
+    """Replicate-pad `h [B, nt, nx, d]` to `[B, nt+2k_t, nx+2*pad_x, d]`.
 
     Ghost-cell (zero-order extrapolation) padding on both axes, done in
-    one call.
+    one call. `pad_x` is the spatial half-width (= `k_x` for the dense
+    stencil, `2*k_x-1` for the dilated stencil).
     """
     # conv2d-style padding expects [B, C, H, W] with pad = (left, right, top, bottom)
     h_pad = F.pad(
         h.permute(0, 3, 1, 2),                 # [B, d, nt, nx]
-        (k_x, k_x, k_t, k_t),
+        (pad_x, pad_x, k_t, k_t),
         mode="replicate",
-    ).permute(0, 2, 3, 1)                      # [B, nt+2k_t, nx+2k_x, d]
+    ).permute(0, 2, 3, 1)                      # [B, nt+2k_t, nx+2*pad_x, d]
     return h_pad
 
 
@@ -291,6 +321,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         causal_temporal: bool = True,
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
+        dilated_spatial: bool = False,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
@@ -303,6 +334,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.causal = causal_temporal
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
+        self.dilated_spatial = dilated_spatial
         node_in = 5 if include_flux else 4
         self.node_mlp = _make_mlp(node_in, d_hidden, d_latent, 2, activation)
         print(
@@ -445,8 +477,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
         # times matters for the node stream, which is already computed
         # above.  The edge features depend on u0_j (function of x_j
         # only) and on absolute x_j, t_j, so we only need to shift t_j.
-        u0_pad = F.pad(u0.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)
-        x_pad = F.pad(x.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)
+        pad_x = _spatial_pad_width(k_x, self.dilated_spatial)
+        u0_pad = F.pad(u0.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
+        x_pad = F.pad(x.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
         t_pad = F.pad(
             t.unsqueeze(0).unsqueeze(0), (k_t, k_t), mode="replicate",
         ).squeeze(0).squeeze(0)
@@ -454,15 +487,17 @@ class _SpaceTimeLiftingLayer(nn.Module):
         f0_i = f0_i_node
         a0_i = a0_i_node
 
-        offsets = _enumerate_ball_offsets(k_x, k_t, self.causal)
+        offsets = _enumerate_ball_offsets(
+            k_x, k_t, self.causal, dilated_spatial=self.dilated_spatial
+        )
 
         def _build_edge(di: int, dm: int):
             """Return ``(edge_in, gate, rel_x, rel_t)`` for one ball edge.
 
             Cheap: no ``edge_mlp`` call here.
             """
-            u0_j = u0_pad[:, k_x + di : k_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
-            x_j  = x_pad[:, k_x + di : k_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+            u0_j = u0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+            x_j  = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             t_j  = t_pad[k_t + dm : k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
             rel_x = x_j - x_bc
             rel_t = t_j - t_bc
@@ -593,6 +628,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         temporal_gate_type: str = "cfl",
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
+        dilated_spatial: bool = False,
         shared_decoder: nn.Module | None = None,
         **_ignored,
     ) -> None:
@@ -606,6 +642,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.mask_same_t_nonadj = mask_same_t_nonadj
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
+        self.dilated_spatial = dilated_spatial
         if temporal_gate_type not in {"cfl", "none", "time"}:
             raise ValueError(
                 f"temporal_gate_type must be one of 'cfl', 'none', 'time'; "
@@ -756,9 +793,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         u_hat_i = u_hat.unsqueeze(-1)                                           # [B, nt, nx, 1]
 
         # Joint space-time padding.
-        h_pad = _pad_space_time(h, k_x, k_t)                                    # [B, nt+2k_t, nx+2k_x, d]
-        u_hat_pad = _pad_space_time(u_hat.unsqueeze(-1), k_x, k_t).squeeze(-1)  # [B, nt+2k_t, nx+2k_x]
-        x_pad = F.pad(x.unsqueeze(1), (k_x, k_x), mode="replicate").squeeze(1)  # [B, nx+2k_x]
+        pad_x = _spatial_pad_width(k_x, self.dilated_spatial)
+        h_pad = _pad_space_time(h, pad_x, k_t)                                  # [B, nt+2k_t, nx+2*pad_x, d]
+        u_hat_pad = _pad_space_time(u_hat.unsqueeze(-1), pad_x, k_t).squeeze(-1)# [B, nt+2k_t, nx+2*pad_x]
+        x_pad = F.pad(x.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)  # [B, nx+2*pad_x]
         t_pad = F.pad(
             t.unsqueeze(0).unsqueeze(0), (k_t, k_t), mode="replicate",
         ).squeeze(0).squeeze(0)                                                  # [nt+2k_t]
@@ -768,13 +806,15 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         a_hat_i = 1.0 - 2.0 * u_hat_i
         f_hat_i = u_hat_i * (1.0 - u_hat_i)
 
-        offsets = _enumerate_ball_offsets(k_x, k_t, self.causal)
+        offsets = _enumerate_ball_offsets(
+            k_x, k_t, self.causal, dilated_spatial=self.dilated_spatial
+        )
 
         def _build_edge(di: int, dm: int):
             """Return ``(msg_in, is_adj_sp, gate, rel_x, rel_t)`` for one ball edge."""
-            h_j = h_pad[:, k_t + dm : k_t + dm + nt, k_x + di : k_x + di + nx, :]
-            u_hat_j = u_hat_pad[:, k_t + dm : k_t + dm + nt, k_x + di : k_x + di + nx].unsqueeze(-1)
-            x_j = x_pad[:, k_x + di : k_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+            h_j = h_pad[:, k_t + dm : k_t + dm + nt, pad_x + di : pad_x + di + nx, :]
+            u_hat_j = u_hat_pad[:, k_t + dm : k_t + dm + nt, pad_x + di : pad_x + di + nx].unsqueeze(-1)
+            x_j = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             t_j = t_pad[k_t + dm : k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
             rel_x = x_j - x_i
             rel_t = t_j - t_i
@@ -929,6 +969,7 @@ class HypNO_ST3(nn.Module):
         temporal_gate_type: str = "cfl",
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
+        dilated_spatial: bool = False,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -954,6 +995,7 @@ class HypNO_ST3(nn.Module):
         print(f"  temporal_gate_type = {temporal_gate_type}")
         print(f"  include_flux       = {include_flux}")
         print(f"  pure_pairwise_edges= {pure_pairwise_edges}")
+        print(f"  dilated_spatial    = {dilated_spatial}")
         print(f"  detector_path      = {detector_path}")
         if _ignored:
             print(f"  IGNORED kwargs     = {sorted(_ignored.keys())}")
@@ -978,6 +1020,7 @@ class HypNO_ST3(nn.Module):
             causal_temporal=causal_temporal,
             include_flux=include_flux,
             pure_pairwise_edges=pure_pairwise_edges,
+            dilated_spatial=dilated_spatial,
         )
 
         # Build the decoder BEFORE the MP layers so we can pass it as the shared
@@ -996,6 +1039,7 @@ class HypNO_ST3(nn.Module):
                 temporal_gate_type=temporal_gate_type,
                 include_flux=include_flux,
                 pure_pairwise_edges=pure_pairwise_edges,
+                dilated_spatial=dilated_spatial,
                 shared_decoder=self.decoder,
             )
             for _ in range(n_layers)
