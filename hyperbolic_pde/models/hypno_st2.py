@@ -55,7 +55,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 parser = argparse.ArgumentParser(description="Instantiate HypNO PINN")
 parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
-args = parser.parse_args()
+args, _ = parser.parse_known_args()  # ignore unknown args (this runs at import time)
 cfg = load_config(Path(args.config))
 cfg = apply_runtime_overrides(cfg)
 
