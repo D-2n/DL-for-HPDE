@@ -17,12 +17,19 @@ data:
 hypno_st3:
   compile: false
   readout: gelu
-  n_layers: 13
-  k_x: 6
+  n_layers: 12
+  stencil_k_x: 6
+  stencil_k_t: 5
   batch_size: 16
   pure_pairwise_edges: true
   include_flux: true
+  use_checkpoint: true
+  
+  amp_dtype: bf16
+  checkpoint_every: 5
+  val_every: 5
   skip: false
   lambda_probe: 0.05
-  save_path: /home/dzdrale/scratch/runs/hypno_st3_decoder_shared_9L.pt
-  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3_decoder_shared_9L
+  lr: 1.4e-3 
+  save_path: /home/dzdrale/scratch/runs/hypno_st3_decoder_shared_12L.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3_decoder_shared_12L

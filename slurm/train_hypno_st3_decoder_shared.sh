@@ -9,7 +9,7 @@
 #SBATCH --requeue
 #SBATCH --signal=B:SIGTERM@90
 #SBATCH --open-mode=append
-
+#SBATCH --exclude=parq-gpu001
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
 export PYTHONUNBUFFERED=1
