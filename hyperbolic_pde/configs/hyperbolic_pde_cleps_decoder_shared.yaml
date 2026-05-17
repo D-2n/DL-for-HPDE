@@ -24,7 +24,7 @@ hypno_st3:
   pure_pairwise_edges: true
   include_flux: true
   use_checkpoint: true
-  
+  epochs: 220
   amp_dtype: bf16
   checkpoint_every: 5
   val_every: 5

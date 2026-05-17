@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=eval_dec
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=16G
 #SBATCH --time=04:00:00

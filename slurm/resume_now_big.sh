@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=32G
 #SBATCH --time=20:00:00
-
+#SBATCH --exclude=parq-gpu001
 #SBATCH --output=/home/dzdrale/scratch/logs/hypno_resume_%j.log
 
 cd /home/dzdrale/DL-for-HPDE
@@ -37,6 +37,6 @@ echo "--- --help of the absolute-path script: ---"
 /home/dzdrale/hypno_env/bin/python "$SCRIPT" --help
 echo "=== END DIAGNOSTIC ==="
 
-/home/dzdrale/hypno_env/bin/python /home/dzdrale/DL-for-HPDE/hyperbolic_pde/scripts/train_hypno_st3.py \
-      --config hyperbolic_pde/configs/hyperbolic_pde_cleps_dilated.yaml \
-      --resume_run hyperbolic_pde/runs/hypno_st3/run_20260515_231300
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_st3.py \
+      --config hyperbolic_pde/configs/hyperbolic_pde_cleps_decoder_shared_finetune.yaml
+

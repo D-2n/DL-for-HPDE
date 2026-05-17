@@ -1,10 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=hypno_st3_dec
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --nodelist=gpu012,gpu013,gpu015,gpu016,gpu017,gpu018
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=32G
 #SBATCH --time=48:00:00
+
+
 #SBATCH --output=/home/dzdrale/scratch/logs/hypno_st3_decoder_shared_%j.log
 
 cd /home/dzdrale/DL-for-HPDE
