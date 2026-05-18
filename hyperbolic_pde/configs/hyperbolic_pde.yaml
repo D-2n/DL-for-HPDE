@@ -50,6 +50,48 @@ ood_data:
   boundary: ghost
 
 
+# --- 256x256 zero-shot resolution-transfer test sets --------------------------
+# Both keep dt/dx ~= 0.5 (the training regime) so the test isolates resolution
+# transfer from a dt/dx-regime shift. n_samples is PER (ic_type, num_segments)
+# pair (generate_ood_data_256.py groups by num_segments).
+
+# Wide domain: x in [-0.5,0.5], t_max 0.5 -> dx=dt~=0.00196, 8x finer than train.
+ood_data_256_wide:
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_256_wide.npz
+  nx: 256
+  nt: 256
+  x_min: -0.5
+  x_max: 0.5
+  t_max: 0.5
+  cfl: 0.25
+  n_samples: 10
+  ic_types: [piecewise_constant, piecewise_sine, riemann]
+  num_segments: [1, 2, 5, 8, 20, 30, 50, 70]
+  u_min: 0.0
+  u_max: 1.0
+  ic_points: 256
+  method: lax_hopf
+  boundary: ghost
+
+# Training domain: x in [-1,1], t_max 1.0 -> dx=dt~=0.00784, 2x finer than train.
+ood_data_256_train:
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_256_train.npz
+  nx: 256
+  nt: 256
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
+  cfl: 0.25
+  n_samples: 10
+  ic_types: [piecewise_constant, piecewise_sine, riemann]
+  num_segments: [1, 2, 5, 8, 20, 30, 50, 70]
+  u_min: 0.0
+  u_max: 1.0
+  ic_points: 256
+  method: lax_hopf
+  boundary: ghost
+
+
 hypno_st2:
   stencil_k_x: 4
   stencil_k_t: 5
