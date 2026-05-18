@@ -322,6 +322,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        normalize_edge_offsets: bool = False,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
@@ -335,6 +336,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
         self.dilated_spatial = dilated_spatial
+        self.normalize_edge_offsets = normalize_edge_offsets
         node_in = 5 if include_flux else 4
         self.node_mlp = _make_mlp(node_in, d_hidden, d_latent, 2, activation)
         print(
@@ -518,10 +520,15 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 sign_a0 = torch.zeros_like(du0)
             is_adj_flag = u0_bc.new_full(u0_bc.shape, 1.0 if is_adj_sp else 0.0)
             sign_rel_x = torch.sign(rel_x)
+            # rel_t fed to the MLP: raw physical offset by default, or divided
+            # by dt_grid (-> resolution-invariant integer-ish offset) when
+            # normalize_edge_offsets is on. sign_rel_x already carries no
+            # scale, so rel_x needs no treatment here.
+            rel_t_feat = rel_t / dt_grid if self.normalize_edge_offsets else rel_t
             if self.pure_pairwise_edges:
                 edge_in = torch.cat([
                     du0,
-                    sign_rel_x, rel_t,
+                    sign_rel_x, rel_t_feat,
                     t_bc, t_j,
                     a0_ij, sign_a0,
                     is_adj_flag,
@@ -532,7 +539,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     f0_i, f0_j,
                     a0_i, a0_j,
                     du0,
-                    sign_rel_x, rel_t,
+                    sign_rel_x, rel_t_feat,
                     t_bc, t_j,
                     a0_ij, sign_a0,
                     is_adj_flag,
@@ -542,7 +549,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
                     u0_bc, u0_j,
                     a0_i, a0_j,
                     du0,
-                    sign_rel_x, rel_t,
+                    sign_rel_x, rel_t_feat,
                     t_bc, t_j,
                     a0_ij, sign_a0,
                     is_adj_flag,
@@ -629,6 +636,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        normalize_edge_offsets: bool = False,
         use_gaussian_spatial_smoothing: bool = False,
         spatial_smoothing_adjacent_mass: float = 0.8,
         spatial_smoothing_sigma_init: float = 1.0,
@@ -647,6 +655,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
         self.dilated_spatial = dilated_spatial
+        self.normalize_edge_offsets = normalize_edge_offsets
         self.use_gaussian_spatial_smoothing = use_gaussian_spatial_smoothing
         self.spatial_smoothing_adjacent_mass = float(spatial_smoothing_adjacent_mass)
         self.spatial_smoothing_sigma_min = float(spatial_smoothing_sigma_min)
@@ -934,6 +943,16 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             a_j = 1.0 - 2.0 * u_hat_j
             cfl = a_hat_i.abs() * rel_t.abs() / dx_val
             is_adj_sp = (dm == 0) and (abs(di) == 1)
+            # rel_x / rel_t fed to the message MLPs: raw physical offsets by
+            # default, or divided by dx/dt (-> resolution-invariant integer-ish
+            # offsets) when normalize_edge_offsets is on. The physics gate and
+            # cfl keep raw rel_x/rel_t — those are physical comparisons.
+            if self.normalize_edge_offsets:
+                rel_x_feat = rel_x / dx_val
+                rel_t_feat = rel_t / dt_val
+            else:
+                rel_x_feat = rel_x
+                rel_t_feat = rel_t
 
             if is_adj_sp:
                 _, _, _, _, _, _, a_ij, sign_a, upwind = \
@@ -966,7 +985,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 if self.pure_pairwise_edges:
                     msg_in = torch.cat([
                         h, h_j,
-                        rel_x, rel_t,
+                        rel_x_feat, rel_t_feat,
                         torch.sign(rel_x),
                     ], dim=-1)                                                  # 2d + 3
                 elif self.include_flux:
@@ -974,7 +993,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                         h, h_j,
                         u_hat_i.expand_as(rel_x), u_hat_j,
                         f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
-                        rel_x, rel_t, cfl,
+                        rel_x_feat, rel_t_feat, cfl,
                         torch.sign(rel_x),
                         xi,
                     ], dim=-1)                                                  # 2d + 11
@@ -983,7 +1002,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                         h, h_j,
                         u_hat_i.expand_as(rel_x), u_hat_j,
                         a_hat_i.expand_as(rel_x), a_j,
-                        rel_x, rel_t, cfl,
+                        rel_x_feat, rel_t_feat, cfl,
                         torch.sign(rel_x),
                         xi,
                     ], dim=-1)                                                  # 2d + 9
@@ -1111,6 +1130,7 @@ class HypNO_ST3(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        normalize_edge_offsets: bool = False,
         use_gaussian_spatial_smoothing: bool = False,
         spatial_smoothing_adjacent_mass: float = 0.8,
         spatial_smoothing_sigma_init: float = 1.0,
@@ -1141,6 +1161,7 @@ class HypNO_ST3(nn.Module):
         print(f"  include_flux       = {include_flux}")
         print(f"  pure_pairwise_edges= {pure_pairwise_edges}")
         print(f"  dilated_spatial    = {dilated_spatial}")
+        print(f"  normalize_edge_offsets = {normalize_edge_offsets}")
         print(f"  use_gaussian_spatial_smoothing = {use_gaussian_spatial_smoothing}")
         if use_gaussian_spatial_smoothing:
             print(f"    spatial_smoothing_adjacent_mass = {spatial_smoothing_adjacent_mass}")
@@ -1180,6 +1201,7 @@ class HypNO_ST3(nn.Module):
             include_flux=include_flux,
             pure_pairwise_edges=pure_pairwise_edges,
             dilated_spatial=dilated_spatial,
+            normalize_edge_offsets=normalize_edge_offsets,
         )
 
         # Build the decoder BEFORE the MP layers so we can pass it as the shared
@@ -1199,6 +1221,7 @@ class HypNO_ST3(nn.Module):
                 include_flux=include_flux,
                 pure_pairwise_edges=pure_pairwise_edges,
                 dilated_spatial=dilated_spatial,
+                normalize_edge_offsets=normalize_edge_offsets,
                 use_gaussian_spatial_smoothing=use_gaussian_spatial_smoothing,
                 spatial_smoothing_adjacent_mass=spatial_smoothing_adjacent_mass,
                 spatial_smoothing_sigma_init=spatial_smoothing_sigma_init,

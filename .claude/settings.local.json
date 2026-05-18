@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(git stash *)",
-      "Bash(file \"/c/Users/dimit/Desktop/compare_num_segments_2_wide\"*)"
+      "Bash(file \"/c/Users/dimit/Desktop/compare_num_segments_2_wide\"*)",
+      "Bash(file \"/c/Users/dimit/Desktop/compare_num_segments_2_train\"*)",
+      "Bash(python -c ' *)"
     ]
   }
 }

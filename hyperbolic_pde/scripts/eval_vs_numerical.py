@@ -282,6 +282,8 @@ def main() -> None:
         mask_same_t_nonadj=bool(model_cfg.get("mask_same_t_nonadj", True)),
         temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
+        dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
+        normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", False)),
     ).to(device)
 
     if run_dir and (run_dir / "model_final.pt").exists():

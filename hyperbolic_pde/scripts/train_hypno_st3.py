@@ -386,6 +386,7 @@ def main() -> None:
         include_flux=bool(model_cfg.get("include_flux", True)),
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
         dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
+        normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", False)),
         use_gaussian_spatial_smoothing=bool(
             model_cfg.get("use_gaussian_spatial_smoothing", False)
         ),

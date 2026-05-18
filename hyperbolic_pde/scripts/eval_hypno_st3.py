@@ -131,6 +131,7 @@ def main() -> None:
         temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
         dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
+        normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", False)),
         use_gaussian_spatial_smoothing=bool(
             model_cfg.get("use_gaussian_spatial_smoothing", False)
         ),
