@@ -40,9 +40,9 @@ ood_data:
   x_max: 1.0
   t_max: 1.0
   cfl: 0.25
-  n_samples: 40                 # samples generated PER (ic_type, num_segments) pair
+  num_samples: 30
   ic_types: [piecewise_constant, piecewise_sine, riemann]
-  num_segments: [8, 50, 70]
+  num_segments: [1, 2, 5, 8, 20, 30, 50, 70]
   u_min: 0.0
   u_max: 1.0
   ic_points: 128
