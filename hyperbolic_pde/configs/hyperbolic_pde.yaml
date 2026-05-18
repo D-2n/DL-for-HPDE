@@ -172,6 +172,12 @@ hypno_st3:
   shock_threshold: 0.3
   include_flux: false
   pure_pairwise_edges: true
+  # When true, rel_x/rel_t fed to the edge MLPs are divided by dx/dt so they
+  # become resolution-invariant integer-ish offsets. Makes the model transfer
+  # zero-shot across grid resolutions (raw rel_x shrinks with finer grids and
+  # the MLPs, trained at one scale, mis-transport shocks otherwise). NOT
+  # weight-compatible with a model trained with this off — retrain or fine-tune.
+  normalize_edge_offsets: false
   # --- experimental: Gaussian spatial smoothing of raw gate values ---------
   # When true, redistributes each same-time side's adjacent-gate budget over
   # the farther same-side neighbours, and each past-time slice's total gate
