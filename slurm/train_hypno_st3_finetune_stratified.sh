@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=ft_strat
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=32G
-#SBATCH --time=6:00:00
+#SBATCH --time=8:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/finetune_stratified_%j.log
 
 cd /home/dzdrale/DL-for-HPDE
