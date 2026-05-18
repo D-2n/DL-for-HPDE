@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gen_lwr2d
-#SBATCH --partition=cpu
+#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --time=2:00:00
