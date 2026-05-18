@@ -305,7 +305,9 @@ def main() -> None:
         f"[train] config={args.config}  "
         f"hypno_st3.include_flux={model_cfg.get('include_flux', '<unset, default True>')!r}  "
         f"hypno_st3.temporal_gate_type={model_cfg.get('temporal_gate_type', '<unset, default cfl>')!r}  "
-        f"hypno_st3.pure_pairwise_edges={model_cfg.get('pure_pairwise_edges', '<unset, default False>')!r}"
+        f"hypno_st3.pure_pairwise_edges={model_cfg.get('pure_pairwise_edges', '<unset, default False>')!r}  "
+        f"hypno_st3.use_gaussian_spatial_smoothing="
+        f"{model_cfg.get('use_gaussian_spatial_smoothing', '<unset, default False>')!r}"
     )
 
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
@@ -384,6 +386,18 @@ def main() -> None:
         include_flux=bool(model_cfg.get("include_flux", True)),
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
         dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
+        use_gaussian_spatial_smoothing=bool(
+            model_cfg.get("use_gaussian_spatial_smoothing", False)
+        ),
+        spatial_smoothing_adjacent_mass=float(
+            model_cfg.get("spatial_smoothing_adjacent_mass", 0.8)
+        ),
+        spatial_smoothing_sigma_init=float(
+            model_cfg.get("spatial_smoothing_sigma_init", 1.0)
+        ),
+        spatial_smoothing_sigma_min=float(
+            model_cfg.get("spatial_smoothing_sigma_min", 1e-4)
+        ),
     ).to(device)
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)

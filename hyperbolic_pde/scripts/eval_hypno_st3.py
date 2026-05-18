@@ -130,6 +130,19 @@ def main() -> None:
         mask_same_t_nonadj=bool(model_cfg.get("mask_same_t_nonadj", True)),
         temporal_gate_type=str(model_cfg.get("temporal_gate_type", "cfl")),
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
+        dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
+        use_gaussian_spatial_smoothing=bool(
+            model_cfg.get("use_gaussian_spatial_smoothing", False)
+        ),
+        spatial_smoothing_adjacent_mass=float(
+            model_cfg.get("spatial_smoothing_adjacent_mass", 0.8)
+        ),
+        spatial_smoothing_sigma_init=float(
+            model_cfg.get("spatial_smoothing_sigma_init", 1.0)
+        ),
+        spatial_smoothing_sigma_min=float(
+            model_cfg.get("spatial_smoothing_sigma_min", 1e-4)
+        ),
     ).to(device)
 
     if run_dir and (run_dir / "model_final.pt").exists():

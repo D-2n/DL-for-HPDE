@@ -714,7 +714,14 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             f"(extra: 4 pure-pairwise, 10 with flux, 8 without) | "
             f"nonadj_msg in=2*{d_latent}+{nonadj_extra}={2 * d_latent + nonadj_extra} "
             f"(extra: 3 pure-pairwise, 11 with flux, 9 without) | "
-            f"temporal_gate_type={temporal_gate_type}"
+            f"temporal_gate_type={temporal_gate_type} | "
+            f"gaussian_spatial_smoothing={use_gaussian_spatial_smoothing}"
+            + (
+                f" (alpha={self.spatial_smoothing_adjacent_mass}, "
+                f"sigma_init={spatial_smoothing_sigma_init}, "
+                f"sigma_min={self.spatial_smoothing_sigma_min})"
+                if use_gaussian_spatial_smoothing else ""
+            )
         )
 
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
@@ -778,6 +785,94 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             gate = gate * g_char
 
         return gate
+
+    def _apply_gaussian_spatial_smoothing(
+        self,
+        gate_by_offset: dict[tuple[int, int], torch.Tensor],
+    ) -> dict[tuple[int, int], torch.Tensor]:
+        """Redistribute raw gate values spatially before normalised aggregation.
+
+        Operates purely on the *raw* gate values keyed by stencil offset
+        ``(di, dm)``; the downstream ``gate_k / sum(gate_j)`` aggregation is
+        left untouched.  Two independent rules (see the implementation
+        instructions §2-§6):
+
+        * Same-time edges (``dm == 0``): the immediate adjacent gates
+          ``g_L = gate[(-1, 0)]`` and ``g_R = gate[(+1, 0)]`` are treated as
+          per-side *budgets*.  Each side's budget is split — ``alpha`` to the
+          adjacent neighbour, ``(1-alpha)`` Gaussian-spread over the farther
+          same-side neighbours.  Side total is conserved.
+        * Past-time edges (``dm < 0``): for every past slice the total raw
+          mass ``B_m = sum_j gate[(j, dm)]`` is redistributed by a Gaussian in
+          ``di`` centred at the query (``di == 0``).  Slice total is conserved.
+
+        Edge cases (empty side, adjacent-only side, missing adjacent neighbour
+        at a boundary) are handled per §4.  Here every offset is a dense
+        tensor, so "missing because of boundary" never occurs — replicate
+        padding already supplied a neighbour for every cell.  The remaining
+        cases are purely about how many *offsets* exist in the stencil.
+        """
+        eps = 1e-12
+        out = dict(gate_by_offset)
+
+        # ---- same-time spatial smoothing -------------------------------- #
+        sigma_st = (
+            F.softplus(self.theta_sigma_same_time) + self.spatial_smoothing_sigma_min
+        ).clamp(min=1e-6)
+        alpha = self.spatial_smoothing_adjacent_mass
+
+        for sign in (-1, +1):  # left side, right side
+            adj = sign * 1
+            far = sorted(
+                (di for (di, dm) in gate_by_offset
+                 if dm == 0 and (di > 1 if sign > 0 else di < -1)),
+                key=abs,
+            )
+            if (adj, 0) not in gate_by_offset:
+                # Case 3: adjacent neighbour absent from the stencil. Do not
+                # invent a side budget; leave farther same-side gates as-is.
+                continue
+            budget = gate_by_offset[(adj, 0)]                       # [B,nt,nx,1]
+            if not far:
+                # Case 2: only the adjacent neighbour on this side -> keep the
+                # full original budget, do NOT scale by alpha.
+                out[(adj, 0)] = budget
+                continue
+            # Adjacent stays dominant; remaining (1-alpha) spreads over far.
+            out[(adj, 0)] = alpha * budget
+            # sigma is a learnable tensor -> build weights as tensors so the
+            # gradient reaches theta_sigma_same_time.
+            r = torch.tensor(
+                [float(abs(di) - 1) for di in far],
+                dtype=budget.dtype, device=budget.device,
+            )
+            w = torch.exp(-(r ** 2) / (2.0 * sigma_st ** 2))        # [n_far]
+            w = w / (w.sum() + eps)
+            for di, wi in zip(far, w):
+                out[(di, 0)] = (1.0 - alpha) * budget * wi
+
+        # ---- past-time spatial smoothing -------------------------------- #
+        sigma_pt = (
+            F.softplus(self.theta_sigma_past_time) + self.spatial_smoothing_sigma_min
+        ).clamp(min=1e-6)
+
+        past_dms = sorted({dm for (di, dm) in gate_by_offset if dm < 0})
+        for dm in past_dms:
+            slice_dis = sorted(di for (di, d) in gate_by_offset if d == dm)
+            if not slice_dis:
+                continue
+            # B_m = total raw mass of the slice (conserved by construction).
+            B_m = sum(gate_by_offset[(di, dm)] for di in slice_dis)  # [B,nt,nx,1]
+            r = torch.tensor(
+                [float(di) for di in slice_dis],
+                dtype=B_m.dtype, device=B_m.device,
+            )
+            w = torch.exp(-(r ** 2) / (2.0 * sigma_pt ** 2))        # [n_slice]
+            w = w / (w.sum() + eps)
+            for di, wi in zip(slice_dis, w):
+                out[(di, dm)] = B_m * wi
+
+        return out
 
     def forward(
         self,
@@ -907,8 +1002,20 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         nonadj_feats: list[torch.Tensor] = []
         adj_gates:    list[torch.Tensor] = []
         nonadj_gates: list[torch.Tensor] = []
+        # When Gaussian spatial smoothing is on we also key gates by stencil
+        # offset and remember where each landed, so the smoothed gates can be
+        # written straight back into the same list positions afterwards.
+        gate_by_offset: dict[tuple[int, int], torch.Tensor] = {}
+        gate_slot: dict[tuple[int, int], tuple[str, int]] = {}
         for di, dm in offsets:
-            if self.mask_same_t_nonadj and dm == 0 and abs(di) > 1:
+            # mask_same_t_nonadj skips same-time non-adjacent edges, BUT with
+            # smoothing on those edges are exactly the ones we need to carry
+            # the redistributed side budget (instruction §4, Case 4).
+            if (
+                self.mask_same_t_nonadj
+                and not self.use_gaussian_spatial_smoothing
+                and dm == 0 and abs(di) > 1
+            ):
                 continue
             msg_in, is_adj_sp, gate, rel_x, rel_t = _build_edge(di, dm)
             if self.radius_x is not None:
@@ -918,9 +1025,26 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             if is_adj_sp:
                 adj_feats.append(msg_in)
                 adj_gates.append(gate)
+                slot = ("adj", len(adj_gates) - 1)
             else:
                 nonadj_feats.append(msg_in)
                 nonadj_gates.append(gate)
+                slot = ("nonadj", len(nonadj_gates) - 1)
+            if self.use_gaussian_spatial_smoothing:
+                gate_by_offset[(di, dm)] = gate
+                gate_slot[(di, dm)] = slot
+
+        # ---- optional Gaussian spatial smoothing of the raw gates ----
+        # Redistributes raw gate mass over same-time sides and past-time
+        # slices; the gate-normalised aggregation below is left unchanged.
+        if self.use_gaussian_spatial_smoothing:
+            smoothed = self._apply_gaussian_spatial_smoothing(gate_by_offset)
+            for offset, g in smoothed.items():
+                kind, idx = gate_slot[offset]
+                if kind == "adj":
+                    adj_gates[idx] = g
+                else:
+                    nonadj_gates[idx] = g
 
         # gate normalisation over all edges
         # Additive floor (NOT clamp): when all edges legitimately suppress, the
@@ -987,6 +1111,10 @@ class HypNO_ST3(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        use_gaussian_spatial_smoothing: bool = False,
+        spatial_smoothing_adjacent_mass: float = 0.8,
+        spatial_smoothing_sigma_init: float = 1.0,
+        spatial_smoothing_sigma_min: float = 1e-4,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -1013,6 +1141,20 @@ class HypNO_ST3(nn.Module):
         print(f"  include_flux       = {include_flux}")
         print(f"  pure_pairwise_edges= {pure_pairwise_edges}")
         print(f"  dilated_spatial    = {dilated_spatial}")
+        print(f"  use_gaussian_spatial_smoothing = {use_gaussian_spatial_smoothing}")
+        if use_gaussian_spatial_smoothing:
+            print(f"    spatial_smoothing_adjacent_mass = {spatial_smoothing_adjacent_mass}")
+            print(f"    spatial_smoothing_sigma_init    = {spatial_smoothing_sigma_init}")
+            print(f"    spatial_smoothing_sigma_min     = {spatial_smoothing_sigma_min}")
+        # Smoothing redistributes the adjacent-side budget onto same-time
+        # non-adjacent edges, so those edges must be CONSTRUCTED. Force the
+        # mask off when smoothing is on (it would otherwise skip them).
+        if use_gaussian_spatial_smoothing and mask_same_t_nonadj:
+            print(
+                "  [HypNO_ST3] mask_same_t_nonadj forced False "
+                "(required by use_gaussian_spatial_smoothing)"
+            )
+            mask_same_t_nonadj = False
         print(f"  detector_path      = {detector_path}")
         if _ignored:
             print(f"  IGNORED kwargs     = {sorted(_ignored.keys())}")
@@ -1057,6 +1199,10 @@ class HypNO_ST3(nn.Module):
                 include_flux=include_flux,
                 pure_pairwise_edges=pure_pairwise_edges,
                 dilated_spatial=dilated_spatial,
+                use_gaussian_spatial_smoothing=use_gaussian_spatial_smoothing,
+                spatial_smoothing_adjacent_mass=spatial_smoothing_adjacent_mass,
+                spatial_smoothing_sigma_init=spatial_smoothing_sigma_init,
+                spatial_smoothing_sigma_min=spatial_smoothing_sigma_min,
                 shared_decoder=self.decoder,
             )
             for _ in range(n_layers)

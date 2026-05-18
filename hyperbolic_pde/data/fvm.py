@@ -118,7 +118,13 @@ def riemann_ic(
     u_max: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Classic Riemann problem: single discontinuity at a random location."""
+    """Classic Riemann problem: single discontinuity at a random location.
+
+    Endpoints u_left, u_right are drawn independently uniform — so the jump
+    Du = |u_left - u_right| is triangular, peaked at 0. Strong and weak jumps
+    are both rare; coverage of the value-range corners is poor. Prefer
+    riemann_stratified for training data.
+    """
     x0 = rng.uniform(x[0] + 0.2 * (x[-1] - x[0]), x[0] + 0.8 * (x[-1] - x[0]))
     u_left = rng.uniform(u_min, u_max)
     u_right = rng.uniform(u_min, u_max)
@@ -126,12 +132,122 @@ def riemann_ic(
     return u0
 
 
+# Minimum visible jump for the stratified generators — below this a "shock" is
+# indistinguishable from a flat region at grid resolution.
+_STRAT_JUMP_MIN = 0.03
+_STRAT_JUMP_MAX = 0.95
+
+
+def _stratified_pair(
+    u_min: float, u_max: float, rng: np.random.Generator
+) -> tuple[float, float]:
+    """Draw a (left, right) value pair with controlled jump strength.
+
+    Instead of two independent uniforms (triangular jump, peaked at 0), this
+    samples a mean level u_bar ~ U(u_min, u_max) and a jump magnitude
+    Du ~ U(_STRAT_JUMP_MIN, _STRAT_JUMP_MAX), then places the endpoints at
+    u_bar +/- Du/2. The jump sign is random. Endpoints are reflected (not
+    clipped) back into [u_min, u_max] so the jump magnitude is preserved
+    exactly rather than being silently shrunk at the range edges.
+    """
+    span = u_max - u_min
+    du = rng.uniform(_STRAT_JUMP_MIN, min(_STRAT_JUMP_MAX, span))
+    u_bar = rng.uniform(u_min, u_max)
+    sign = 1.0 if rng.random() < 0.5 else -1.0
+    lo = u_bar - 0.5 * du
+    hi = u_bar + 0.5 * du
+    # Reflect the [lo, hi] window into range without changing its width (du).
+    if lo < u_min:
+        shift = u_min - lo
+        lo += shift
+        hi += shift
+    if hi > u_max:
+        shift = hi - u_max
+        lo -= shift
+        hi -= shift
+    # After both reflections lo is guaranteed >= u_min as long as du <= span.
+    lo = max(u_min, lo)
+    hi = min(u_max, hi)
+    if sign > 0:
+        return float(lo), float(hi)
+    return float(hi), float(lo)
+
+
+def riemann_stratified_ic(
+    x: np.ndarray,
+    num_segments: int,
+    u_min: float,
+    u_max: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Riemann problem with stratified jump strength.
+
+    Single discontinuity at a random location; the (left, right) values come
+    from _stratified_pair, so jump magnitude Du is uniform over
+    [_STRAT_JUMP_MIN, _STRAT_JUMP_MAX] at every value level — weak and strong
+    shocks are equally represented, including at the high-u / low-u corners.
+    """
+    x0 = rng.uniform(x[0] + 0.2 * (x[-1] - x[0]), x[0] + 0.8 * (x[-1] - x[0]))
+    u_left, u_right = _stratified_pair(u_min, u_max, rng)
+    u0 = np.where(x <= x0, u_left, u_right).astype(np.float32)
+    return u0
+
+
+def piecewise_constant_stratified_ic(
+    x: np.ndarray,
+    num_segments: int,
+    u_min: float,
+    u_max: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Piecewise-constant IC with stratified adjacent-jump strength.
+
+    Segment cut points are random (as in piecewise_constant_ic), but segment
+    values are built by a random walk of controlled steps: each adjacent jump
+    has magnitude ~ U(_STRAT_JUMP_MIN, _STRAT_JUMP_MAX), reflected to keep the
+    walk inside [u_min, u_max]. This guarantees every interior interface is a
+    visible, well-spread discontinuity instead of the triangular near-zero
+    jumps of piecewise_constant_ic.
+    """
+    nx = x.size
+    if num_segments < 1:
+        raise ValueError("num_segments must be >= 1")
+    if num_segments == 1:
+        return np.full(nx, rng.uniform(u_min, u_max), dtype=np.float32)
+
+    cut_points = rng.choice(np.arange(1, nx), size=num_segments - 1, replace=False)
+    cut_points.sort()
+    cut_points = np.concatenate(([0], cut_points, [nx]))
+
+    span = u_max - u_min
+    values = np.empty(num_segments, dtype=np.float64)
+    values[0] = rng.uniform(u_min, u_max)
+    for i in range(1, num_segments):
+        du = rng.uniform(_STRAT_JUMP_MIN, min(_STRAT_JUMP_MAX, span))
+        step = du if rng.random() < 0.5 else -du
+        v = values[i - 1] + step
+        # Reflect off the range walls so the step magnitude is preserved.
+        if v < u_min:
+            v = u_min + (u_min - v)
+        if v > u_max:
+            v = u_max - (v - u_max)
+        values[i] = min(u_max, max(u_min, v))
+
+    u0 = np.empty(nx, dtype=np.float32)
+    for i in range(num_segments):
+        start, end = cut_points[i], cut_points[i + 1]
+        u0[start:end] = values[i]
+    return u0
+
+
 # Registry of IC generators (name -> function)
 IC_REGISTRY: dict[str, callable] = {
     "piecewise_constant": piecewise_constant_ic,
+    "piecewise_constant_stratified": piecewise_constant_stratified_ic,
     "piecewise_sine": piecewise_sine_ic,
     "gaussian_mixture": gaussian_mixture_ic,
     "riemann": riemann_ic,
+    "riemann_stratified": riemann_stratified_ic,
 }
 
 
@@ -538,6 +654,10 @@ class DatasetBundle:
     u: np.ndarray
     u0: np.ndarray
     ic: np.ndarray
+    # Per-sample metadata. Optional so datasets saved before these were added
+    # still load (load_dataset fills them with None when absent).
+    num_segments: np.ndarray | None = None
+    ic_type: np.ndarray | None = None
 
 
 def _solve_one_sample(
@@ -592,13 +712,27 @@ def generate_dataset(
     num_workers: int | None = None,
     ic_types: list[str] | None = None,
     method: str = "godunov",
+    stratify: bool = False,
 ) -> DatasetBundle:
+    """Generate a dataset of (u0, u(t)) pairs.
+
+    stratify : if True, every (ic_type, num_segments) cell gets an equal,
+        guaranteed quota of samples instead of each sample drawing its
+        ic_type/num_segments independently at random. This prevents the
+        high-segment / rarer-IC cells from being undersampled. Requires
+        num_samples to be divisible by len(ic_types) * len(num_segments).
+        The returned bundle additionally carries per-sample `num_segments`
+        and `ic_type` metadata arrays. Default False preserves the legacy
+        random-picking behaviour (metadata arrays are still populated).
+    """
     rng = np.random.default_rng(seed)
     x = np.linspace(x_min, x_max, nx, dtype=np.float32)
     t = np.linspace(0.0, t_max, nt, dtype=np.float32)
     u = np.zeros((num_samples, nt, nx), dtype=np.float32)
     u0_all = np.zeros((num_samples, nx), dtype=np.float32)
     ic_all = np.zeros((num_samples, ic_points), dtype=np.float32)
+    seg_meta = np.zeros(num_samples, dtype=np.int64)
+    ic_meta: list[str] = [""] * num_samples
 
     if isinstance(num_segments, (list, tuple, np.ndarray)):
         if len(num_segments) == 0:
@@ -623,12 +757,45 @@ def generate_dataset(
             )
         ic_funcs.append(IC_REGISTRY[name])
 
-    for i in range(num_samples):
-        seg = int(rng.choice(seg_choices)) if seg_choices is not None else num_segments
-        ic_fn = ic_funcs[rng.integers(len(ic_funcs))]
-        u0 = ic_fn(x, seg, u_min, u_max, rng)
-        u0_all[i] = u0
-        ic_all[i] = encode_ic(u0, x, ic_points)
+    if stratify:
+        strat_segs = seg_choices if seg_choices is not None else [num_segments]
+        n_cells = len(ic_types) * len(strat_segs)
+        if num_samples % n_cells != 0:
+            raise ValueError(
+                f"stratify=True needs num_samples ({num_samples}) divisible by "
+                f"len(ic_types)*len(num_segments) ({len(ic_types)}*"
+                f"{len(strat_segs)}={n_cells})."
+            )
+        per_cell = num_samples // n_cells
+        print(
+            f"Stratified generation: {n_cells} cells "
+            f"({len(ic_types)} ic_types x {len(strat_segs)} num_segments), "
+            f"{per_cell} samples/cell."
+        )
+        i = 0
+        for seg in strat_segs:
+            for ic_name, ic_fn in zip(ic_types, ic_funcs):
+                for _ in range(per_cell):
+                    u0 = ic_fn(x, seg, u_min, u_max, rng)
+                    u0_all[i] = u0
+                    ic_all[i] = encode_ic(u0, x, ic_points)
+                    seg_meta[i] = seg
+                    ic_meta[i] = ic_name
+                    i += 1
+    else:
+        for i in range(num_samples):
+            seg = (
+                int(rng.choice(seg_choices))
+                if seg_choices is not None
+                else num_segments
+            )
+            ic_idx = int(rng.integers(len(ic_funcs)))
+            ic_fn = ic_funcs[ic_idx]
+            u0 = ic_fn(x, seg, u_min, u_max, rng)
+            u0_all[i] = u0
+            ic_all[i] = encode_ic(u0, x, ic_points)
+            seg_meta[i] = seg
+            ic_meta[i] = ic_types[ic_idx]
 
     use_lax_hopf = method == "lax_hopf"
     if use_lax_hopf:
@@ -661,7 +828,11 @@ def generate_dataset(
             u[i] = u_hist
             if (i + 1) % log_every == 0 or (i + 1) == num_samples:
                 print(f"  {i + 1}/{num_samples} samples done", flush=True)
-        return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
+        return DatasetBundle(
+            x=x, t=t, u=u, u0=u0_all, ic=ic_all,
+            num_segments=seg_meta,
+            ic_type=np.array(ic_meta, dtype=np.str_),
+        )
 
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -689,21 +860,29 @@ def generate_dataset(
             if completed % log_every == 0 or completed == num_samples:
                 print(f"  {completed}/{num_samples} samples done", flush=True)
 
-    return DatasetBundle(x=x, t=t, u=u, u0=u0_all, ic=ic_all)
+    return DatasetBundle(
+        x=x, t=t, u=u, u0=u0_all, ic=ic_all,
+        num_segments=seg_meta,
+        ic_type=np.array(ic_meta, dtype=np.str_),
+    )
 
 
 def save_dataset(bundle: DatasetBundle, path: Path) -> None:
     from hyperbolic_pde import resolve_data_path
     path = resolve_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
+    arrays = dict(
         x=bundle.x,
         t=bundle.t,
         u=bundle.u,
         u0=bundle.u0,
         ic=bundle.ic,
     )
+    if bundle.num_segments is not None:
+        arrays["num_segments"] = bundle.num_segments
+    if bundle.ic_type is not None:
+        arrays["ic_type"] = np.asarray(bundle.ic_type, dtype=np.str_)
+    np.savez_compressed(path, **arrays)
 
 
 def load_dataset(path: Path) -> DatasetBundle:
@@ -716,4 +895,10 @@ def load_dataset(path: Path) -> DatasetBundle:
         u=data["u"],
         u0=data["u0"],
         ic=data["ic"],
+        num_segments=data["num_segments"] if "num_segments" in data else None,
+        ic_type=(
+            np.array([str(s) for s in data["ic_type"]])
+            if "ic_type" in data
+            else None
+        ),
     )

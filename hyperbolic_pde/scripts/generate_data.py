@@ -72,6 +72,7 @@ def main() -> None:
         ),
         ic_types=ic_types,
         method=str(data_cfg.get("method", "godunov")),
+        stratify=bool(data_cfg.get("stratify", False)),
     )
 
     out_path = Path(data_cfg["path"])
