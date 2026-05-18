@@ -629,6 +629,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        use_gaussian_spatial_smoothing: bool = False,
+        spatial_smoothing_adjacent_mass: float = 0.8,
+        spatial_smoothing_sigma_init: float = 1.0,
+        spatial_smoothing_sigma_min: float = 1e-4,
         shared_decoder: nn.Module | None = None,
         **_ignored,
     ) -> None:
@@ -643,6 +647,9 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
         self.dilated_spatial = dilated_spatial
+        self.use_gaussian_spatial_smoothing = use_gaussian_spatial_smoothing
+        self.spatial_smoothing_adjacent_mass = float(spatial_smoothing_adjacent_mass)
+        self.spatial_smoothing_sigma_min = float(spatial_smoothing_sigma_min)
         if temporal_gate_type not in {"cfl", "none", "time"}:
             raise ValueError(
                 f"temporal_gate_type must be one of 'cfl', 'none', 'time'; "
@@ -671,6 +678,16 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             self.phys_char_width = nn.Parameter(torch.tensor(0.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
         self.phys_time_decay = nn.Parameter(torch.tensor(0.0))
+
+        # Learnable Gaussian widths for the optional spatial-smoothing logic.
+        # sigma = softplus(theta) + sigma_min; we initialise theta so that
+        # sigma == spatial_smoothing_sigma_init at start of training.
+        if use_gaussian_spatial_smoothing:
+            target = max(spatial_smoothing_sigma_init - self.spatial_smoothing_sigma_min, 1e-6)
+            # inverse softplus: theta = log(exp(target) - 1)
+            theta0 = float(torch.log(torch.expm1(torch.tensor(target))))
+            self.theta_sigma_same_time = nn.Parameter(torch.tensor(theta0))
+            self.theta_sigma_past_time = nn.Parameter(torch.tensor(theta0))
 
         # adj edge extras:
         #   pure_pairwise_edges=True: 4 -> [a_ij, sign(a_ij), upwind, sign(rel_x)]
