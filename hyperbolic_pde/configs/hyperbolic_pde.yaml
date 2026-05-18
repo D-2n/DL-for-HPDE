@@ -36,11 +36,7 @@ ood_data:
   x_max: 1.0
   t_max: 1.0
   cfl: 0.25
-<<<<<<< HEAD
   num_samples: 30
-=======
-  n_samples: 40                 # samples generated PER (ic_type, num_segments) pair
->>>>>>> 2225ce71534bb4e7db0b4e18e133a8f463972859
   ic_types: [piecewise_constant, piecewise_sine, riemann]
   num_segments: [1, 2, 5, 8, 20, 30, 50, 70]
   u_min: 0.0
