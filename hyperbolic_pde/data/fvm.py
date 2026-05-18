@@ -87,6 +87,45 @@ def piecewise_sine_ic(
     return u0.astype(np.float32)
 
 
+def sine_staircase_ic(
+    x: np.ndarray,
+    num_segments: int,
+    u_min: float,
+    u_max: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Staircase approximation of a SINGLE sine: one global sine quantised
+    into `num_segments` piecewise-constant levels (_-``-_ shape).
+
+    Unlike piecewise_sine_ic (which drops an independent sine into each
+    segment), this samples ONE sine over the whole domain, then partitions
+    the domain into `num_segments` equal segments and assigns each segment
+    the constant value of the sine at that segment's midpoint. `num_segments`
+    therefore controls the staircase coarseness: small -> blocky, large ->
+    closely tracks the sine.
+    """
+    nx = x.size
+    num_segments = max(1, num_segments)
+    freq = rng.uniform(0.5, 4.0)
+    phase = rng.uniform(0.0, 2.0 * np.pi)
+    x0, x1 = float(x[0]), float(x[-1])
+    span = max(x1 - x0, 1e-8)
+
+    def _sine(xq: np.ndarray) -> np.ndarray:
+        raw = np.sin(freq * np.pi * (xq - x0) / span + phase)
+        return (u_min + u_max) / 2 + (u_max - u_min) / 2 * raw
+
+    cut_points = np.linspace(0, nx, num_segments + 1, dtype=int)
+    u0 = np.empty(nx, dtype=np.float32)
+    for i in range(num_segments):
+        s, e = cut_points[i], cut_points[i + 1]
+        if s >= e:
+            continue
+        x_mid = 0.5 * (x[s] + x[e - 1])
+        u0[s:e] = _sine(np.array([x_mid]))[0]
+    return u0.astype(np.float32)
+
+
 def gaussian_mixture_ic(
     x: np.ndarray,
     num_segments: int,
@@ -245,6 +284,7 @@ IC_REGISTRY: dict[str, callable] = {
     "piecewise_constant": piecewise_constant_ic,
     "piecewise_constant_stratified": piecewise_constant_stratified_ic,
     "piecewise_sine": piecewise_sine_ic,
+    "sine_staircase": sine_staircase_ic,
     "gaussian_mixture": gaussian_mixture_ic,
     "riemann": riemann_ic,
     "riemann_stratified": riemann_stratified_ic,
