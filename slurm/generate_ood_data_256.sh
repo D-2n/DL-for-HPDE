@@ -13,7 +13,7 @@ mkdir -p /home/dzdrale/scratch/lwr_1d /home/dzdrale/scratch/logs
 
 # Usage: sbatch slurm/generate_ood_data_256.sh [block] [config]
 #   block  : ood_data_256_wide (default) or ood_data_256_train
-BLOCK=${1:-ood_data_256_wide}
+BLOCK=${1:-ood_data_256_train}
 CONFIG=${2:-hyperbolic_pde/configs/hyperbolic_pde.yaml}
 
 /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_ood_data_256.py \

@@ -98,9 +98,9 @@ ood_data_256_train:
   x_max: 1.0
   t_max: 1.0
   cfl: 0.25
-  n_samples: 10
+  n_samples: 40
   ic_types: [piecewise_constant, piecewise_sine, riemann]
-  num_segments: [1, 2, 5, 8, 20, 30, 50, 70]
+  num_segments: [1, 2, 8, 20]
   u_min: 0.0
   u_max: 1.0
   ic_points: 256
