@@ -32,11 +32,17 @@ def load_config(path: Path) -> dict:
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
-parser = argparse.ArgumentParser(description="Instantiate HypNO PINN")
-parser.add_argument("--config", type=str, default=str(resolve_config_path(ROOT / "configs")))
-args, _ = parser.parse_known_args()  # ignore unknown args (this runs at import time)
-cfg = load_config(Path(args.config))
-cfg = apply_runtime_overrides(cfg)
+
+
+def _load_cfg() -> dict:
+    """Resolve and load the config lazily (NOT at import time).
+
+    Importing this module used to run argparse + load_config at top level,
+    which made every importer hostage to whatever .yaml resolve_config_path
+    picked. It is now deferred to first use.
+    """
+    cfg = load_config(resolve_config_path(ROOT / "configs"))
+    return apply_runtime_overrides(cfg)
 def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: str) -> nn.Sequential:
     if layers < 1:
         raise ValueError("layers must be >= 1")
@@ -667,7 +673,7 @@ class HypNO_PINN(nn.Module):
         # external pre-trained PINN shock detector (frozen)
         if detector_path is not None:
             from hyperbolic_pde.models.shock_detector import ShockDetector
-            det_cfg = cfg.get("shock_detector", {})
+            det_cfg = _load_cfg().get("shock_detector", {})
             self.external_detector = ShockDetector(
                 d_latent=int(det_cfg.get("d_latent", 64)),
                 d_hidden=int(det_cfg.get("d_hidden", 128)),
