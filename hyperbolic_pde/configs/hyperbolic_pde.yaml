@@ -49,20 +49,25 @@ ood_data:
   method: lax_hopf
   boundary: ghost
 
-ood_data_256_wide:
-  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_256_wide.npz
-  nx: 256
-  nt: 256
-  x_min: -0.5
-  x_max: 0.5
-  t_max: 0.5
+# Single-shock eval, value range [0.1, 0.85] — isolates time-freeze.
+# riemann_stratified IC = exactly one discontinuity (num_segments is a
+# grouping bucket only; riemann ignores it). 128x128 training resolution so
+# this tests the value-range + time-freeze WITHOUT a resolution confound.
+# With u in [0.1,0.85], _stratified_pair caps the jump at min(0.95, 0.75)=0.75.
+ood_data_oneshock:
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_oneshock.npz
+  nx: 128
+  nt: 128
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
   cfl: 0.25
-  n_samples: 10
-  ic_types: [piecewise_constant, piecewise_sine, riemann]
-  num_segments: [1, 2, 5, 8, 20, 30, 50, 70]
-  u_min: 0.0
-  u_max: 1.0
-  ic_points: 256
+  n_samples: 60
+  ic_types: [riemann_stratified]
+  num_segments: [1]
+  u_min: 0.1
+  u_max: 0.85
+  ic_points: 128
   method: lax_hopf
   boundary: ghost
 
