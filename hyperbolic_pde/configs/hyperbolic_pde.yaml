@@ -3,10 +3,10 @@ device: cuda
 
 data:
 
-  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_stratified.npz
-  test_path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_stratified.npz
-  path_local: /data/hyperbolic_dataset_stratified.npz
-  test_path_local: /data/hyperbolic_dataset_stratified.npz
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz
+  test_path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset.npz
+  path_local: /data/hyperbolic_dataset.npz
+  test_path_local: /data/hyperbolic_dataset.npz
   nx: 128
   nt: 128
   x_min: -1.0
@@ -98,9 +98,9 @@ ood_data_256_train:
   x_max: 1.0
   t_max: 1.0
   cfl: 0.25
-  n_samples: 40
+  n_samples: 30
   ic_types: [piecewise_constant, piecewise_sine, riemann]
-  num_segments: [1, 2, 8, 20]
+  num_segments: [ 2, 3, 5, 8, 20, 30 ]
   u_min: 0.0
   u_max: 1.0
   ic_points: 256
