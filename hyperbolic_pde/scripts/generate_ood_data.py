@@ -57,19 +57,25 @@ def main() -> None:
         default=str(resolve_config_path(ROOT / "configs")),
         help="Path to YAML config.",
     )
+    parser.add_argument(
+        "--block",
+        type=str,
+        default="ood_data",
+        help="Which config block to read (e.g. ood_data, ood_data_oneshock).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
     cfg = apply_runtime_overrides(cfg)
 
-    if "ood_data" not in cfg or cfg["ood_data"] is None:
+    if args.block not in cfg or cfg[args.block] is None:
         raise KeyError(
-            "Config has no 'ood_data:' block. Add one to the YAML "
+            f"Config has no '{args.block}:' block. Add one to the YAML "
             "(parallel to 'data:'), with all keys required by "
             "generate_dataset (path, nx, nt, x_min, x_max, t_max, cfl, "
             "n_samples, num_segments, u_min, u_max, ic_points, ...)."
         )
-    data_cfg = cfg["ood_data"]
+    data_cfg = cfg[args.block]
 
     ic_types = data_cfg.get("ic_types", ["piecewise_constant"])
     if isinstance(ic_types, str):
