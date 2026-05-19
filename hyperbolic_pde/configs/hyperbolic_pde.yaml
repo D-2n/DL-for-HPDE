@@ -22,8 +22,8 @@ data:
   test_sine_pieces: 20
   ic_types: [piecewise_constant_stratified, piecewise_sine, riemann_stratified]
   num_segments:  [2, 3, 5, 7, 10, 25]
-  u_min: 0.0
-  u_max: 1.0
+  u_min: 0.1
+  u_max: 0.9
   ic_points: 128
   method: lax_hopf              # "godunov" (1st order) or "muscl" (2nd order MUSCL-Hancock)
   boundary: ghost
