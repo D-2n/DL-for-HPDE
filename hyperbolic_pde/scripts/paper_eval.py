@@ -480,17 +480,49 @@ def main() -> None:
         lines.append(r"\end{table}")
         lines.append("")
 
-    # --- Aggregate summary table: per-num_segments marginals + grand total ---
-    lines.append("% --- aggregate summary (pooled across ic_types) ---")
+    # --- HEADLINE table for the main text: ID / OOD / all (3 rows) ----------
+    lines.append("% --- headline summary (main text): ID / OOD / all ---")
     lines.append(r"\begin{table}[h]")
     lines.append(r"\centering")
     lines.append(
-        r"\caption{Aggregate MAE vs Lax-Hopf exact, mean $\pm$ std. "
-        r"Per-num\_segments rows pool all IC types. ID = (ic\_type, num\_segments) "
-        r"cells present in the training config; OOD = the rest. The final row "
-        r"pools the entire evaluation set.}"
+        r"\caption{Headline result: MAE vs Lax-Hopf exact (mean $\pm$ std). "
+        r"ID = (ic\_type, num\_segments) cells whose ic\_type and num\_segments "
+        r"both appear in the training configuration; OOD = the rest of the "
+        r"evaluation set.}"
     )
-    lines.append(r"\label{tab:paper_eval_aggregate}")
+    lines.append(r"\label{tab:paper_eval_headline}")
+    lines.append(r"\begin{tabular}{l" + "c" * len(SOLVERS) + "}")
+    lines.append(r"\hline")
+    lines.append("Subset & " + " & ".join(SOLVERS) + r" \\")
+    lines.append(r"\hline")
+    for group_label, pool in [("ID", pooled_id), ("OOD", pooled_ood), (r"\textbf{all}", pooled_all)]:
+        row_cells = [group_label]
+        for name in SOLVERS:
+            vals = pool[name]
+            if not vals:
+                row_cells.append("--")
+            elif group_label.startswith(r"\textbf"):
+                row_cells.append(
+                    f"$\\mathbf{{{np.mean(vals):.2e} \\pm {np.std(vals):.2e}}}$"
+                )
+            else:
+                row_cells.append(f"${np.mean(vals):.2e} \\pm {np.std(vals):.2e}$")
+        lines.append(" & ".join(row_cells) + r" \\")
+    lines.append(r"\hline")
+    lines.append(r"\end{tabular}")
+    lines.append(r"\end{table}")
+    lines.append("")
+
+    # --- Appendix aggregate table: per-num_segments + ID/OOD + grand total ---
+    lines.append("% --- appendix aggregate (per-num_segments breakdown) ---")
+    lines.append(r"\begin{table}[h]")
+    lines.append(r"\centering")
+    lines.append(
+        r"\caption{Appendix: per-num\_segments MAE breakdown, mean $\pm$ std, "
+        r"pooled across all IC types. ID and OOD rows match Table~\ref{tab:paper_eval_headline}; "
+        r"the final row pools the entire evaluation set.}"
+    )
+    lines.append(r"\label{tab:paper_eval_appendix}")
     lines.append(r"\begin{tabular}{l" + "c" * len(SOLVERS) + "}")
     lines.append(r"\hline")
     lines.append("num\\_segments & " + " & ".join(SOLVERS) + r" \\")
