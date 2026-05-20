@@ -207,6 +207,22 @@ def main() -> None:
     print(f"ic_types: {ic_types}")
     print(f"num_segments groups: {seg_values}")
 
+    # ID/OOD classification: a (ic_type, num_segments) cell is in-distribution
+    # iff its ic_type appears in cfg['data']['ic_types'] AND its num_segments
+    # appears in cfg['data']['num_segments'] from the run config.
+    train_ic_types: set[str] = set(str(s) for s in cfg["data"].get("ic_types", []))
+    train_segs: set[int] = set(int(s) for s in cfg["data"].get("num_segments", []))
+
+    def cell_is_id(ic_type: str, seg: int) -> bool:
+        return (ic_type in train_ic_types) and (seg in train_segs)
+
+    id_cells = [(ic, seg) for ic in ic_types for seg in seg_values if cell_is_id(ic, seg)]
+    ood_cells = [(ic, seg) for ic in ic_types for seg in seg_values if not cell_is_id(ic, seg)]
+    print(f"train ic_types: {sorted(train_ic_types)}")
+    print(f"train num_segments: {sorted(train_segs)}")
+    print(f"ID cells ({len(id_cells)}):  {id_cells}")
+    print(f"OOD cells ({len(ood_cells)}): {ood_cells}")
+
     # mae_by_cell[(ic_type, seg)][solver] -> list of per-sample MAE
     mae_by_cell: dict[tuple[str, int], dict[str, list[float]]] = {
         (ic, seg): {s: [] for s in SOLVERS}
@@ -362,10 +378,15 @@ def main() -> None:
     pooled_by_seg: dict[int, dict[str, list[float]]] = {
         seg: {name: [] for name in SOLVERS} for seg in seg_values
     }
+    # Pooled per ID/OOD group.
+    pooled_id: dict[str, list[float]] = {name: [] for name in SOLVERS}
+    pooled_ood: dict[str, list[float]] = {name: [] for name in SOLVERS}
     for (ic_type, seg), solver_dict in mae_by_cell.items():
+        is_id = cell_is_id(ic_type, seg)
         for name, vals in solver_dict.items():
             pooled_all[name].extend(vals)
             pooled_by_seg[seg][name].extend(vals)
+            (pooled_id if is_id else pooled_ood)[name].extend(vals)
 
     # ---------------------------------------------------------------- #
     # summary.csv (long format) -- per-cell + pooled rows
@@ -373,16 +394,20 @@ def main() -> None:
     csv_path = out_dir / "summary.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["ic_type", "num_segments", "solver", "mae_mean", "mae_std", "n_samples"])
+        writer.writerow([
+            "ic_type", "num_segments", "group", "solver",
+            "mae_mean", "mae_std", "n_samples",
+        ])
         for ic_type in ic_types:
             for seg in seg_values:
                 cell = (ic_type, seg)
+                group = "ID" if cell_is_id(ic_type, seg) else "OOD"
                 for name in SOLVERS:
                     vals = mae_by_cell[cell][name]
                     if not vals:
                         continue
                     writer.writerow([
-                        ic_type, seg, name,
+                        ic_type, seg, group, name,
                         f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
                     ])
         # Per-num_segments marginals (pooled across ic_types).
@@ -392,7 +417,17 @@ def main() -> None:
                 if not vals:
                     continue
                 writer.writerow([
-                    "ALL", seg, name,
+                    "ALL", seg, "ALL", name,
+                    f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
+                ])
+        # ID and OOD pooled aggregates.
+        for group_name, pool in [("ID", pooled_id), ("OOD", pooled_ood)]:
+            for name in SOLVERS:
+                vals = pool[name]
+                if not vals:
+                    continue
+                writer.writerow([
+                    "ALL", "ALL", group_name, name,
                     f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
                 ])
         # Grand total.
@@ -401,7 +436,7 @@ def main() -> None:
             if not vals:
                 continue
             writer.writerow([
-                "ALL", "ALL", name,
+                "ALL", "ALL", "ALL", name,
                 f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
             ])
     print(f"Wrote {csv_path}")
@@ -451,7 +486,9 @@ def main() -> None:
     lines.append(r"\centering")
     lines.append(
         r"\caption{Aggregate MAE vs Lax-Hopf exact, mean $\pm$ std. "
-        r"Per-num\_segments rows pool all IC types; the final row pools the entire evaluation set.}"
+        r"Per-num\_segments rows pool all IC types. ID = (ic\_type, num\_segments) "
+        r"cells present in the training config; OOD = the rest. The final row "
+        r"pools the entire evaluation set.}"
     )
     lines.append(r"\label{tab:paper_eval_aggregate}")
     lines.append(r"\begin{tabular}{l" + "c" * len(SOLVERS) + "}")
@@ -462,6 +499,17 @@ def main() -> None:
         row_cells = [str(seg)]
         for name in SOLVERS:
             vals = pooled_by_seg[seg][name]
+            if not vals:
+                row_cells.append("--")
+            else:
+                row_cells.append(f"${np.mean(vals):.2e} \\pm {np.std(vals):.2e}$")
+        lines.append(" & ".join(row_cells) + r" \\")
+    lines.append(r"\hline")
+    # ID / OOD pooled rows.
+    for group_label, pool in [("ID", pooled_id), ("OOD", pooled_ood)]:
+        row_cells = [group_label]
+        for name in SOLVERS:
+            vals = pool[name]
             if not vals:
                 row_cells.append("--")
             else:
@@ -507,7 +555,7 @@ def main() -> None:
                 )
         txt_lines.append("")
 
-    # Pooled marginals + grand total.
+    # Pooled marginals + ID/OOD + grand total.
     txt_lines.append("=" * 60)
     txt_lines.append("AGGREGATE (pooled across ic_types)")
     for seg in seg_values:
@@ -520,6 +568,34 @@ def main() -> None:
             txt_lines.append(
                 f"    {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}"
             )
+    txt_lines.append("")
+    txt_lines.append(
+        f"ID cells ({len(id_cells)}): {id_cells}"
+    )
+    txt_lines.append(
+        f"  ({len(pooled_id['HypNO-ST3'])} samples)"
+    )
+    for name in SOLVERS:
+        vals = pooled_id[name]
+        if not vals:
+            continue
+        txt_lines.append(
+            f"  {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}"
+        )
+    txt_lines.append("")
+    txt_lines.append(
+        f"OOD cells ({len(ood_cells)}): {ood_cells}"
+    )
+    txt_lines.append(
+        f"  ({len(pooled_ood['HypNO-ST3'])} samples)"
+    )
+    for name in SOLVERS:
+        vals = pooled_ood[name]
+        if not vals:
+            continue
+        txt_lines.append(
+            f"  {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}"
+        )
     txt_lines.append("")
     txt_lines.append(
         f"GRAND TOTAL  ({len(pooled_all['HypNO-ST3'])} samples across all cells)"
