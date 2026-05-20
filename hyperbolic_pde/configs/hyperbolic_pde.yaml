@@ -259,3 +259,23 @@ hypno_st3:
   save_path: /home/dzdrale/scratch/runs/hypno_st3_k_x5.pt
   eval_plots: 10
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_st3
+
+# Baseline FNO — trained on the same dataset as hypno_st3 (see data.path).
+# Input: stacked [X, T, u0_grid] of shape (3, nx, nt).  Output: u of shape (1, nx, nt).
+fno:
+  width: 32
+  modes_x: 16
+  modes_t: 16
+  layers: 4
+  optimizer: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 16
+  epochs: 200
+  checkpoint_every: 20
+  save_path: hyperbolic_pde/runs/fno.pt
+  eval_plots: 10
+  plot_dir: hyperbolic_pde/runs/plots/fno
