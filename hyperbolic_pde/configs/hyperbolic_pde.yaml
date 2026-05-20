@@ -203,6 +203,7 @@ hypno_st3:
   # the MLPs, trained at one scale, mis-transport shocks otherwise). NOT
   # weight-compatible with a model trained with this off — retrain or fine-tune.
   normalize_edge_offsets: false
+  decoder_depth: 3                      # number of linear layers in the shared readout decoder (>=1)
   # --- experimental: Gaussian spatial smoothing of raw gate values ---------
   # When true, redistributes each same-time side's adjacent-gate budget over
   # the farther same-side neighbours, and each past-time slice's total gate

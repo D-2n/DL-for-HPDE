@@ -1131,6 +1131,7 @@ class HypNO_ST3(nn.Module):
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
         normalize_edge_offsets: bool = False,
+        decoder_depth: int = 3,
         use_gaussian_spatial_smoothing: bool = False,
         spatial_smoothing_adjacent_mass: float = 0.8,
         spatial_smoothing_sigma_init: float = 1.0,
@@ -1162,6 +1163,7 @@ class HypNO_ST3(nn.Module):
         print(f"  pure_pairwise_edges= {pure_pairwise_edges}")
         print(f"  dilated_spatial    = {dilated_spatial}")
         print(f"  normalize_edge_offsets = {normalize_edge_offsets}")
+        print(f"  decoder_depth      = {decoder_depth}")
         print(f"  use_gaussian_spatial_smoothing = {use_gaussian_spatial_smoothing}")
         if use_gaussian_spatial_smoothing:
             print(f"    spatial_smoothing_adjacent_mass = {spatial_smoothing_adjacent_mass}")
@@ -1207,7 +1209,9 @@ class HypNO_ST3(nn.Module):
         # Build the decoder BEFORE the MP layers so we can pass it as the shared
         # readout used inside each layer's gate computation (replaces per-layer
         # state_probe). One readout function used everywhere.
-        self.decoder = _make_mlp(d_latent, d_hidden, 1, 3, readout)
+        if decoder_depth < 1:
+            raise ValueError(f"decoder_depth must be >= 1, got {decoder_depth}")
+        self.decoder = _make_mlp(d_latent, d_hidden, 1, decoder_depth, readout)
 
         self.mp_layers = nn.ModuleList([
             _PhysicsSpaceTimeMPLayer(

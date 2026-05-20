@@ -87,6 +87,7 @@ def _build_model(model_cfg: dict, device: torch.device) -> HypNO_ST3:
         pure_pairwise_edges=bool(model_cfg.get("pure_pairwise_edges", False)),
         dilated_spatial=bool(model_cfg.get("dilated_spatial", False)),
         normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", False)),
+        decoder_depth=int(model_cfg.get("decoder_depth", 3)),
     ).to(device)
 
 
