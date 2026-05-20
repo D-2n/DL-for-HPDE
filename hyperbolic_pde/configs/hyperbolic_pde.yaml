@@ -62,7 +62,7 @@ ood_data_oneshock:
   x_max: 1.0
   t_max: 1.0
   cfl: 0.25
-  n_samples: 60
+  n_samples: 200
   ic_types: [riemann_stratified]
   num_segments: [1]
   u_min: 0.1
