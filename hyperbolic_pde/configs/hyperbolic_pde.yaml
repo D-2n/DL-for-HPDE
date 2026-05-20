@@ -71,6 +71,26 @@ ood_data_oneshock:
   method: lax_hopf
   boundary: ghost
 
+# Paper evaluation set: diverse IC types x num_segments grid for the writeup.
+# 3 ic_types x 7 num_segments x 20 samples/cell = 420 samples. u range
+# avoids the a(u)=1-2u saturation corners (u=0, u=1) used during training.
+paper_eval_data:
+  path: /home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_paper_eval.npz
+  nx: 128
+  nt: 128
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
+  cfl: 0.25
+  n_samples: 20
+  ic_types: [piecewise_constant, sine_staircase, riemann]
+  num_segments: [2, 5, 8, 20, 30, 50, 70]
+  u_min: 0.1
+  u_max: 0.85
+  ic_points: 128
+  method: lax_hopf
+  boundary: ghost
+
 # --- 256x256 zero-shot resolution-transfer test sets --------------------------
 # Both keep dt/dx ~= 0.5 (the training regime) so the test isolates resolution
 # transfer from a dt/dx-regime shift. n_samples is PER (ic_type, num_segments)
