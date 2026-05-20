@@ -354,7 +354,21 @@ def main() -> None:
         plt.close(fig)
 
     # ---------------------------------------------------------------- #
-    # summary.csv (long format)
+    # Pooled aggregates: grand total + per-num_segments marginals
+    # ---------------------------------------------------------------- #
+    # pooled_all[name] -> list of per-sample MAEs across the whole eval set
+    pooled_all: dict[str, list[float]] = {name: [] for name in SOLVERS}
+    # pooled_by_seg[seg][name] -> per-sample MAEs across all ic_types for this seg
+    pooled_by_seg: dict[int, dict[str, list[float]]] = {
+        seg: {name: [] for name in SOLVERS} for seg in seg_values
+    }
+    for (ic_type, seg), solver_dict in mae_by_cell.items():
+        for name, vals in solver_dict.items():
+            pooled_all[name].extend(vals)
+            pooled_by_seg[seg][name].extend(vals)
+
+    # ---------------------------------------------------------------- #
+    # summary.csv (long format) -- per-cell + pooled rows
     # ---------------------------------------------------------------- #
     csv_path = out_dir / "summary.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -371,6 +385,25 @@ def main() -> None:
                         ic_type, seg, name,
                         f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
                     ])
+        # Per-num_segments marginals (pooled across ic_types).
+        for seg in seg_values:
+            for name in SOLVERS:
+                vals = pooled_by_seg[seg][name]
+                if not vals:
+                    continue
+                writer.writerow([
+                    "ALL", seg, name,
+                    f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
+                ])
+        # Grand total.
+        for name in SOLVERS:
+            vals = pooled_all[name]
+            if not vals:
+                continue
+            writer.writerow([
+                "ALL", "ALL", name,
+                f"{np.mean(vals):.6e}", f"{np.std(vals):.6e}", len(vals),
+            ])
     print(f"Wrote {csv_path}")
 
     # ---------------------------------------------------------------- #
@@ -411,6 +444,46 @@ def main() -> None:
         lines.append(r"\end{tabular}")
         lines.append(r"\end{table}")
         lines.append("")
+
+    # --- Aggregate summary table: per-num_segments marginals + grand total ---
+    lines.append("% --- aggregate summary (pooled across ic_types) ---")
+    lines.append(r"\begin{table}[h]")
+    lines.append(r"\centering")
+    lines.append(
+        r"\caption{Aggregate MAE vs Lax-Hopf exact, mean $\pm$ std. "
+        r"Per-num\_segments rows pool all IC types; the final row pools the entire evaluation set.}"
+    )
+    lines.append(r"\label{tab:paper_eval_aggregate}")
+    lines.append(r"\begin{tabular}{l" + "c" * len(SOLVERS) + "}")
+    lines.append(r"\hline")
+    lines.append("num\\_segments & " + " & ".join(SOLVERS) + r" \\")
+    lines.append(r"\hline")
+    for seg in seg_values:
+        row_cells = [str(seg)]
+        for name in SOLVERS:
+            vals = pooled_by_seg[seg][name]
+            if not vals:
+                row_cells.append("--")
+            else:
+                row_cells.append(f"${np.mean(vals):.2e} \\pm {np.std(vals):.2e}$")
+        lines.append(" & ".join(row_cells) + r" \\")
+    lines.append(r"\hline")
+    # Grand total row.
+    row_cells = [r"\textbf{all}"]
+    for name in SOLVERS:
+        vals = pooled_all[name]
+        if not vals:
+            row_cells.append("--")
+        else:
+            row_cells.append(
+                f"$\\mathbf{{{np.mean(vals):.2e} \\pm {np.std(vals):.2e}}}$"
+            )
+    lines.append(" & ".join(row_cells) + r" \\")
+    lines.append(r"\hline")
+    lines.append(r"\end{tabular}")
+    lines.append(r"\end{table}")
+    lines.append("")
+
     tex_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {tex_path}")
 
@@ -433,6 +506,33 @@ def main() -> None:
                     f"    {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}"
                 )
         txt_lines.append("")
+
+    # Pooled marginals + grand total.
+    txt_lines.append("=" * 60)
+    txt_lines.append("AGGREGATE (pooled across ic_types)")
+    for seg in seg_values:
+        n = len(pooled_by_seg[seg]["HypNO-ST3"])
+        txt_lines.append(f"  num_segments = {seg}  ({n} samples)")
+        for name in SOLVERS:
+            vals = pooled_by_seg[seg][name]
+            if not vals:
+                continue
+            txt_lines.append(
+                f"    {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}"
+            )
+    txt_lines.append("")
+    txt_lines.append(
+        f"GRAND TOTAL  ({len(pooled_all['HypNO-ST3'])} samples across all cells)"
+    )
+    for name in SOLVERS:
+        vals = pooled_all[name]
+        if not vals:
+            continue
+        txt_lines.append(
+            f"  {name:12s}: mean={np.mean(vals):.4e}  std={np.std(vals):.4e}"
+        )
+    txt_lines.append("")
+
     txt_path.write_text("\n".join(txt_lines), encoding="utf-8")
     print(f"Wrote {txt_path}")
 
