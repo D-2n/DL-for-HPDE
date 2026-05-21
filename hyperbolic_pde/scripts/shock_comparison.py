@@ -161,8 +161,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--jump-threshold", type=float, default=0.06,
-        help="Cell-scale jump magnitude that flags a shock cell "
-             "(|u[i+1]-u[i-1]|/2 > threshold). Default 0.06.",
+        help="Signed cell-scale jump that flags a shock cell. "
+             "For LWR with concave flux, the Lax entropy condition u_L<u_R "
+             "means a true shock has density jumping UP in x, so we require "
+             "(u[i+1]-u[i-1])/2 > threshold (positive and large). "
+             "Rarefactions (the same magnitude with opposite sign) are "
+             "excluded. Default 0.06.",
     )
     parser.add_argument(
         "--band-cells", type=int, default=2,

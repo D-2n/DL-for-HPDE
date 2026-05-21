@@ -372,7 +372,13 @@ def main() -> None:
     parser.add_argument("--run-dir", type=str, required=True)
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--n_per_group", type=int, default=None)
-    parser.add_argument("--jump-threshold", type=float, default=0.06)
+    parser.add_argument(
+        "--jump-threshold", type=float, default=0.06,
+        help="Signed cell-scale jump threshold: a cell is flagged when "
+             "(u[i+1]-u[i-1])/2 > threshold. The signed (not absolute) form "
+             "enforces the Lax entropy condition u_L<u_R for LWR's concave "
+             "flux, so rarefactions are rejected. Default 0.06.",
+    )
     parser.add_argument("--band-cells", type=int, default=2)
     parser.add_argument("--no-tv-gate", action="store_true")
     parser.add_argument("--tv-multiplier", type=float, default=1.5)
@@ -380,6 +386,14 @@ def main() -> None:
         "--seed", type=int, default=0,
         help="Seed for full determinism (torch + numpy + cuDNN). "
              "Default 0; pass any int to vary.",
+    )
+    parser.add_argument(
+        "--min-rep-band-frac", type=float, default=0.05,
+        help="Minimum shock-band coverage (fraction of cells) for a sample "
+             "to be eligible as the representative plot for its num_segments "
+             "group. The first eligible sample in index order wins; if no "
+             "sample in a group qualifies, the first sample is used as a "
+             "fallback. Default 0.05 (=5%).",
     )
     args = parser.parse_args()
 
@@ -447,7 +461,17 @@ def main() -> None:
     seg_values = sorted(set(int(s) for s in seg_all))
     mae_full = {seg: {s: [] for s in SOLVERS} for seg in seg_values}
     mae_shock = {seg: {s: [] for s in SOLVERS} for seg in seg_values}
-    rep_by_seg: dict[int, dict] = {}
+    rep_by_seg: dict[int, dict] = {}        # qualified picks (band >= threshold)
+    fallback_by_seg: dict[int, dict] = {}   # first-seen sample per group
+    print(
+        f"Representative-sample rule: first sample per num_segments with "
+        f"band coverage >= {args.min_rep_band_frac*100:.1f}%. "
+        f"Pool restricted to the first {args.n_per_group} samples per group "
+        f"(--n_per_group); raise it to widen the pool."
+        if args.n_per_group is not None
+        else f"Representative-sample rule: first sample per num_segments with "
+             f"band coverage >= {args.min_rep_band_frac*100:.1f}%."
+    )
 
     def run_hypno(u0_np: np.ndarray) -> np.ndarray:
         u0_t = torch.tensor(u0_np, dtype=torch.float32, device=device).unsqueeze(0)
@@ -491,11 +515,18 @@ def main() -> None:
         for name, pred in preds.items():
             mae_full[seg][name].append(mae(pred, lh))
             mae_shock[seg][name].append(masked_mae(pred, lh, mask))
-        if seg not in rep_by_seg:
-            rep_by_seg[seg] = {
-                "idx": idx, "ic_type": ic_type, "seg": seg,
-                "lh": lh, "preds": preds, "mask": mask,
-            }
+
+        # Pick the first sample whose shock band covers >= min_rep_band_frac
+        # of the (t, x) cells. Keep the first-seen sample as a fallback so a
+        # group with no qualifying sample still gets a plot.
+        record = {
+            "idx": idx, "ic_type": ic_type, "seg": seg,
+            "lh": lh, "preds": preds, "mask": mask,
+        }
+        if seg not in fallback_by_seg:
+            fallback_by_seg[seg] = record
+        if seg not in rep_by_seg and mask.mean() >= args.min_rep_band_frac:
+            rep_by_seg[seg] = record
 
     # ---- Plots ----
     plot_mae_vs_segments(
@@ -503,6 +534,24 @@ def main() -> None:
         fig_dir / "shock_mae_vs_num_segments.png",
         args.band_cells, args.jump_threshold,
     )
+    # Fill in any groups that never met the band threshold with the fallback,
+    # so every num_segments still gets a plot. Log the substitution loudly.
+    for seg in seg_values:
+        if seg not in rep_by_seg and seg in fallback_by_seg:
+            fb = fallback_by_seg[seg]
+            print(
+                f"[rep-pick] num_segments={seg}: no sample with band >= "
+                f"{args.min_rep_band_frac*100:.1f}%; falling back to first-seen "
+                f"sample idx={fb['idx']} (band {fb['mask'].mean()*100:.2f}%)."
+            )
+            rep_by_seg[seg] = fb
+        elif seg in rep_by_seg:
+            r = rep_by_seg[seg]
+            print(
+                f"[rep-pick] num_segments={seg}: chose sample idx={r['idx']} "
+                f"(band {r['mask'].mean()*100:.2f}%)."
+            )
+
     for seg, rep in rep_by_seg.items():
         plot_compare_full(rep, x_np, t_np, fig_dir / f"shock_compare_num_segments_{seg}.png", dx)
         plot_zoom(rep, x_np, t_np, fig_dir / f"shock_zoom_num_segments_{seg}.png")
