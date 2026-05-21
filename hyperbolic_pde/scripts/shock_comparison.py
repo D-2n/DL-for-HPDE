@@ -554,7 +554,21 @@ def main() -> None:
         plt.close(fig)
 
         # ---- 1D slice through the time row with the widest band -------- #
-        k_star = int(np.argmax(mask.sum(axis=1)))  # row with most band cells
+        # Pick the widest-band row but only after t >= 0.1 * T_max so we don't
+        # slice the IC itself (at t=0 the "shock" is just the piecewise-constant
+        # IC, which every method represents exactly — slice is uninformative).
+        # Tie-break by earliest row within the eligible window.
+        t_max_arr = float(t_np[-1])
+        t_min_slice = 0.1 * t_max_arr
+        eligible = t_np >= t_min_slice
+        if not eligible.any():
+            eligible = np.arange(len(t_np)) > 0  # fallback: anything but row 0
+        row_widths = mask.sum(axis=1).astype(int)
+        masked_widths = np.where(eligible, row_widths, -1)
+        k_star = int(np.argmax(masked_widths))
+        if masked_widths[k_star] <= 0:
+            # No band cells in the eligible window — skip the slice entirely.
+            continue
         # x-range to plot: just the band on that row, padded by 3 cells.
         row_mask = mask[k_star]
         if row_mask.any():

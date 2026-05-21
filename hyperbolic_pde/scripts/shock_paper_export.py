@@ -206,7 +206,19 @@ def plot_slice(rep: dict, x_np, t_np, fig_path: Path, dx: float) -> None:
     seg = rep["seg"]; idx = rep["idx"]; ic_type = rep["ic_type"]
     if not mask.any():
         return
-    k_star = int(np.argmax(mask.sum(axis=1)))
+    # Pick the widest-band row but only after t >= 0.1 * T_max so we don't slice
+    # the IC itself (at t=0 the "shock" is just the piecewise-constant IC,
+    # which every method represents exactly — slice is uninformative).
+    t_min_slice = 0.1 * float(t_np[-1])
+    eligible = t_np >= t_min_slice
+    if not eligible.any():
+        eligible = np.arange(len(t_np)) > 0  # fallback: anything but row 0
+    row_widths = mask.sum(axis=1).astype(int)
+    masked_widths = np.where(eligible, row_widths, -1)
+    k_star = int(np.argmax(masked_widths))
+    if masked_widths[k_star] <= 0:
+        # No band cells in the eligible time window — nothing useful to plot.
+        return
     row_mask = mask[k_star]
     i_lo = max(int(np.argmax(row_mask)) - 3, 0)
     i_hi = min(int(len(row_mask) - np.argmax(row_mask[::-1])) + 3, lh.shape[1])
@@ -364,7 +376,25 @@ def main() -> None:
     parser.add_argument("--band-cells", type=int, default=2)
     parser.add_argument("--no-tv-gate", action="store_true")
     parser.add_argument("--tv-multiplier", type=float, default=1.5)
+    parser.add_argument(
+        "--seed", type=int, default=0,
+        help="Seed for full determinism (torch + numpy + cuDNN). "
+             "Default 0; pass any int to vary.",
+    )
     args = parser.parse_args()
+
+    # --- Full determinism: paper numbers must be bit-stable across reruns. ---
+    # Inference still uses cuDNN, so we pin its kernel selection (deterministic=True,
+    # benchmark=False) on top of the torch/numpy seeds. WENO5/Godunov/the detector
+    # are pure numpy and already deterministic; this guards the HypNO-ST3 forward.
+    import random
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Determinism: seed={args.seed}, cudnn.deterministic=True, benchmark=False")
 
     configure_paper_style()
     tv_gate = not args.no_tv_gate
