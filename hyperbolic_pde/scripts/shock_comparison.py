@@ -67,11 +67,13 @@ def detect_shock_mask(
 ) -> np.ndarray:
     """Return a boolean (nt, nx) mask of shock neighborhoods on ``u``.
 
-    Gate 1 (per-cell jump): half-central difference
-    ``|u[i+1] - u[i-1]| / 2 > jump_threshold``. This is the dimensionless
-    per-cell u-jump magnitude — ``dx`` is accepted only for downstream
-    reporting (band width in physical units) and is intentionally not used
-    in the detection itself.
+    Gate 1 (signed per-cell jump): half-central difference
+    ``(u[i+1] - u[i-1]) / 2 > jump_threshold`` — i.e. *positive* and large.
+    For LWR with concave flux ``f(u) = u(1-u)`` the Rankine-Hugoniot /
+    Lax entropy condition for a shock is ``u_L < u_R``, so a true shock
+    shows up as a *positive* jump in density along the propagation
+    direction; the opposite sign is a rarefaction and is excluded. ``dx``
+    is accepted only for downstream reporting and isn't used here.
 
     Gate 2 (local TV, optional): a cell is kept only if the sum of
     ``|Δu|`` in a ±``band_cells`` window exceeds
@@ -87,10 +89,13 @@ def detect_shock_mask(
         raise ValueError(f"detect_shock_mask expects (nt, nx), got {u.shape}")
     _ = dx  # see docstring
 
-    # ---- Gate 1: per-cell jump magnitude ------------------------------- #
+    # ---- Gate 1: signed per-cell jump (LWR shock entropy condition) ---- #
+    # Concave flux + Lax => true shocks have u_L < u_R, so the *signed*
+    # central difference must be positive and exceed the threshold.
+    # Rarefaction fans (same |jump|, opposite sign) are rejected here.
     u_pad = np.pad(u, ((0, 0), (1, 1)), mode="edge")
     half_diff = (u_pad[:, 2:] - u_pad[:, :-2]) * 0.5
-    raw = np.abs(half_diff) > float(jump_threshold)
+    raw = half_diff > float(jump_threshold)
 
     # ---- Gate 2: local total variation -------------------------------- #
     if tv_gate:
@@ -232,7 +237,8 @@ def main() -> None:
     print(f"num_segments groups: {seg_values}")
     tv_gate = not args.no_tv_gate
     print(
-        f"Shock detector: jump_threshold={args.jump_threshold}, "
+        f"Shock detector: signed jump > {args.jump_threshold}  "
+        f"(LWR concave flux: u_L<u_R required; rarefactions excluded), "
         f"band_cells={args.band_cells} (neighborhood width {2*args.band_cells+1} cells), "
         f"tv_gate={'on' if tv_gate else 'off'}"
         + (f" (multiplier={args.tv_multiplier})" if tv_gate else "")
@@ -588,7 +594,8 @@ def main() -> None:
     summary_path = plot_dir / "shock_summary.txt"
     lines = [
         "OOD shock-localized comparison",
-        f"  jump_threshold = {args.jump_threshold}",
+        f"  jump_threshold = {args.jump_threshold}  "
+        f"(signed: u_L<u_R required, rarefactions excluded)",
         f"  band_cells     = {args.band_cells}  (neighborhood width "
         f"{2*args.band_cells+1} cells, dx={dx:.4g})",
         f"  tv_gate        = {'on' if tv_gate else 'off'}"
