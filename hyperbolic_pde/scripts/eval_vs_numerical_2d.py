@@ -46,9 +46,17 @@ def _resolve_weights(run_dir: Path) -> Path:
     final = run_dir / "model_final.pt"
     if final.exists():
         return final
-    ckpts = sorted(run_dir.glob("checkpoint_epoch*.pt"))
-    if ckpts:
-        return ckpts[-1]
+    # Sort by numeric epoch (filenames are unpadded, so lex order would pick
+    # epoch 90 over epoch 150).
+    candidates: list[tuple[int, Path]] = []
+    for p in run_dir.glob("checkpoint_epoch*.pt"):
+        try:
+            ep = int(p.stem.replace("checkpoint_epoch", ""))
+        except ValueError:
+            continue
+        candidates.append((ep, p))
+    if candidates:
+        return max(candidates, key=lambda kv: kv[0])[1]
     raise FileNotFoundError(f"No model_final.pt or checkpoint in {run_dir}")
 
 

@@ -268,12 +268,22 @@ def gpu_status() -> str:
 # main
 # --------------------------------------------------------------------------- #
 def _find_latest_checkpoint(run_dir: Path) -> tuple[Path | None, int]:
-    """Return (checkpoint_path, epoch) for the highest-epoch checkpoint in run_dir."""
-    ckpts = sorted(run_dir.glob("checkpoint_epoch*.pt"))
-    if not ckpts:
+    """Return (checkpoint_path, epoch) for the highest-epoch checkpoint in run_dir.
+
+    Sort by numeric epoch (not filename lex order), since checkpoints are saved
+    as ``checkpoint_epoch{epoch}.pt`` without zero padding — lex order would
+    pick epoch 90 over epoch 150.
+    """
+    candidates: list[tuple[int, Path]] = []
+    for p in run_dir.glob("checkpoint_epoch*.pt"):
+        try:
+            ep = int(p.stem.replace("checkpoint_epoch", ""))
+        except ValueError:
+            continue
+        candidates.append((ep, p))
+    if not candidates:
         return None, 0
-    latest = ckpts[-1]
-    epoch = int(latest.stem.replace("checkpoint_epoch", ""))
+    epoch, latest = max(candidates, key=lambda kv: kv[0])
     return latest, epoch
 
 

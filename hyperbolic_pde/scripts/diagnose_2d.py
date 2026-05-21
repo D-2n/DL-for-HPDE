@@ -44,12 +44,20 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 def _find_latest_ckpt(run_base: Path) -> Path | None:
     runs = sorted(run_base.glob("run_*"))
     for run in reversed(runs):
-        ckpts = sorted(run.glob("checkpoint_epoch*.pt"))
+        # Sort checkpoints by numeric epoch (filenames are unpadded, so lex
+        # order would pick epoch 90 over epoch 150).
+        candidates: list[tuple[int, Path]] = []
+        for p in run.glob("checkpoint_epoch*.pt"):
+            try:
+                ep = int(p.stem.replace("checkpoint_epoch", ""))
+            except ValueError:
+                continue
+            candidates.append((ep, p))
         final = run / "model_final.pt"
         if final.exists():
             return final
-        if ckpts:
-            return ckpts[-1]
+        if candidates:
+            return max(candidates, key=lambda kv: kv[0])[1]
     return None
 
 
