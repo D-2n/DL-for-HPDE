@@ -38,7 +38,6 @@ import numpy as np
 import torch
 import yaml
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,9 +155,9 @@ def main() -> None:
         help="Cap on samples evaluated per num_segments group (default: all).",
     )
     parser.add_argument(
-        "--jump-threshold", type=float, default=0.15,
+        "--jump-threshold", type=float, default=0.06,
         help="Cell-scale jump magnitude that flags a shock cell "
-             "(|u[i+1]-u[i-1]|/2 > threshold). Default 0.15.",
+             "(|u[i+1]-u[i-1]|/2 > threshold). Default 0.06.",
     )
     parser.add_argument(
         "--band-cells", type=int, default=2,
@@ -170,9 +169,9 @@ def main() -> None:
         help="Disable the local-TV second gate (kept on by default).",
     )
     parser.add_argument(
-        "--tv-multiplier", type=float, default=2.0,
+        "--tv-multiplier", type=float, default=1.5,
         help="Local TV must exceed (tv_multiplier * jump_threshold) for a "
-             "cell to pass the TV gate. Default 2.0.",
+             "cell to pass the TV gate. Default 1.5.",
     )
     args = parser.parse_args()
 
@@ -353,7 +352,30 @@ def main() -> None:
     # ---------------------------------------------------------------- #
     # Plot 3: per-group qualitative comparison + shock band overlay
     # ---------------------------------------------------------------- #
-    band_cmap = ListedColormap([(0, 0, 0, 0), (1, 1, 1, 0.35)])  # transparent / white-translucent
+    BAND_OUTLINE_COLOR = "#ff1493"  # bright pink (deeppink), high-contrast on jet/magma
+    BAND_OUTLINE_LW = 1.2
+
+    def draw_band_outline(ax) -> None:
+        """Trace the boundary of the shock-band mask as a bright pink contour.
+
+        Uses ``contour`` at level 0.5 on the float-cast mask so the line
+        sits exactly between band and non-band cells. Padding the mask with
+        zeros guarantees the outline closes at the domain edges instead of
+        running off-frame.
+        """
+        m = np.pad(mask.astype(float), 1, mode="constant", constant_values=0.0)
+        # Construct matching padded x/t coordinates by extrapolating one cell
+        # each side, so the contour aligns visually with the underlying mesh.
+        x_pad = np.concatenate([[x_np[0] - (x_np[1] - x_np[0])],
+                                x_np,
+                                [x_np[-1] + (x_np[-1] - x_np[-2])]])
+        t_pad = np.concatenate([[t_np[0] - (t_np[1] - t_np[0])],
+                                t_np,
+                                [t_np[-1] + (t_np[-1] - t_np[-2])]])
+        ax.contour(
+            x_pad, t_pad, m, levels=[0.5],
+            colors=BAND_OUTLINE_COLOR, linewidths=BAND_OUTLINE_LW,
+        )
     for seg in seg_values:
         rep = rep_by_seg.get(seg)
         if rep is None:
@@ -376,7 +398,7 @@ def main() -> None:
         im = axes[0, 0].pcolormesh(
             x_np, t_np, lh, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
         )
-        axes[0, 0].pcolormesh(x_np, t_np, mask.astype(float), shading="auto", cmap=band_cmap)
+        draw_band_outline(axes[0, 0])
         axes[0, 0].set_title("Lax-Hopf (GT) + shock band")
         axes[0, 0].set_xlabel("x")
         axes[0, 0].set_ylabel("t")
@@ -397,7 +419,7 @@ def main() -> None:
             im = axes[0, c].pcolormesh(
                 x_np, t_np, sol, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
             )
-            axes[0, c].pcolormesh(x_np, t_np, mask.astype(float), shading="auto", cmap=band_cmap)
+            draw_band_outline(axes[0, c])
             axes[0, c].set_title(name)
             axes[0, c].set_xlabel("x")
             axes[0, c].set_ylabel("t")
