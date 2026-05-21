@@ -152,7 +152,7 @@ def plot_compare_full(
 
     sh_str = "  ".join(f"{n}={masked_mae(preds[n], lh, mask):.2e}" for n in SOLVERS)
     fig.suptitle(
-        f"Sample {idx} -- IC: {ic_type}, num\\_segments={seg}.  "
+        f"Sample {idx} -- IC: {ic_type}, num_segments={seg}.  "
         f"Shock MAE: {sh_str}"
     )
     fig.savefig(fig_path)
@@ -196,7 +196,13 @@ def plot_zoom(rep: dict, x_np, t_np, fig_path: Path) -> None:
         axes[1, c].set_title(f"|{name} $-$ GT|"); axes[1, c].set_xlabel("x"); axes[1, c].set_ylabel("t")
         fig.colorbar(im, ax=axes[1, c])
 
-    fig.suptitle(f"Sample {idx} -- IC: {ic_type}, num\\_segments={seg} (band only)")
+    sh_str = "  ".join(
+        f"{n}={masked_mae(preds[n], lh, mask):.2e}" for n in SOLVERS
+    )
+    fig.suptitle(
+        f"Sample {idx} -- IC: {ic_type}, num_segments={seg} (band only)\n"
+        f"shock MAE: {sh_str}  (band {mask.mean()*100:.2f}% of cells)"
+    )
     fig.savefig(fig_path)
     plt.close(fig)
 
@@ -233,7 +239,7 @@ def plot_slice(rep: dict, x_np, t_np, fig_path: Path, dx: float) -> None:
         ax.axvspan(band_xs[0] - 0.5 * dx, band_xs[-1] + 0.5 * dx,
                    color="orange", alpha=0.15, label="shock band")
     ax.set_xlabel("x"); ax.set_ylabel("u")
-    ax.set_title(f"Slice at t={t_np[k_star]:.3f},  num\\_segments={seg}")
+    ax.set_title(f"Slice at t={t_np[k_star]:.3f},  num_segments={seg}")
     ax.legend(); ax.grid(True, alpha=0.3)
     fig.savefig(fig_path)
     plt.close(fig)
