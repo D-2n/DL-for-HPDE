@@ -15,7 +15,9 @@ mkdir -p /home/dzdrale/scratch/logs
 
 # Defaults match the user's intended invocation. Override any of them by
 # passing extra args to sbatch (they go through to the python script):
-#   sbatch slurm/shock_comparison.sh --jump-threshold 0.08 --band-cells 7
+#   sbatch slurm/shock_comparison.sh --jump-threshold 0.10 --band-cells 3
+#   sbatch slurm/shock_comparison.sh --no-tv-gate
+# Detector defaults (set inside the script): jump=0.15, band=2, TV-gate on.
 RUN_DIR=/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260518_000640_128
 DATA_PATH=/home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_grouped.npz
 N_PER_GROUP=5

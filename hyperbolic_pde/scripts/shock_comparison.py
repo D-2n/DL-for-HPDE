@@ -59,29 +59,64 @@ from hyperbolic_pde.scripts.final_comparison import (
 # Shock-mask utilities
 # ----------------------------------------------------------------------------
 def detect_shock_mask(
-    u: np.ndarray, dx: float, jump_threshold: float, band_cells: int
+    u: np.ndarray,
+    dx: float,
+    jump_threshold: float,
+    band_cells: int,
+    tv_gate: bool = True,
+    tv_multiplier: float = 2.0,
 ) -> np.ndarray:
     """Return a boolean (nt, nx) mask of shock neighborhoods on ``u``.
 
-    Step 1: central-difference gradient along x, multiplied by ``dx`` so the
-    threshold is a *cell-scale jump* (e.g. ``0.05`` ≈ 5% jump per cell).
-    Step 2: 1D binary dilation along x by ``band_cells`` cells on either side,
-    so we capture a *neighborhood* around each detected discontinuity rather
-    than a single-cell edge.
+    Gate 1 (per-cell jump): half-central difference
+    ``|u[i+1] - u[i-1]| / 2 > jump_threshold``. This is the dimensionless
+    per-cell u-jump magnitude — ``dx`` is accepted only for downstream
+    reporting (band width in physical units) and is intentionally not used
+    in the detection itself.
+
+    Gate 2 (local TV, optional): a cell is kept only if the sum of
+    ``|Δu|`` in a ±``band_cells`` window exceeds
+    ``tv_multiplier * jump_threshold``. This suppresses isolated smooth-region
+    blips that happen to clear gate 1: a real shock has *several* large
+    neighbouring deltas, smoothly-varying noise typically does not.
+
+    Step 3 (dilate): 1D binary dilation along x by ``band_cells`` cells on
+    either side, so we report the *neighborhood* around each detected
+    discontinuity rather than a single-cell edge.
     """
     if u.ndim != 2:
         raise ValueError(f"detect_shock_mask expects (nt, nx), got {u.shape}")
-    # Half-central difference (u[i+1] - u[i-1]) / 2 with edge-padding so the
-    # domain boundary doesn't fire a spurious jump. This is the dimensionless
-    # per-cell u-jump magnitude — dx is accepted only for downstream reporting
-    # (band width in physical units) and is intentionally not used here.
-    _ = dx
+    _ = dx  # see docstring
+
+    # ---- Gate 1: per-cell jump magnitude ------------------------------- #
     u_pad = np.pad(u, ((0, 0), (1, 1)), mode="edge")
     half_diff = (u_pad[:, 2:] - u_pad[:, :-2]) * 0.5
     raw = np.abs(half_diff) > float(jump_threshold)
+
+    # ---- Gate 2: local total variation -------------------------------- #
+    if tv_gate:
+        # |Δu| at face i+1/2 lives at index i in `du` (length nx-1 along x);
+        # pad to length nx so a windowed sum lines up with cell indices.
+        du = np.abs(u[:, 1:] - u[:, :-1])
+        du_pad = np.pad(du, ((0, 0), (0, 1)), mode="edge")  # (nt, nx)
+        # Sliding sum over a (2*band_cells+1) window via cumulative sum.
+        w = max(int(band_cells), 1)
+        cumsum = np.cumsum(du_pad, axis=1)
+        # window sum at column i = cumsum[i+w] - cumsum[i-w-1] (with clipping)
+        nx = du_pad.shape[1]
+        lo = np.clip(np.arange(nx) - w - 1, -1, nx - 1)
+        hi = np.clip(np.arange(nx) + w, 0, nx - 1)
+        # cumsum[-1] would wrap; treat lo == -1 as 0
+        lo_vals = np.where(lo[None, :] >= 0, cumsum[:, lo.clip(min=0)], 0.0)
+        hi_vals = cumsum[:, hi]
+        local_tv = hi_vals - lo_vals
+        tv_pass = local_tv > float(tv_multiplier) * float(jump_threshold)
+        raw = raw & tv_pass
+
     if band_cells <= 0:
         return raw
-    # Dilate along x with a (2*band+1) structuring element.
+
+    # ---- Step 3: dilate by band_cells along x -------------------------- #
     band = int(band_cells)
     out = raw.copy()
     for shift in range(1, band + 1):
@@ -121,14 +156,23 @@ def main() -> None:
         help="Cap on samples evaluated per num_segments group (default: all).",
     )
     parser.add_argument(
-        "--jump-threshold", type=float, default=0.05,
+        "--jump-threshold", type=float, default=0.15,
         help="Cell-scale jump magnitude that flags a shock cell "
-             "(|u[i+1]-u[i-1]|/2 > threshold). Default 0.05.",
+             "(|u[i+1]-u[i-1]|/2 > threshold). Default 0.15.",
     )
     parser.add_argument(
-        "--band-cells", type=int, default=5,
+        "--band-cells", type=int, default=2,
         help="Dilate the raw shock mask by this many cells on each side "
-             "to form a shock *neighborhood*. Default 5.",
+             "to form a shock *neighborhood*. Default 2 (=> 5-cell band).",
+    )
+    parser.add_argument(
+        "--no-tv-gate", action="store_true",
+        help="Disable the local-TV second gate (kept on by default).",
+    )
+    parser.add_argument(
+        "--tv-multiplier", type=float, default=2.0,
+        help="Local TV must exceed (tv_multiplier * jump_threshold) for a "
+             "cell to pass the TV gate. Default 2.0.",
     )
     args = parser.parse_args()
 
@@ -187,9 +231,12 @@ def main() -> None:
 
     seg_values = sorted(set(int(s) for s in seg_all))
     print(f"num_segments groups: {seg_values}")
+    tv_gate = not args.no_tv_gate
     print(
         f"Shock detector: jump_threshold={args.jump_threshold}, "
-        f"band_cells={args.band_cells} (neighborhood width {2*args.band_cells+1} cells)"
+        f"band_cells={args.band_cells} (neighborhood width {2*args.band_cells+1} cells), "
+        f"tv_gate={'on' if tv_gate else 'off'}"
+        + (f" (multiplier={args.tv_multiplier})" if tv_gate else "")
     )
 
     # Per-group accumulators (full + shock-restricted MAE)
@@ -227,7 +274,10 @@ def main() -> None:
         lh = u_gt[idx]
 
         # Shock band on the GROUND TRUTH — same mask reused for every method.
-        mask = detect_shock_mask(lh, dx, args.jump_threshold, args.band_cells)
+        mask = detect_shock_mask(
+            lh, dx, args.jump_threshold, args.band_cells,
+            tv_gate=tv_gate, tv_multiplier=args.tv_multiplier,
+        )
         shock_frac[seg].append(float(mask.mean()))
 
         print(
@@ -384,6 +434,133 @@ def main() -> None:
         plt.close(fig)
 
     # ---------------------------------------------------------------- #
+    # Plot 4: zoomed band-only views, per group
+    #
+    # Same representative sample, but every panel is cropped to the bounding
+    # box of the shock band and non-band cells are blanked out with NaN so
+    # the eye is drawn to the band itself. Color scales are computed *over
+    # the band only*, so faint within-band errors that get washed out in
+    # the full-domain plot become visible.
+    #
+    # Also a 1D slice plot through the time row with the largest GT shock
+    # band, comparing each method's u(x) to the GT around the shock.
+    # ---------------------------------------------------------------- #
+    for seg in seg_values:
+        rep = rep_by_seg.get(seg)
+        if rep is None or not rep["mask"].any():
+            continue
+        lh = rep["lh"]
+        preds = rep["preds"]
+        mask = rep["mask"]
+        ic_type = rep["ic_type"]
+        idx = rep["idx"]
+
+        # Bounding box of the band in (t, x) index space.
+        t_any = mask.any(axis=1)
+        x_any = mask.any(axis=0)
+        t_lo, t_hi = int(np.argmax(t_any)), int(len(t_any) - np.argmax(t_any[::-1]))
+        x_lo, x_hi = int(np.argmax(x_any)), int(len(x_any) - np.argmax(x_any[::-1]))
+        # Tiny pad of 1 cell on each side for context, clipped to grid.
+        t_lo = max(t_lo - 1, 0); t_hi = min(t_hi + 1, lh.shape[0])
+        x_lo = max(x_lo - 1, 0); x_hi = min(x_hi + 1, lh.shape[1])
+
+        x_z = x_np[x_lo:x_hi]
+        t_z = t_np[t_lo:t_hi]
+        mask_z = mask[t_lo:t_hi, x_lo:x_hi]
+        lh_z = lh[t_lo:t_hi, x_lo:x_hi]
+
+        # Blank non-band cells so they render transparent.
+        def blanked(arr2d: np.ndarray) -> np.ndarray:
+            out = arr2d.astype(float).copy()
+            out[~mask_z] = np.nan
+            return out
+
+        # Color scales computed strictly inside the band.
+        u_in_band = lh[mask]
+        vmin = float(u_in_band.min())
+        vmax = float(u_in_band.max())
+        err_in_band_max = max(
+            float(np.abs(preds[n] - lh)[mask].max()) for n in SOLVERS
+        )
+
+        ncols = 1 + len(SOLVERS)
+        fig, axes = plt.subplots(2, ncols, figsize=(4 * ncols, 8), constrained_layout=True)
+
+        # Top-left: GT cropped + band-only
+        im = axes[0, 0].pcolormesh(
+            x_z, t_z, blanked(lh_z), shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+        )
+        axes[0, 0].set_title("Lax-Hopf (GT) — band only")
+        axes[0, 0].set_xlabel("x"); axes[0, 0].set_ylabel("t")
+        fig.colorbar(im, ax=axes[0, 0], label="u")
+        axes[1, 0].axis("off")
+
+        for c, name in enumerate(SOLVERS, start=1):
+            sol_z = preds[name][t_lo:t_hi, x_lo:x_hi]
+            err_z = np.abs(preds[name] - lh)[t_lo:t_hi, x_lo:x_hi]
+
+            im = axes[0, c].pcolormesh(
+                x_z, t_z, blanked(sol_z), shading="auto", cmap="jet",
+                vmin=vmin, vmax=vmax,
+            )
+            axes[0, c].set_title(f"{name} — band only")
+            axes[0, c].set_xlabel("x"); axes[0, c].set_ylabel("t")
+            fig.colorbar(im, ax=axes[0, c], label="u")
+
+            im = axes[1, c].pcolormesh(
+                x_z, t_z, blanked(err_z), shading="auto", cmap="magma",
+                vmin=0, vmax=err_in_band_max,
+            )
+            axes[1, c].set_title(f"|{name} - GT|  (band only)")
+            axes[1, c].set_xlabel("x"); axes[1, c].set_ylabel("t")
+            fig.colorbar(im, ax=axes[1, c])
+
+        sh_str = "  ".join(
+            f"{n}={masked_mae(preds[n], lh, mask):.3e}" for n in SOLVERS
+        )
+        fig.suptitle(
+            f"OOD sample {idx} — IC: {ic_type}, num_segments={seg}  (zoom to shock band)\n"
+            f"shock MAE: {sh_str}"
+        )
+        fig.savefig(plot_dir / f"shock_zoom_num_segments_{seg}.png", dpi=150)
+        plt.close(fig)
+
+        # ---- 1D slice through the time row with the widest band -------- #
+        k_star = int(np.argmax(mask.sum(axis=1)))  # row with most band cells
+        # x-range to plot: just the band on that row, padded by 3 cells.
+        row_mask = mask[k_star]
+        if row_mask.any():
+            i_lo = max(int(np.argmax(row_mask)) - 3, 0)
+            i_hi = min(int(len(row_mask) - np.argmax(row_mask[::-1])) + 3, lh.shape[1])
+            xs = x_np[i_lo:i_hi]
+
+            fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+            ax.plot(xs, lh[k_star, i_lo:i_hi], color="black", lw=2.0, label="Lax-Hopf (GT)")
+            for name in SOLVERS:
+                ax.plot(
+                    xs, preds[name][k_star, i_lo:i_hi],
+                    color=COLORS[name], lw=1.4, label=name,
+                )
+            # Shade the band cells on this row for context.
+            band_xs = xs[row_mask[i_lo:i_hi]]
+            if band_xs.size:
+                ax.axvspan(
+                    band_xs[0] - 0.5 * dx, band_xs[-1] + 0.5 * dx,
+                    color="orange", alpha=0.15, label="shock band",
+                )
+            ax.set_xlabel("x")
+            ax.set_ylabel("u")
+            ax.set_title(
+                f"OOD sample {idx} — IC: {ic_type}, num_segments={seg}\n"
+                f"slice at t={t_np[k_star]:.3f} (widest band row, "
+                f"{int(row_mask.sum())} cells)"
+            )
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig.savefig(plot_dir / f"shock_slice_num_segments_{seg}.png", dpi=150)
+            plt.close(fig)
+
+    # ---------------------------------------------------------------- #
     # Summary table
     # ---------------------------------------------------------------- #
     summary_path = plot_dir / "shock_summary.txt"
@@ -392,6 +569,8 @@ def main() -> None:
         f"  jump_threshold = {args.jump_threshold}",
         f"  band_cells     = {args.band_cells}  (neighborhood width "
         f"{2*args.band_cells+1} cells, dx={dx:.4g})",
+        f"  tv_gate        = {'on' if tv_gate else 'off'}"
+        + (f"  (multiplier={args.tv_multiplier})" if tv_gate else ""),
         "",
     ]
     for seg in seg_values:
