@@ -1,14 +1,17 @@
-"""Diagnostic: HypNO-ST3 on weak Riemann shocks at the u-extrema.
+"""Diagnostic: HypNO-ST3 on weak Riemann shocks across the u-range.
 
-Generates a small deterministic grid of *small-jump* Riemann ICs whose
-states both live near 0 (low-density extremum) or both near 1 (high-
-density extremum). Tests whether the model handles weak shocks at the
-edges of the training distribution, where (a) the characteristic speed
-``a = 1 - 2u`` is itself extremal and (b) the upwind direction is
-unambiguous but |a| is large in absolute value.
+Generates a small deterministic grid of *small-jump* Riemann ICs that
+span the u-range: pairs near 0 (low-density extremum), pairs near 1
+(high-density extremum), and pairs near 0.5 (mid). All pairs have
+small |u_R - u_L| so the *jump magnitude* is roughly constant; only
+the absolute u location changes. This isolates whether the model's
+error is driven by extremal u values (extremal characteristic speed
+``a = 1 - 2u``, sonic-point proximity at u=0.5) or by jump weakness
+per se.
 
-ICs (small jumps, u_R > u_L strictly, 6 samples by default):
+ICs (small jumps, u_R > u_L strictly, 9 samples by default):
     low-extremum  pairs: (0.00, 0.05), (0.00, 0.10), (0.05, 0.10)
+    mid           pairs: (0.30, 0.40), (0.45, 0.50), (0.50, 0.55)
     high-extremum pairs: (0.85, 0.90), (0.85, 1.00), (0.90, 1.00)
 Step location ``x_0`` is drawn uniformly in ``[-0.5, 0.5]`` per sample
 with a fixed seed for reproducibility, so the shock is genuinely
@@ -49,16 +52,21 @@ def riemann_ic(x: np.ndarray, u_left: float, u_right: float, x0: float) -> np.nd
 
 
 def build_sample_grid(seed: int) -> list[dict]:
-    """Deterministic small-jump pairs at the low and high u-extrema.
+    """Deterministic small-jump pairs across the u-range.
 
     Every pair satisfies u_R > u_L (entropy-admissible shock for LWR's
-    concave flux). Three pairs cluster near u=0, three near u=1.
+    concave flux). Three pairs cluster near u=0, three near u=0.5,
+    three near u=1 — all with small jumps so location, not jump
+    magnitude, is the varying axis.
     """
     rng = np.random.default_rng(seed)
     pairs = [
         (0.00, 0.05),
         (0.00, 0.10),
         (0.05, 0.10),
+        (0.30, 0.40),
+        (0.45, 0.50),
+        (0.50, 0.55),
         (0.85, 0.90),
         (0.85, 1.00),
         (0.90, 1.00),
@@ -74,8 +82,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Diagnostic comparison of HypNO-ST3, WENO5, Godunov, and Lax-Hopf "
-            "on weak Riemann shocks at the u-extrema (both states near 0 or "
-            "both near 1, with u_R > u_L)."
+            "on weak Riemann shocks across the u-range (pairs near 0, 0.5, "
+            "and 1; u_R > u_L throughout)."
         )
     )
     parser.add_argument(
