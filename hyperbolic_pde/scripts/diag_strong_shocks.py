@@ -1,14 +1,15 @@
-"""Diagnostic: HypNO-ST3 on extreme Riemann shocks (u_L ~ 0, u_R ~ 1).
+"""Diagnostic: HypNO-ST3 on weak Riemann shocks at the u-extrema.
 
-Generates a small deterministic grid of strong-jump Riemann ICs --- the
-worst-case shocks for LWR --- and compares HypNO-ST3 against WENO5,
-Godunov, and the Lax-Hopf exact solution. Outputs solution + abs-error
-heatmaps so subtle artefacts (single-cell shock errors, smearing, late-
-time drift) are visible by inspection.
+Generates a small deterministic grid of *small-jump* Riemann ICs whose
+states both live near 0 (low-density extremum) or both near 1 (high-
+density extremum). Tests whether the model handles weak shocks at the
+edges of the training distribution, where (a) the characteristic speed
+``a = 1 - 2u`` is itself extremal and (b) the upwind direction is
+unambiguous but |a| is large in absolute value.
 
-ICs (Cartesian product, 6 samples by default):
-    u_L in {0.00, 0.05, 0.10}
-    u_R in {0.90, 1.00}
+ICs (small jumps, u_R > u_L strictly, 6 samples by default):
+    low-extremum  pairs: (0.00, 0.05), (0.00, 0.10), (0.05, 0.10)
+    high-extremum pairs: (0.85, 0.90), (0.85, 1.00), (0.90, 1.00)
 Step location ``x_0`` is drawn uniformly in ``[-0.5, 0.5]`` per sample
 with a fixed seed for reproducibility, so the shock is genuinely
 off-center for every IC (rules out left/right boundary-effect
@@ -48,15 +49,24 @@ def riemann_ic(x: np.ndarray, u_left: float, u_right: float, x0: float) -> np.nd
 
 
 def build_sample_grid(seed: int) -> list[dict]:
-    """6-sample deterministic grid of (u_L, u_R) with random x_0."""
+    """Deterministic small-jump pairs at the low and high u-extrema.
+
+    Every pair satisfies u_R > u_L (entropy-admissible shock for LWR's
+    concave flux). Three pairs cluster near u=0, three near u=1.
+    """
     rng = np.random.default_rng(seed)
-    u_L_values = [0.00, 0.05, 0.10]
-    u_R_values = [0.90, 1.00]
+    pairs = [
+        (0.00, 0.05),
+        (0.00, 0.10),
+        (0.05, 0.10),
+        (0.85, 0.90),
+        (0.85, 1.00),
+        (0.90, 1.00),
+    ]
     samples = []
-    for uL in u_L_values:
-        for uR in u_R_values:
-            x0 = float(rng.uniform(-0.5, 0.5))
-            samples.append({"u_L": float(uL), "u_R": float(uR), "x0": x0})
+    for uL, uR in pairs:
+        x0 = float(rng.uniform(-0.5, 0.5))
+        samples.append({"u_L": float(uL), "u_R": float(uR), "x0": x0})
     return samples
 
 
@@ -64,7 +74,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Diagnostic comparison of HypNO-ST3, WENO5, Godunov, and Lax-Hopf "
-            "on strong Riemann shocks (u_L in [0, 0.1], u_R in [0.9, 1.0])."
+            "on weak Riemann shocks at the u-extrema (both states near 0 or "
+            "both near 1, with u_R > u_L)."
         )
     )
     parser.add_argument(
