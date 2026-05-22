@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=2d_lwr_viz
-#SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
