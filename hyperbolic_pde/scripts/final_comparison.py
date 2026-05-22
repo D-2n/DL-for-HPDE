@@ -44,10 +44,10 @@ COLORS = {
 # treated as a fixed pretrained model: training happens out-of-band via
 # scripts/train_fno.py with configs/hyperbolic_pde_cleps_fno.yaml.
 FNO_WEIGHTS_PATH = "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/fno.pt"
-# Architecture matches the default cfg['fno'] block in hyperbolic_pde.yaml
-# (width=32, modes_x=16, modes_t=16, layers=4). If you retrain with different
-# hyperparameters, update these constants too.
-FNO_ARCH = dict(in_channels=3, out_channels=1, width=32, modes_x=16, modes_t=16, layers=4)
+# Architecture matches the cfg['fno'] block in hyperbolic_pde.yaml /
+# hyperbolic_pde_cleps_fno.yaml (width=128, modes=24, layers=8). If you
+# retrain with different hyperparameters, update these constants too.
+FNO_ARCH = dict(in_channels=3, out_channels=1, width=128, modes_x=24, modes_t=24, layers=8)
 
 
 def build_fno(device: torch.device, weights_path: str = FNO_WEIGHTS_PATH) -> FNO2d:
