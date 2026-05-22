@@ -43,6 +43,7 @@ from hyperbolic_pde.data.fvm import solve_conservation_fvm
 from hyperbolic_pde.models.hypno_st3 import precompute_lwr_edge_features_v3
 from hyperbolic_pde.scripts.final_comparison import (
     SOLVERS, COLORS, load_ood_dataset, build_model, mae,
+    build_fno, run_fno, FNO_WEIGHTS_PATH,
 )
 from hyperbolic_pde.scripts.shock_comparison import (
     detect_shock_mask, masked_mae,
@@ -52,7 +53,12 @@ from hyperbolic_pde.scripts.shock_comparison import (
 # ----------------------------------------------------------------------------
 # LaTeX-name mapping
 # ----------------------------------------------------------------------------
-TEX_NAME = {"HypNO-ST3": r"HypNO-ST3", "WENO5": r"WENO5", "Godunov": r"Godunov"}
+TEX_NAME = {
+    "HypNO-ST3": r"HypNO-ST3",
+    "WENO5": r"WENO5",
+    "Godunov": r"Godunov",
+    "FNO": r"FNO",
+}
 
 
 def fmt_mae(x: float) -> str:
@@ -212,19 +218,22 @@ def plot_slice(rep: dict, x_np, t_np, fig_path: Path, dx: float) -> None:
     seg = rep["seg"]; idx = rep["idx"]; ic_type = rep["ic_type"]
     if not mask.any():
         return
-    # Pick the widest-band row but only after t >= 0.1 * T_max so we don't slice
-    # the IC itself (at t=0 the "shock" is just the piecewise-constant IC,
-    # which every method represents exactly — slice is uninformative).
-    t_min_slice = 0.1 * float(t_np[-1])
-    eligible = t_np >= t_min_slice
+    # Pick a *random* time row in [0.15, 0.8] * T_max that has band cells.
+    # Argmax-of-band-width consistently lands at the first eligible row
+    # (band is widest right after the IC and narrows over time), which made
+    # every slice look identical at t ~ 0.10 * T_max. Random sampling from
+    # a mid-time window avoids both the IC region and the end-of-domain.
+    T = float(t_np[-1])
+    t_lo_slice, t_hi_slice = 0.15 * T, 0.8 * T
+    eligible = (t_np >= t_lo_slice) & (t_np <= t_hi_slice) & mask.any(axis=1)
     if not eligible.any():
-        eligible = np.arange(len(t_np)) > 0  # fallback: anything but row 0
-    row_widths = mask.sum(axis=1).astype(int)
-    masked_widths = np.where(eligible, row_widths, -1)
-    k_star = int(np.argmax(masked_widths))
-    if masked_widths[k_star] <= 0:
-        # No band cells in the eligible time window — nothing useful to plot.
-        return
+        # Fallback: any row past t=0 that has band cells.
+        eligible = (np.arange(len(t_np)) > 0) & mask.any(axis=1)
+        if not eligible.any():
+            return
+    eligible_idx = np.flatnonzero(eligible)
+    # Deterministic given the global seed (set in main()).
+    k_star = int(np.random.choice(eligible_idx))
     row_mask = mask[k_star]
     i_lo = max(int(np.argmax(row_mask)) - 3, 0)
     i_hi = min(int(len(row_mask) - np.argmax(row_mask[::-1])) + 3, lh.shape[1])
@@ -313,8 +322,8 @@ def emit_section(
     out.append("")
     out.append(
         r"To isolate accuracy on the discontinuous portion of the solution, "
-        r"we evaluate HypNO-ST3, WENO5, and Godunov on the grouped "
-        r"out-of-distribution set used in Section~\ref{sec:hypno-st3-2d} "
+        r"we evaluate HypNO-ST3, WENO5, Godunov, and an FNO baseline on the "
+        r"grouped out-of-distribution set used in Section~\ref{sec:hypno-st3-2d} "
         r"and report MAE restricted to a \emph{shock band} detected on the "
         r"Lax-Hopf ground truth. A grid cell at $(t,x_i)$ is flagged when "
         r"the signed half-central difference "
@@ -337,8 +346,8 @@ def emit_section(
     out.append(fig_block(
         "shock_mae_vs_num_segments.png",
         r"OOD MAE restricted to the shock band, as a function of the number "
-        r"of IC discontinuities. HypNO-ST3 is compared against WENO5 and "
-        r"Godunov on the same Lax-Hopf ground truth.",
+        r"of IC discontinuities. HypNO-ST3 is compared against WENO5, "
+        r"Godunov, and an FNO baseline on the same Lax-Hopf ground truth.",
         "fig:shock-mae-vs-seg",
     ))
     for seg in seg_values:
@@ -454,6 +463,10 @@ def main() -> None:
     model.load_state_dict(state_dict)
     model.eval()
 
+    # FNO baseline — hardcoded checkpoint path (see final_comparison.FNO_WEIGHTS_PATH).
+    fno_model = build_fno(device)
+    print(f"Loaded FNO from {FNO_WEIGHTS_PATH}")
+
     x_grid = torch.tensor(x_np, dtype=torch.float32, device=device)
     t_grid = torch.tensor(t_np, dtype=torch.float32, device=device)
     stencil_k_x = int(model_cfg.get("stencil_k_x", 3))
@@ -517,7 +530,13 @@ def main() -> None:
             u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="godunov"
         )
         hypno = run_hypno(u0_np)
-        preds = {"HypNO-ST3": hypno, "WENO5": weno, "Godunov": godu}
+        fno_pred, _ = run_fno(fno_model, u0_np, x_grid, t_grid, device)
+        preds = {
+            "HypNO-ST3": hypno,
+            "WENO5": weno,
+            "Godunov": godu,
+            "FNO": fno_pred,
+        }
         for name, pred in preds.items():
             mae_full[seg][name].append(mae(pred, lh))
             mae_shock[seg][name].append(masked_mae(pred, lh, mask))

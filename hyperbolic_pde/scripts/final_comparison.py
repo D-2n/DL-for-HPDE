@@ -30,9 +30,74 @@ sys.path.append(str(ROOT.parent))
 from hyperbolic_pde.data.fvm import solve_conservation_fvm
 from hyperbolic_pde.data.lax_hopf import solve_lax_hopf
 from hyperbolic_pde.models.hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3
+from hyperbolic_pde.models.fno import FNO2d
 
-SOLVERS = ["HypNO-ST3", "WENO5", "Godunov"]
-COLORS = {"HypNO-ST3": "tab:blue", "WENO5": "tab:orange", "Godunov": "tab:green"}
+SOLVERS = ["HypNO-ST3", "WENO5", "Godunov", "FNO"]
+COLORS = {
+    "HypNO-ST3": "tab:blue",
+    "WENO5": "tab:orange",
+    "Godunov": "tab:green",
+    "FNO": "tab:red",
+}
+
+# Hard-coded path to the trained FNO checkpoint on CLEPS. The FNO baseline is
+# treated as a fixed pretrained model: training happens out-of-band via
+# scripts/train_fno.py with configs/hyperbolic_pde_cleps_fno.yaml.
+FNO_WEIGHTS_PATH = "/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/fno.pt"
+# Architecture matches the default cfg['fno'] block in hyperbolic_pde.yaml
+# (width=32, modes_x=16, modes_t=16, layers=4). If you retrain with different
+# hyperparameters, update these constants too.
+FNO_ARCH = dict(in_channels=3, out_channels=1, width=32, modes_x=16, modes_t=16, layers=4)
+
+
+def build_fno(device: torch.device, weights_path: str = FNO_WEIGHTS_PATH) -> FNO2d:
+    """Load the pretrained FNO baseline. Returns ``None`` if the checkpoint
+    is missing (so the comparison can still run on machines without it)."""
+    model = FNO2d(**FNO_ARCH).to(device)
+    p = Path(weights_path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"FNO checkpoint not found at {p}. Either train it via "
+            f"scripts/train_fno.py or update FNO_WEIGHTS_PATH."
+        )
+    state = torch.load(p, map_location=device)
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    if any(k.startswith("_orig_mod.") for k in state):
+        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+    model.load_state_dict(state)
+    model.eval()
+    return model
+
+
+def run_fno(
+    model: FNO2d,
+    u0_np: np.ndarray,
+    x_grid: torch.Tensor,
+    t_grid: torch.Tensor,
+    device: torch.device,
+) -> tuple[np.ndarray, float]:
+    """Run the FNO baseline on one IC.
+
+    Mirrors the input layout from FNODataset in scripts/train_fno.py:
+    channels = [X, T, u0_broadcast], shape (1, 3, nx, nt). The model emits
+    (1, 1, nx, nt), which we transpose to (nt, nx) to match HypNO/FVM.
+    """
+    nx = x_grid.numel()
+    nt = t_grid.numel()
+    X, T = torch.meshgrid(x_grid, t_grid, indexing="ij")  # (nx, nt)
+    u0_t = torch.as_tensor(u0_np, dtype=torch.float32, device=device)
+    u0_grid = u0_t.unsqueeze(1).expand(nx, nt)
+    inp = torch.stack([X, T, u0_grid], dim=0).unsqueeze(0)  # (1, 3, nx, nt)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        pred = model(inp)  # (1, 1, nx, nt)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t0
+    return pred[0, 0].cpu().numpy().T, elapsed  # -> (nt, nx)
 
 
 def mae(pred: np.ndarray, truth: np.ndarray) -> float:
@@ -164,6 +229,10 @@ def main() -> None:
     model.eval()
     print(f"Loaded HypNO-ST3 from {weights_path}")
 
+    # FNO baseline — hardcoded checkpoint path; see FNO_WEIGHTS_PATH.
+    fno_model = build_fno(device)
+    print(f"Loaded FNO from {FNO_WEIGHTS_PATH}")
+
     x_grid = torch.tensor(x_np, dtype=torch.float32, device=device)
     t_grid = torch.tensor(t_np, dtype=torch.float32, device=device)
     stencil_k_x = int(model_cfg.get("stencil_k_x", 3))
@@ -237,10 +306,14 @@ def main() -> None:
         # HypNO-ST3
         hypno_np, t_hypno = run_hypno(u0_np)
 
+        # FNO
+        fno_np, t_fno = run_fno(fno_model, u0_np, x_grid, t_grid, device)
+
         results = {
             "HypNO-ST3": (hypno_np, t_hypno),
             "WENO5": (weno, t_weno),
             "Godunov": (godunov, t_godu),
+            "FNO": (fno_np, t_fno),
         }
         for name, (pred, elapsed) in results.items():
             mae_by_seg[seg][name].append(mae(pred, lh))

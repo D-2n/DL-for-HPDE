@@ -50,6 +50,9 @@ from hyperbolic_pde.scripts.final_comparison import (
     COLORS,
     load_ood_dataset,
     build_model,
+    build_fno,
+    run_fno,
+    FNO_WEIGHTS_PATH,
     mae,
 )
 
@@ -228,6 +231,10 @@ def main() -> None:
     model.eval()
     print(f"Loaded HypNO-ST3 from {weights_path}")
 
+    # FNO baseline (hardcoded path in final_comparison.FNO_WEIGHTS_PATH).
+    fno_model = build_fno(device)
+    print(f"Loaded FNO from {FNO_WEIGHTS_PATH}")
+
     x_grid = torch.tensor(x_np, dtype=torch.float32, device=device)
     t_grid = torch.tensor(t_np, dtype=torch.float32, device=device)
     stencil_k_x = int(model_cfg.get("stencil_k_x", 3))
@@ -302,8 +309,14 @@ def main() -> None:
             u0_np, x_min, x_max, t_max, nt, cfl=cfl, boundary=boundary, method="godunov"
         )
         hypno_np = run_hypno(u0_np)
+        fno_np, _ = run_fno(fno_model, u0_np, x_grid, t_grid, device)
 
-        preds = {"HypNO-ST3": hypno_np, "WENO5": weno, "Godunov": godunov}
+        preds = {
+            "HypNO-ST3": hypno_np,
+            "WENO5": weno,
+            "Godunov": godunov,
+            "FNO": fno_np,
+        }
         for name, pred in preds.items():
             mae_full[seg][name].append(mae(pred, lh))
             mae_shock[seg][name].append(masked_mae(pred, lh, mask))
@@ -557,22 +570,22 @@ def main() -> None:
         fig.savefig(plot_dir / f"shock_zoom_num_segments_{seg}.png", dpi=150)
         plt.close(fig)
 
-        # ---- 1D slice through the time row with the widest band -------- #
-        # Pick the widest-band row but only after t >= 0.1 * T_max so we don't
-        # slice the IC itself (at t=0 the "shock" is just the piecewise-constant
-        # IC, which every method represents exactly — slice is uninformative).
-        # Tie-break by earliest row within the eligible window.
-        t_max_arr = float(t_np[-1])
-        t_min_slice = 0.1 * t_max_arr
-        eligible = t_np >= t_min_slice
+        # ---- 1D slice through a random mid-time row with band cells ----- #
+        # Random row in [0.15, 0.8] * T_max that contains band cells. The
+        # previous argmax-of-band-width rule consistently picked t ~ 0.10*T_max
+        # (band is widest right after the IC), making every slice look
+        # identical. Random sampling from a mid-time window avoids both the
+        # IC region and the end-of-domain. Determinism is preserved by the
+        # global numpy seed set in main().
+        T = float(t_np[-1])
+        t_lo_slice, t_hi_slice = 0.15 * T, 0.8 * T
+        eligible = (t_np >= t_lo_slice) & (t_np <= t_hi_slice) & mask.any(axis=1)
         if not eligible.any():
-            eligible = np.arange(len(t_np)) > 0  # fallback: anything but row 0
-        row_widths = mask.sum(axis=1).astype(int)
-        masked_widths = np.where(eligible, row_widths, -1)
-        k_star = int(np.argmax(masked_widths))
-        if masked_widths[k_star] <= 0:
-            # No band cells in the eligible window — skip the slice entirely.
-            continue
+            eligible = (np.arange(len(t_np)) > 0) & mask.any(axis=1)
+            if not eligible.any():
+                continue
+        eligible_idx = np.flatnonzero(eligible)
+        k_star = int(np.random.choice(eligible_idx))
         # x-range to plot: just the band on that row, padded by 3 cells.
         row_mask = mask[k_star]
         if row_mask.any():
