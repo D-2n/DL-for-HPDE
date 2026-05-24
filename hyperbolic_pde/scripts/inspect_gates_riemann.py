@@ -182,7 +182,8 @@ def _gates_for_query(
 
         is_adj_sp = (dm == 0) and (abs(di) == 1)
         if is_adj_sp:
-            _, _, _, _, _, _, a_ij, _sign_a, _upwind = \
+            # Helper now returns oriented (L/R) features; we only need a_ij.
+            *_, a_ij, _sign_a, _upwind = \
                 _compute_adj_spatial_edge_feats(u_i, u_j, rel_x)
         else:
             a_ij = torch.zeros_like(rel_x)

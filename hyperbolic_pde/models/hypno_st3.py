@@ -77,12 +77,15 @@ def _make_mlp(in_dim: int, hidden: int, out_dim: int, layers: int, activation: s
 
 
 # ---- index constants ------------------------------------------------------ #
-# Adjacent static feature vector (12 slots):
-# 0: u_i,  1: u_k,  2: du,  3: u_avg,  4: sign(rel_x),
-# 5: f_i,  6: f_k,  7: a_i,  8: a_k,  9: a_ij (RH speed),  10: sign(a_ij),  11: upwind
-# NOTE: |du| and the signed rel_x magnitude were removed (uninformative /
-# replaced with sign(rel_x)). a_ij now falls back to a_i (= lambda_i) when
-# |du| is below the safety threshold, instead of the u_avg-based estimate.
+# Adjacent static feature vector (12 slots, oriented L/R):
+# 0: u_L,  1: u_R,  2: du_LR = u_R - u_L,  3: u_avg = (u_L + u_R)/2,
+# 4: sign(rel_x)  (source-side flag: +1 if neighbour is to the right),
+# 5: f_L,  6: f_R,  7: a_L = lambda(u_L),  8: a_R = lambda(u_R),
+# 9: a_ij (RH speed; orientation-symmetric secant slope),
+# 10: sign(a_ij),  11: upwind.
+# NOTE: L/R are derived from sign(rel_x): when rel_x > 0 the neighbour is the
+# right state. a_ij falls back to a_L when |du_LR| is below the safety
+# threshold (matches the writeup's s_RH -> f'(u_L) limit).
 N_EDGE_FEATS_ADJ = 12
 
 # Non-adjacent static feature vector (8 slots):
@@ -138,26 +141,34 @@ def precompute_lwr_edge_features_v3(
         a_k = 1.0 - 2.0 * u_k
 
         if abs(j) <= 1:
-            du     = u_k - u0
-            u_avg  = 0.5 * (u0 + u_k)
             rel_x  = x_k - x_exp
             sign_dx = torch.sign(rel_x)
 
-            du_safe = torch.where(du.abs() < 1e-6, torch.ones_like(du), du)
+            u_L = torch.where(rel_x > 0, u0, u_k)
+            u_R = torch.where(rel_x > 0, u_k, u0)
+            f_L = u_L * (1.0 - u_L)
+            f_R = u_R * (1.0 - u_R)
+            a_L = 1.0 - 2.0 * u_L
+            a_R = 1.0 - 2.0 * u_R
+
+            du_LR = u_R - u_L
+            u_avg = 0.5 * (u_L + u_R)
+
+            du_safe = torch.where(du_LR.abs() < 1e-6, torch.ones_like(du_LR), du_LR)
             a_ik = torch.where(
-                du.abs() < 1e-6,
-                a_i,
-                (f_k - f_i) / du_safe,
+                du_LR.abs() < 1e-6,
+                a_L,
+                (f_R - f_L) / du_safe,
             )
             sign_a = torch.sign(a_ik)
             upwind = (a_ik * rel_x < 0).float()
 
             feat = torch.stack([
-                u0, u_k,
-                du, u_avg,
+                u_L, u_R,
+                du_LR, u_avg,
                 sign_dx,
-                f_i, f_k,
-                a_i, a_k, a_ik,
+                f_L, f_R,
+                a_L, a_R, a_ik,
                 sign_a, upwind,
             ], dim=-1)                                          # [N, nx, 12]
             adj_list.append(feat)
@@ -184,28 +195,34 @@ def _compute_adj_spatial_edge_feats(
     u_hat_i: torch.Tensor, u_hat_j: torch.Tensor,
     rel_x: torch.Tensor,
 ) -> tuple[torch.Tensor, ...]:
-    """Return the 9-tuple of adjacent-edge features from decoded state.
+    """Return oriented (L/R) adjacent-edge features for LWR.
 
-    Outputs: (du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind).
+    Orientation: the right state is whichever side has rel_x > 0 relative
+    to the centre. f and a are the LWR flux f(u) = u(1-u) and the
+    characteristic speed f'(u) = 1 - 2u evaluated at each state. a_ij is
+    the secant slope (= Rankine-Hugoniot speed) — orientation-symmetric, so
+    its value matches the interface formula (f_R - f_L)/(u_R - u_L).
+
+    Outputs (10-tuple): (u_L, u_R, f_L, f_R, a_L, a_R, du_LR, a_ij, sign_a, upwind).
     """
-    f_i = u_hat_i * (1.0 - u_hat_i)
-    f_j = u_hat_j * (1.0 - u_hat_j)
-    a_i = 1.0 - 2.0 * u_hat_i
-    a_j = 1.0 - 2.0 * u_hat_j
+    u_L = torch.where(rel_x > 0, u_hat_i, u_hat_j)
+    u_R = torch.where(rel_x > 0, u_hat_j, u_hat_i)
+    f_L = u_L * (1.0 - u_L)
+    f_R = u_R * (1.0 - u_R)
+    a_L = 1.0 - 2.0 * u_L
+    a_R = 1.0 - 2.0 * u_R
 
-    du    = u_hat_j - u_hat_i
-    u_avg = 0.5 * (u_hat_i + u_hat_j)
-
-    du_safe = torch.where(du.abs() < 1e-6, torch.ones_like(du), du)
+    du_LR = u_R - u_L
+    du_safe = torch.where(du_LR.abs() < 1e-6, torch.ones_like(du_LR), du_LR)
     a_ij = torch.where(
-        du.abs() < 1e-6,
-        a_i,
-        (f_j - f_i) / du_safe,
+        du_LR.abs() < 1e-6,
+        a_L,
+        (f_R - f_L) / du_safe,
     )
     sign_a = torch.sign(a_ij)
     upwind = (a_ij * rel_x < 0).float()
 
-    return du, u_avg, f_i, f_j, a_i, a_j, a_ij, sign_a, upwind
+    return u_L, u_R, f_L, f_R, a_L, a_R, du_LR, a_ij, sign_a, upwind
 
 
 def _compute_nonadj_pair_feats(
@@ -305,8 +322,12 @@ class _SpaceTimeLiftingLayer(nn.Module):
       ``t_i`` on pure-spatial edges (preserving the v3 semantic).
 
     Edge feature vector (unified, 14 static dims; t absorbed via
-    ``t_i, t_j``):
-        u0_i, u0_j, f0_i, f0_j, a0_i, a0_j, du0,
+    ``t_i, t_j``). For adjacent-spatial edges the per-side u/f/a slots
+    are oriented (L = side with rel_x<0, R = side with rel_x>0). For
+    non-adjacent edges L/R is undefined and the same slots fall back to
+    centre/neighbour ordering (so the cat shape is uniform across the
+    stencil):
+        u_L, u_R, f_L, f_R, a_L, a_R, du_LR,
         sign(rel_x), rel_t, t_i, t_j, a0_ij, sign(a0_ij), is_adj_sp
     """
 
@@ -406,7 +427,8 @@ class _SpaceTimeLiftingLayer(nn.Module):
             u_R = torch.where(rel_x > 0, u_j, u_i)
             a_L = 1.0 - 2.0 * u_L
             a_R = 1.0 - 2.0 * u_R
-            is_shock = (u_L > u_R).float()
+            # Concave LWR (f''(u) = -2 < 0): admissible Lax shock is u_L < u_R.
+            is_shock = (u_L < u_R).float()
             entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
             g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
@@ -508,14 +530,31 @@ class _SpaceTimeLiftingLayer(nn.Module):
             du0 = u0_j - u0_bc
             is_adj_sp = (dm == 0) and (abs(di) == 1)
             if is_adj_sp:
-                du_safe = torch.where(du0.abs() < 1e-6, torch.ones_like(du0), du0)
+                # Oriented L/R features for the interface i+/-1/2. Outside
+                # the adjacent branch the L/R labels are meaningless, so for
+                # non-adjacent edges we keep the centre/neighbour ordering
+                # (u_L_eff == u0_bc, u_R_eff == u0_j etc.) so the cat slots
+                # still carry sensible per-node values without claiming an
+                # orientation that doesn't exist.
+                u_L_eff = torch.where(rel_x > 0, u0_bc, u0_j)
+                u_R_eff = torch.where(rel_x > 0, u0_j, u0_bc)
+                f_L_eff = u_L_eff * (1.0 - u_L_eff)
+                f_R_eff = u_R_eff * (1.0 - u_R_eff)
+                a_L_eff = 1.0 - 2.0 * u_L_eff
+                a_R_eff = 1.0 - 2.0 * u_R_eff
+                du_eff = u_R_eff - u_L_eff
+                du_safe = torch.where(du_eff.abs() < 1e-6, torch.ones_like(du_eff), du_eff)
                 a0_ij = torch.where(
-                    du0.abs() < 1e-6,
-                    a0_i.expand_as(du0),
-                    (f0_j - f0_i) / du_safe,
+                    du_eff.abs() < 1e-6,
+                    a_L_eff,
+                    (f_R_eff - f_L_eff) / du_safe,
                 )
                 sign_a0 = torch.sign(a0_ij)
             else:
+                u_L_eff, u_R_eff = u0_bc, u0_j
+                f_L_eff, f_R_eff = f0_i, f0_j
+                a_L_eff, a_R_eff = a0_i, a0_j
+                du_eff = du0
                 a0_ij = torch.zeros_like(du0)
                 sign_a0 = torch.zeros_like(du0)
             is_adj_flag = u0_bc.new_full(u0_bc.shape, 1.0 if is_adj_sp else 0.0)
@@ -527,7 +566,7 @@ class _SpaceTimeLiftingLayer(nn.Module):
             rel_t_feat = rel_t / dt_grid if self.normalize_edge_offsets else rel_t
             if self.pure_pairwise_edges:
                 edge_in = torch.cat([
-                    du0,
+                    du_eff,
                     sign_rel_x, rel_t_feat,
                     t_bc, t_j,
                     a0_ij, sign_a0,
@@ -535,10 +574,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 ], dim=-1)                                                      # [..., 8]
             elif self.include_flux:
                 edge_in = torch.cat([
-                    u0_bc, u0_j,
-                    f0_i, f0_j,
-                    a0_i, a0_j,
-                    du0,
+                    u_L_eff, u_R_eff,
+                    f_L_eff, f_R_eff,
+                    a_L_eff, a_R_eff,
+                    du_eff,
                     sign_rel_x, rel_t_feat,
                     t_bc, t_j,
                     a0_ij, sign_a0,
@@ -546,9 +585,9 @@ class _SpaceTimeLiftingLayer(nn.Module):
                 ], dim=-1)                                                      # [..., 14]
             else:
                 edge_in = torch.cat([
-                    u0_bc, u0_j,
-                    a0_i, a0_j,
-                    du0,
+                    u_L_eff, u_R_eff,
+                    a_L_eff, a_R_eff,
+                    du_eff,
                     sign_rel_x, rel_t_feat,
                     t_bc, t_j,
                     a0_ij, sign_a0,
@@ -613,9 +652,11 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
 
     Aggregation is gate-normalised: w_k = gate_k / sum(gate_j), summing to 1.
 
-    Adjacent edge features (2d + 10):
-        h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, a_ij, sign(a_ij), upwind, sign(rel_x)
-    Non-adjacent edge features (2d + 11):
+    Adjacent edge features (2d + 10) — oriented at the interface
+    (L = side with rel_x<0, R = side with rel_x>0):
+        h_i, h_j, u_L, u_R, f_L, f_R, a_L, a_R, a_ij, sign(a_ij), upwind, sign(rel_x)
+    Non-adjacent edge features (2d + 11) — L/R undefined here, so we
+    keep centre/neighbour (i/j) ordering:
         h_i, h_j, u_i, u_j, f_i, f_j, a_i, a_j, rel_x, rel_t, cfl, sign(rel_x), xi (= x_i / max(t_i, eps))
     """
 
@@ -760,7 +801,8 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
             u_R = torch.where(rel_x > 0, u_j, u_i)
             a_L = 1.0 - 2.0 * u_L
             a_R = 1.0 - 2.0 * u_R
-            is_shock = (u_L > u_R).float()
+            # Concave LWR (f''(u) = -2 < 0): admissible Lax shock is u_L < u_R.
+            is_shock = (u_L < u_R).float()
             entropy_ok = ((a_L >= a_ij - 0.01) & (a_ij >= a_R - 0.01)).float()
             g_entropy = 1.0 - is_shock * (1.0 - entropy_ok) * (1.0 - gamma_ent)
 
@@ -955,7 +997,7 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 rel_t_feat = rel_t
 
             if is_adj_sp:
-                _, _, _, _, _, _, a_ij, sign_a, upwind = \
+                u_L, u_R, f_L, f_R, a_L, a_R, _du_LR, a_ij, sign_a, upwind = \
                     _compute_adj_spatial_edge_feats(u_hat_i, u_hat_j, rel_x)
                 if self.pure_pairwise_edges:
                     msg_in = torch.cat([
@@ -966,16 +1008,16 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
                 elif self.include_flux:
                     msg_in = torch.cat([
                         h, h_j,
-                        u_hat_i.expand_as(rel_x), u_hat_j,
-                        f_hat_i, f_j, a_hat_i.expand_as(rel_x), a_j,
+                        u_L, u_R,
+                        f_L, f_R, a_L, a_R,
                         a_ij, sign_a, upwind,
                         torch.sign(rel_x),
                     ], dim=-1)                                                  # 2d + 10
                 else:
                     msg_in = torch.cat([
                         h, h_j,
-                        u_hat_i.expand_as(rel_x), u_hat_j,
-                        a_hat_i.expand_as(rel_x), a_j,
+                        u_L, u_R,
+                        a_L, a_R,
                         a_ij, sign_a, upwind,
                         torch.sign(rel_x),
                     ], dim=-1)                                                  # 2d + 8
