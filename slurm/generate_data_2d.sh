@@ -12,4 +12,4 @@ mkdir -p /home/dzdrale/scratch/logs /home/dzdrale/scratch/lwr_2d
 
 CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde_2d_cleps.yaml}
 
-/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_data_2d.py --config $CONFIG
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_data_linear_2d_v0.py --config $CONFIG
