@@ -21,6 +21,7 @@ Public API:
 """
 from __future__ import annotations
 
+import multiprocessing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Tuple
@@ -28,11 +29,11 @@ from typing import Callable, Tuple
 import numpy as np
 
 from hyperbolic_pde.data.fvm import (
-    _apply_ghost_bc,
-    _weno5_reconstruct_left,
     flux,
     flux_prime,
 )
+
+_WENO_EPS = 1e-6
 
 
 # --------------------------------------------------------------------------- #
@@ -102,21 +103,49 @@ def upwind_flux_y(u: np.ndarray, b: float) -> Tuple[np.ndarray, np.ndarray]:
 
 
 # --------------------------------------------------------------------------- #
-# 1D WENO5 RHS and RK3 step (reused for each axis sweep)
+# Vectorised WENO5 RHS and RK3 step (all rows/columns processed at once)
 # --------------------------------------------------------------------------- #
-def _weno5_rhs_1d(
+def _apply_ghost_bc_nd(u: np.ndarray, boundary: str, ng: int) -> np.ndarray:
+    """Pad the last axis of ``u`` with ``ng`` ghost cells."""
+    pad = [(0, 0)] * (u.ndim - 1) + [(ng, ng)]
+    if boundary == "periodic":
+        return np.pad(u, pad, mode="wrap")
+    elif boundary in ("ghost", "fixed"):
+        return np.pad(u, pad, mode="edge")
+    else:
+        raise ValueError(f"Unknown boundary: {boundary!r}")
+
+
+def _weno5_reconstruct_left_nd(v: np.ndarray) -> np.ndarray:
+    """WENO5 left reconstruction along the last axis. ``v: [..., n+4] -> [..., n+1]``."""
+    vm2 = v[..., 0:-4]
+    vm1 = v[..., 1:-3]
+    v0  = v[..., 2:-2]
+    vp1 = v[..., 3:-1]
+    vp2 = v[..., 4:]
+
+    p0 = ( 1.0 / 3.0) * vm2 - (7.0 / 6.0) * vm1 + (11.0 / 6.0) * v0
+    p1 = (-1.0 / 6.0) * vm1 + (5.0 / 6.0) * v0  + ( 1.0 / 3.0) * vp1
+    p2 = ( 1.0 / 3.0) * v0  + (5.0 / 6.0) * vp1 - ( 1.0 / 6.0) * vp2
+
+    b0 = (13.0 / 12.0) * (vm2 - 2.0 * vm1 + v0 ) ** 2 + 0.25 * (vm2 - 4.0 * vm1 + 3.0 * v0 ) ** 2
+    b1 = (13.0 / 12.0) * (vm1 - 2.0 * v0  + vp1) ** 2 + 0.25 * (vm1 - vp1) ** 2
+    b2 = (13.0 / 12.0) * (v0  - 2.0 * vp1 + vp2) ** 2 + 0.25 * (3.0 * v0 - 4.0 * vp1 + vp2) ** 2
+
+    a0 = 0.1 / (_WENO_EPS + b0) ** 2
+    a1 = 0.6 / (_WENO_EPS + b1) ** 2
+    a2 = 0.3 / (_WENO_EPS + b2) ** 2
+    asum = a0 + a1 + a2
+    return (a0 * p0 + a1 * p1 + a2 * p2) / asum
+
+
+def _weno5_rhs_nd(
     u: np.ndarray, dx: float, boundary: str,
     flux_pair: FluxPair = LWR_FLUX,
 ) -> np.ndarray:
-    """L(u) = -(F_{i+1/2} - F_{i-1/2})/dx using WENO5 + global LF splitting.
-
-    Mirrors ``fvm._weno5_rhs`` but kept local so the 2D module is self-contained
-    against future signature drift. The flux pair is taken as an argument so
-    each axis sweep can use a different flux (anisotropic 2D).
-    """
-    nx = u.size
+    """WENO5 + global LF spatial operator along the last axis. ``u: [..., nx]``."""
     ng = 3
-    u_ext = _apply_ghost_bc(u, boundary, ng)
+    u_ext = _apply_ghost_bc_nd(u, boundary, ng)
     alpha = float(np.max(np.abs(flux_pair.fprime(u_ext))))
     alpha = max(alpha, 1e-8)
 
@@ -124,52 +153,43 @@ def _weno5_rhs_1d(
     fp = 0.5 * (f_ext + alpha * u_ext)
     fm = 0.5 * (f_ext - alpha * u_ext)
 
-    fp_s = fp[0:-1]
-    fm_s = fm[1:][::-1]
+    fp_s = fp[..., 0:-1]
+    fm_s = fm[..., 1:][..., ::-1]
 
-    fhat_p = _weno5_reconstruct_left(fp_s)
-    fhat_m = _weno5_reconstruct_left(fm_s)[::-1]
-
+    fhat_p = _weno5_reconstruct_left_nd(fp_s)
+    fhat_m = _weno5_reconstruct_left_nd(fm_s)[..., ::-1]
     fhat = fhat_p + fhat_m
-    return -(fhat[1:] - fhat[:-1]) / dx
+    return -(fhat[..., 1:] - fhat[..., :-1]) / dx
 
 
-def _rk3_step_1d(
+def _rk3_step_nd(
     u: np.ndarray, dx: float, dt: float, boundary: str,
     flux_pair: FluxPair = LWR_FLUX,
 ) -> np.ndarray:
-    """One SSP-RK3 step of the WENO5 1D operator."""
+    """SSP-RK3 step of the WENO5 operator along the last axis."""
     def L(v: np.ndarray) -> np.ndarray:
-        return _weno5_rhs_1d(v, dx, boundary, flux_pair)
+        return _weno5_rhs_nd(v, dx, boundary, flux_pair)
 
     u1 = u + dt * L(u)
     u2 = 0.75 * u + 0.25 * (u1 + dt * L(u1))
-    u_new = (1.0 / 3.0) * u + (2.0 / 3.0) * (u2 + dt * L(u2))
-    return u_new
+    return (1.0 / 3.0) * u + (2.0 / 3.0) * (u2 + dt * L(u2))
 
 
 def _sweep_x(
     u: np.ndarray, dx: float, dt: float, boundary: str,
     flux_pair: FluxPair = LWR_FLUX,
 ) -> np.ndarray:
-    """Apply 1D RK3 sweep along x for each y-row. ``u`` has shape [ny, nx]."""
-    ny, _ = u.shape
-    out = np.empty_like(u)
-    for j in range(ny):
-        out[j] = _rk3_step_1d(u[j], dx, dt, boundary, flux_pair)
-    return out
+    """RK3 sweep along x for all y-rows simultaneously. ``u: [ny, nx]``."""
+    return _rk3_step_nd(u, dx, dt, boundary, flux_pair)
 
 
 def _sweep_y(
     u: np.ndarray, dy: float, dt: float, boundary: str,
     flux_pair: FluxPair = LWR_FLUX,
 ) -> np.ndarray:
-    """Apply 1D RK3 sweep along y for each x-column."""
-    _, nx = u.shape
-    out = np.empty_like(u)
-    for i in range(nx):
-        out[:, i] = _rk3_step_1d(u[:, i], dy, dt, boundary, flux_pair)
-    return out
+    """RK3 sweep along y for all x-columns simultaneously. ``u: [ny, nx]``."""
+    uT = np.ascontiguousarray(u.T)   # [nx, ny] — contiguous for cache efficiency
+    return _rk3_step_nd(uT, dy, dt, boundary, flux_pair).T
 
 
 def _strang_step(
@@ -497,6 +517,26 @@ def analytical_shift_2d_rects(
     return out
 
 
+def _simulate_sample_worker(args: tuple) -> tuple[np.ndarray, np.ndarray]:
+    """Per-sample worker for multiprocessing. Reconstructs FluxPairs to stay picklable."""
+    spec, x_fine, y_fine, t, flux_kind, a, b, cfl, boundary, U = args
+    if flux_kind == "linear":
+        fx = linear_flux(float(a))
+        fy = linear_flux(float(b))
+    else:
+        fx = LWR_FLUX
+        fy = LWR_FLUX
+    u0_fine = rasterise_sample_spec(spec, x_fine, y_fine)
+    u_fine = simulate_weno5_2d(
+        u0_fine, x_fine, y_fine, t,
+        flux_x=fx, flux_y=fy,
+        cfl=cfl, boundary=boundary,
+    )
+    u = cell_average_to_grid(u_fine, U).astype(np.float32)
+    u0 = cell_average_to_grid(u0_fine, U).astype(np.float32)
+    return u, u0
+
+
 def generate_dataset_upsampled_2d(
     num_samples: int,
     nx: int,
@@ -518,6 +558,7 @@ def generate_dataset_upsampled_2d(
     u_max: float = 0.9,
     boundary: str = "ghost",
     seed: int = 42,
+    num_workers: int = 1,
     verbose: bool = True,
 ) -> Dataset2DBundle:
     """Generate a 2D dataset by up-sampled WENO5 + cell-averaging.
@@ -531,32 +572,16 @@ def generate_dataset_upsampled_2d(
       4. Cell-average each output snapshot down to the target grid.
       5. Cell-average the fine IC down to the target u0.
 
-    The returned bundle has target-grid arrays. Down-sampled snapshots are
-    the strict cell averages of the fine-grid reference, which is the
-    FV-correct ground truth for a model that predicts cell-averaged states.
-
-    Notes
-    -----
-    Output time grid is uniform: ``t_out = linspace(0, t_max, nt)``.
-    Internally the WENO5 solver adaptively sub-steps to land on each
-    ``t_out[k]``; we share that ``t_out`` between the fine simulation and
-    the target dataset (no temporal averaging is performed).
+    Set ``num_workers > 1`` to parallelise across samples (``multiprocessing``).
     """
-    if flux_kind == "linear":
-        if a is None or b is None:
-            raise ValueError("flux_kind='linear' requires both a and b")
-        flux_x = linear_flux(float(a))
-        flux_y = linear_flux(float(b))
-    elif flux_kind == "lwr":
-        flux_x = LWR_FLUX
-        flux_y = LWR_FLUX
-    else:
+    if flux_kind not in ("linear", "lwr"):
         raise ValueError(f"flux_kind must be 'linear' or 'lwr', got {flux_kind!r}")
-
+    if flux_kind == "linear" and (a is None or b is None):
+        raise ValueError("flux_kind='linear' requires both a and b")
     if upsample_factor < 1:
         raise ValueError("upsample_factor must be >= 1")
-    U = int(upsample_factor)
 
+    U = int(upsample_factor)
     rng = np.random.default_rng(seed)
 
     x_coarse = np.linspace(x_min, x_max, nx, dtype=np.float32)
@@ -566,37 +591,41 @@ def generate_dataset_upsampled_2d(
     x_fine = np.linspace(x_min, x_max, U * nx, dtype=np.float32)
     y_fine = np.linspace(y_min, y_max, U * ny, dtype=np.float32)
 
-    if isinstance(num_rects, int):
-        rect_range = (num_rects, num_rects)
-    else:
-        rect_range = (int(num_rects[0]), int(num_rects[1]))
+    rect_range = (num_rects, num_rects) if isinstance(num_rects, int) else (int(num_rects[0]), int(num_rects[1]))
 
-    u_all = np.zeros((num_samples, nt, ny, nx), dtype=np.float32)
-    u0_all = np.zeros((num_samples, ny, nx), dtype=np.float32)
+    # Pre-generate all ICs from a single RNG so results are deterministic regardless of num_workers.
+    specs = []
+    for _ in range(num_samples):
+        r = int(rng.integers(rect_range[0], rect_range[1] + 1))
+        specs.append(_sample_rectangle_ic_spec(x_min, x_max, y_min, y_max, r, u_min, u_max, rng))
 
-    log_every = max(1, num_samples // 20)
     if verbose:
         print(
             f"[gen_2d_upsampled] flux={flux_kind} target={nx}x{ny}x{nt} "
-            f"U={U} -> fine={U*nx}x{U*ny} (per-sample cost ~{U**3}x)"
+            f"U={U} -> fine={U*nx}x{U*ny}  workers={num_workers}"
         )
 
-    for i in range(num_samples):
-        r = int(rng.integers(rect_range[0], rect_range[1] + 1))
-        spec = _sample_rectangle_ic_spec(
-            x_min, x_max, y_min, y_max, r, u_min, u_max, rng,
-        )
-        u0_fine = rasterise_sample_spec(spec, x_fine, y_fine)
-        u_fine = simulate_weno5_2d(
-            u0_fine, x_fine, y_fine, t,
-            flux_x=flux_x, flux_y=flux_y,
-            cfl=cfl, boundary=boundary,
-        )
-        u_all[i] = cell_average_to_grid(u_fine, U).astype(np.float32)
-        u0_all[i] = cell_average_to_grid(u0_fine, U).astype(np.float32)
+    task_args = [
+        (spec, x_fine, y_fine, t, flux_kind, a, b, cfl, boundary, U)
+        for spec in specs
+    ]
 
-        if verbose and ((i + 1) % log_every == 0 or (i + 1) == num_samples):
-            print(f"  {i + 1}/{num_samples} samples done", flush=True)
+    u_all = np.zeros((num_samples, nt, ny, nx), dtype=np.float32)
+    u0_all = np.zeros((num_samples, ny, nx), dtype=np.float32)
+    log_every = max(1, num_samples // 20)
+
+    if num_workers > 1:
+        with multiprocessing.Pool(num_workers) as pool:
+            for i, (u, u0) in enumerate(pool.imap(_simulate_sample_worker, task_args)):
+                u_all[i] = u
+                u0_all[i] = u0
+                if verbose and ((i + 1) % log_every == 0 or (i + 1) == num_samples):
+                    print(f"  {i + 1}/{num_samples} samples done", flush=True)
+    else:
+        for i, args in enumerate(task_args):
+            u_all[i], u0_all[i] = _simulate_sample_worker(args)
+            if verbose and ((i + 1) % log_every == 0 or (i + 1) == num_samples):
+                print(f"  {i + 1}/{num_samples} samples done", flush=True)
 
     return Dataset2DBundle(x=x_coarse, y=y_coarse, t=t, u=u_all, u0=u0_all)
 

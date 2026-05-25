@@ -38,6 +38,10 @@ def main() -> None:
         "--config", type=str,
         default=str(ROOT / "configs" / "hyperbolic_pde_linear_2d_v0.yaml"),
     )
+    parser.add_argument(
+        "--num-workers", type=int, default=1,
+        help="Number of parallel worker processes (default: 1).",
+    )
     args = parser.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
@@ -77,6 +81,7 @@ def main() -> None:
         u_max=float(data_cfg.get("u_max", 0.9)),
         boundary=str(data_cfg.get("boundary", "ghost")),
         seed=int(cfg.get("seed", 42)),
+        num_workers=args.num_workers,
         verbose=True,
     )
     elapsed = time.time() - t0
