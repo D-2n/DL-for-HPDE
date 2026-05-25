@@ -19,7 +19,7 @@ mkdir -p /home/dzdrale/scratch/logs
 #   sbatch slurm/shock_comparison.sh --no-tv-gate
 # Detector defaults (set inside the script):
 #   jump=0.06, band=2, TV-gate on (multiplier=1.5).
-RUN_DIR=/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260518_000640_128
+RUN_DIR=/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260520_162334
 DATA_PATH=/home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_grouped.npz
 N_PER_GROUP=5
 

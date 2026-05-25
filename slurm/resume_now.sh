@@ -38,5 +38,5 @@ echo "--- --help of the absolute-path script: ---"
 echo "=== END DIAGNOSTIC ==="
 
 /home/dzdrale/hypno_env/bin/python /home/dzdrale/DL-for-HPDE/hyperbolic_pde/scripts/train_hypno_st3.py \
-      --config hyperbolic_pde/configs/hyperbolic_pde_cleps_dilated.yaml \
-      --resume_run hyperbolic_pde/runs/hypno_st3/run_20260515_231300
+      --config hyperbolic_pde/configs/hyperbolic_pde_cleps_decoder_shared_long.yaml \
+      --resume_run hyperbolic_pde/runs/hypno_st3/run_20260520_162334
