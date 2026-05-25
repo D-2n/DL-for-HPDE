@@ -4,7 +4,9 @@
       "Bash(git stash *)",
       "Bash(file \"/c/Users/dimit/Desktop/compare_num_segments_2_wide\"*)",
       "Bash(file \"/c/Users/dimit/Desktop/compare_num_segments_2_train\"*)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(xargs grep -l \"2d\\\\|hypno_st3_2d\")",
+      "Bash(python hyperbolic_pde/scripts/smoke_test_linear_2d_v0.py)"
     ]
   }
 }

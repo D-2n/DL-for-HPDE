@@ -602,7 +602,8 @@ def generate_dataset_upsampled_2d(
     if verbose:
         print(
             f"[gen_2d_upsampled] flux={flux_kind} target={nx}x{ny}x{nt} "
-            f"U={U} -> fine={U*nx}x{U*ny}  workers={num_workers}"
+            f"U={U} -> fine={U*nx}x{U*ny}  workers={num_workers}",
+            flush=True,
         )
 
     task_args = [
