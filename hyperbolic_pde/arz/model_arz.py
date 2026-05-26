@@ -1,18 +1,24 @@
 """HypNO-ARZ: space-time GNN operator for 1D ARZ with relaxation.
 
 Mirrors hyperbolic_pde.models.hypno_st3 (HypNO-ST3 backbone) but swaps the
-boundary computations for the ARZ system (plan §5):
+boundary computations for the ARZ system (plan §5).
 
-  * Decoder outputs (rho, w) -- 2 channels.
-  * Lifting node input: 9 channels [rho0, w0, v0, y0, V(rho0), v0-V(rho0), x, t, xi].
-  * Adjacent edge features: 12-dim
-        [sign(rel_x), lam1_ij, lam2_ij, lam1_ij*r, lam2_ij*r,
-         chi_up1_ij, chi_up2_ij, drho_ij, dv_ij, dw_ij, theta_ij, chi_1bad_ij]
-  * Non-adjacent edge features: 4-dim
-        [rel_x, rel_t, sign(rel_x), max(|lam1_j|,|lam2_j|)]
-  * Soft-OR upwind gate over the two characteristic fields with separate temps.
-  * Entropy gate masked to 1-waves (theta -> 0).
-  * CFL gate uses spectral radius max(|lam1|, |lam2|).
+Design notes (post-tuning, 2026-05-26):
+
+* **Pure-pairwise edges are the only edge design.** Adjacent edges carry
+  *interface* quantities only (lambda1_ij, lambda2_ij, drho, dv, dw, theta,
+  upwind/lax indicators); non-adjacent edges carry only geometric features
+  (rel_x, rel_t, sign(rel_x)) plus spectral radius. The two streams now have
+  separate MLPs in both the lifting and the MP layers (no zero-padded
+  unified-MLP path). i/j primitive levels are NOT replicated into edges --
+  they live in h via the lifting's node MLP.
+* **`normalize_edge_offsets` defaults to True.** Raw rel_x / rel_t are
+  divided by dx_grid / dt_grid before going into the edge MLPs, so edge
+  features are resolution-invariant integer-ish offsets. The physics gate
+  and CFL still use raw rel_x / rel_t (those are physical comparisons).
+
+Decoder outputs (rho, w) -- 2 channels.
+Lifting node input (9 channels): rho0, w0, v0, y0, V(rho0), v0-V(rho0), x, t, xi.
 """
 from __future__ import annotations
 
@@ -43,20 +49,15 @@ def _w_eq(rho): return 1.0 + rho * rho
 # Lifting layer
 # --------------------------------------------------------------------------- #
 class _ArzLifting(nn.Module):
-    """Space-time lifting for ARZ.
+    """Space-time lifting for ARZ (pure-pairwise edges).
 
     Node input (9 channels):
         rho0, w0, v0, y0, V(rho0), v0-V(rho0), x, t, xi=x/max(t,eps)
 
-    Edge input (adjacent + non-adjacent unified at the MLP boundary, but the
-    feature vector differs).  Following the v3 convention, we use a single
-    unified edge MLP in the lifting; non-adjacent slots that don't apply are
-    filled with zeros to keep a single input dim.  The MP layer uses two
-    distinct MLPs (as in v3) because the per-field gates differ.
-
-    Lifting edge feature vector (unified, 12 dims):
-        [sign(rel_x), rel_t, drho, dv, dw, theta_ij,
-         lam1_ij, lam2_ij, chi_up1, chi_up2, chi_1bad, is_adj]
+    Adjacent edges (8 dims):
+        [sign(rel_x), rel_t_feat, drho, dv, dw, theta, lam1_ij, lam2_ij]
+    Non-adjacent edges (3 dims):
+        [rel_x_feat, rel_t_feat, sign(rel_x)]
     """
 
     def __init__(
@@ -65,44 +66,39 @@ class _ArzLifting(nn.Module):
         stencil_k_x: int, stencil_k_t: int,
         activation: str = "gelu",
         causal_temporal: bool = True,
+        normalize_edge_offsets: bool = True,
+        d_hidden_nonadj: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
         self.k_t = stencil_k_t
         self.causal = causal_temporal
+        self.normalize_edge_offsets = normalize_edge_offsets
+        dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
-        # 9-channel node MLP.
         self.node_mlp = _make_mlp(9, d_hidden, d_latent, 2, activation)
+        self.adj_edge_mlp    = _make_mlp(8, d_hidden, d_latent, 2, activation)
+        self.nonadj_edge_mlp = _make_mlp(3, dh_na,    d_latent, 2, activation)
 
-        # Unified 12-dim edge MLP (zeros fill non-applicable slots on non-adj).
-        self.edge_mlp = _make_mlp(12, d_hidden, d_latent, 2, activation)
-
-        # Gates (mirrors lifting in v3 -- single combined gate is sufficient
-        # here; sharper field-wise gates live in the MP layer).
+        # Per-field gate temperatures.
         self.phys_temp1 = nn.Parameter(torch.tensor(0.0))   # softplus -> tau1
         self.phys_temp2 = nn.Parameter(torch.tensor(0.0))   # softplus -> tau2
-        self.phys_gamma = nn.Parameter(torch.tensor(-2.0))  # sigmoid -> gamma
+        self.phys_gamma = nn.Parameter(torch.tensor(-2.0))  # sigmoid  -> gamma
 
         self.combine = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
 
-    def _gate(
-        self, di: int, dm: int,
+    def _gate_adj(
+        self,
         rel_x: torch.Tensor,
         lam1_ij: torch.Tensor, lam2_ij: torch.Tensor,
         chi_1bad: torch.Tensor, theta: torch.Tensor,
     ) -> torch.Tensor:
-        """Soft-OR upwind x masked-entropy gate (adjacent edges only)."""
-        is_adj_sp = (dm == 0) and (abs(di) == 1)
-        if not is_adj_sp:
-            return torch.ones_like(rel_x)
         r = torch.sign(rel_x)
         tau1 = F.softplus(self.phys_temp1).clamp(min=1e-6)
         tau2 = F.softplus(self.phys_temp2).clamp(min=1e-6)
         g_up1 = torch.sigmoid(lam1_ij * r / tau1)
         g_up2 = torch.sigmoid(lam2_ij * r / tau2)
-        # Soft-OR: 1 - (1-g1)(1-g2).
         g_up = 1.0 - (1.0 - g_up1) * (1.0 - g_up2)
-        # Entropy mask to 1-waves: contacts (theta~1) pass through untouched.
         gamma = torch.sigmoid(self.phys_gamma)
         g_ent = 1.0 - (1.0 - gamma) * chi_1bad * (1.0 - theta)
         return g_up * g_ent
@@ -148,8 +144,11 @@ class _ArzLifting(nn.Module):
 
         offsets = _enumerate_ball_offsets(self.k_x, self.k_t, self.causal)
 
-        edge_inputs: list[torch.Tensor] = []
-        gates: list[torch.Tensor] = []
+        adj_feats:    list[torch.Tensor] = []
+        nonadj_feats: list[torch.Tensor] = []
+        adj_gates:    list[torch.Tensor] = []
+        nonadj_gates: list[torch.Tensor] = []
+
         for di, dm in offsets:
             rho_j = rho0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             w_j   = w0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
@@ -158,66 +157,60 @@ class _ArzLifting(nn.Module):
             rel_x = x_j - x_bc
             rel_t = t_j - t_bc
 
-            v_j = w_j - _p(rho_j)
-            drho = rho_j - rho0_bc
-            dv = v_j - v0_bc
-            dw = w_j - w0_bc
-
-            # theta: wave-type indicator, clamp epsilon avoids 0/0 in smooth regions.
-            theta = dw.abs() / (dw.abs() + dv.abs() + 1e-8)
-
-            # Interface eigenvalues via arithmetic average of (rho, v).
-            rho_ij = 0.5 * (rho0_bc + rho_j)
-            v_ij = 0.5 * (v0_bc + v_j)
-            lam1_ij = v_ij - rho_ij * _dp(rho_ij)
-            lam2_ij = v_ij
+            if self.normalize_edge_offsets:
+                rel_x_feat = rel_x / dx_grid
+                rel_t_feat = rel_t / dt_grid
+            else:
+                rel_x_feat = rel_x
+                rel_t_feat = rel_t
 
             r = torch.sign(rel_x)
-
-            # Per-field upwind indicators (chi_up = 1 if lambda * (x_j-x_i) < 0).
-            chi_up1 = (lam1_ij * r < 0).float()
-            chi_up2 = (lam2_ij * r < 0).float()
-
-            # Lax bad indicator on the GNL field: lambda1(U_L) < lambda1(U_R).
-            # L/R determined by rel_x.
-            lam1_i = v0_bc - rho0_bc * _dp(rho0_bc)
-            lam1_jn = v_j - rho_j * _dp(rho_j)
-            lam1_L = torch.where(rel_x > 0, lam1_i, lam1_jn)
-            lam1_R = torch.where(rel_x > 0, lam1_jn, lam1_i)
-            chi_1bad = (lam1_L < lam1_R).float()
-
             is_adj_sp = (dm == 0) and (abs(di) == 1)
-            is_adj_flag = rho0_bc.new_full(rho0_bc.shape, 1.0 if is_adj_sp else 0.0)
 
             if is_adj_sp:
+                v_j = w_j - _p(rho_j)
+                drho = rho_j - rho0_bc
+                dv = v_j - v0_bc
+                dw = w_j - w0_bc
+                theta = dw.abs() / (dw.abs() + dv.abs() + 1e-8)
+                rho_ij = 0.5 * (rho0_bc + rho_j)
+                v_ij = 0.5 * (v0_bc + v_j)
+                lam1_ij = v_ij - rho_ij * _dp(rho_ij)
+                lam2_ij = v_ij
+                lam1_i = v0_bc - rho0_bc * _dp(rho0_bc)
+                lam1_jn = v_j - rho_j * _dp(rho_j)
+                lam1_L = torch.where(rel_x > 0, lam1_i, lam1_jn)
+                lam1_R = torch.where(rel_x > 0, lam1_jn, lam1_i)
+                chi_1bad = (lam1_L < lam1_R).float()
+
                 edge_in = torch.cat([
-                    r, rel_t,
+                    r, rel_t_feat,
                     drho, dv, dw, theta,
                     lam1_ij, lam2_ij,
-                    chi_up1, chi_up2, chi_1bad,
-                    is_adj_flag,
-                ], dim=-1)
+                ], dim=-1)  # 8
+                gate = self._gate_adj(rel_x, lam1_ij, lam2_ij, chi_1bad, theta)
+                adj_feats.append(edge_in)
+                adj_gates.append(gate)
             else:
-                # Non-adjacent: zero out interface quantities the MLP can't use.
-                z = torch.zeros_like(rel_x)
                 edge_in = torch.cat([
-                    r, rel_t,
-                    drho, dv, dw, z,            # theta zeroed (no interface)
-                    z, z,                       # lam1_ij, lam2_ij zeroed
-                    z, z, z,                    # chi_up1, chi_up2, chi_1bad zeroed
-                    is_adj_flag,
-                ], dim=-1)
+                    rel_x_feat, rel_t_feat, r,
+                ], dim=-1)  # 3
+                gate = torch.ones_like(rel_x)
+                nonadj_feats.append(edge_in)
+                nonadj_gates.append(gate)
 
-            gate = self._gate(di, dm, rel_x, lam1_ij, lam2_ij, chi_1bad, theta)
-            gates.append(gate)
-            edge_inputs.append(edge_in)
+        all_gates = adj_gates + nonadj_gates
+        gate_sum = torch.stack(all_gates, dim=-2).sum(dim=-2) + 1e-3
 
-        n_off = len(edge_inputs)
-        edge_in_stk = torch.stack(edge_inputs, dim=3)  # [B, nt, nx, n_off, 12]
-        msgs = self.edge_mlp(edge_in_stk.reshape(-1, 12)).reshape(B, nt, nx, n_off, -1)
-        gates_t = torch.stack(gates, dim=3)            # [B, nt, nx, n_off, 1]
-        gate_sum = gates_t.sum(dim=3) + 1e-3
-        agg = (gates_t / gate_sum.unsqueeze(3) * msgs).sum(dim=3)
+        n_adj = len(adj_feats); n_nonadj = len(nonadj_feats)
+        adj_in = torch.stack(adj_feats, dim=3)
+        nonadj_in = torch.stack(nonadj_feats, dim=3)
+        d_out = h_node.shape[-1]
+        adj_out = self.adj_edge_mlp(adj_in.reshape(-1, adj_in.shape[-1])).reshape(B, nt, nx, n_adj, d_out)
+        nonadj_out = self.nonadj_edge_mlp(nonadj_in.reshape(-1, nonadj_in.shape[-1])).reshape(B, nt, nx, n_nonadj, d_out)
+        all_msgs = torch.cat([adj_out, nonadj_out], dim=3)
+        all_gates_t = torch.stack(all_gates, dim=3)
+        agg = (all_gates_t / gate_sum.unsqueeze(3) * all_msgs).sum(dim=3)
 
         return self.combine(torch.cat([h_node, agg], dim=-1))
 
@@ -226,13 +219,13 @@ class _ArzLifting(nn.Module):
 # Physics-gated MP layer
 # --------------------------------------------------------------------------- #
 class _ArzMPLayer(nn.Module):
-    """Two-edge-MLP space-time MP for ARZ.
+    """Two-edge-MLP space-time MP for ARZ (pure-pairwise).
 
-    Adjacent edges (2d + 12 = adj_extra=12):
-        [..., r, lam1_ij, lam2_ij, lam1_ij*r, lam2_ij*r,
+    Adjacent edges (2d + 12):
+        [h_i, h_j, r, lam1_ij, lam2_ij, lam1_ij*r, lam2_ij*r,
          chi_up1, chi_up2, drho, dv, dw, theta, chi_1bad]
     Non-adjacent edges (2d + 4):
-        [..., rel_x, rel_t, r, max(|lam1_j|,|lam2_j|)]
+        [h_i, h_j, rel_x_feat, rel_t_feat, sign(rel_x), max(|lam1_j|,|lam2_j|)]
     """
 
     def __init__(
@@ -243,11 +236,13 @@ class _ArzMPLayer(nn.Module):
         causal_temporal: bool = True,
         d_hidden_nonadj: Optional[int] = None,
         shared_decoder: Optional[nn.Module] = None,
+        normalize_edge_offsets: bool = True,
     ) -> None:
         super().__init__()
         self.k_x = k_x
         self.k_t = k_t
         self.causal = causal_temporal
+        self.normalize_edge_offsets = normalize_edge_offsets
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
@@ -260,7 +255,6 @@ class _ArzMPLayer(nn.Module):
         self.phys_gamma = nn.Parameter(torch.tensor(-2.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
-        # Adjacent MLP: 2d + 12.  Non-adjacent: 2d + 4.
         self.adj_msg = _make_mlp(2 * d_latent + 12, d_hidden, d_latent, 3, activation)
         self.nonadj_msg = _make_mlp(2 * d_latent + 4, dh_na, d_latent, 3, activation)
 
@@ -288,10 +282,7 @@ class _ArzMPLayer(nn.Module):
         spec_radius_i: torch.Tensor,
         dx_grid: float,
     ) -> torch.Tensor:
-        """CFL gate using spectral radius max(|lam1|, |lam2|) (plan §5)."""
         if dm == 0:
-            # Same-time non-adj: pass-through (the LWR backbone masks these,
-            # but for ARZ we keep them on so non-local info can flow).
             return torch.ones_like(rel_t)
         cfl_scale = F.softplus(self.phys_cfl_scale).clamp(min=1e-6)
         cfl = spec_radius_i * rel_t.abs() / dx_grid
@@ -311,9 +302,6 @@ class _ArzMPLayer(nn.Module):
         dx_val = (x[0, 1] - x[0, 0]).abs().item()
         dt_val = (t[1] - t[0]).abs().item()
 
-        # Decode current (rho, w) from h via the shared decoder, then form
-        # interface / pointwise quantities.  Clamp rho to (RHO_MIN, 1] for
-        # gate stability.
         u_hat = self._shared_decoder(h)                       # [B, nt, nx, 2]
         rho_hat = u_hat[..., 0:1].clamp(1e-6, 1.0)
         w_hat = u_hat[..., 1:2]
@@ -355,6 +343,13 @@ class _ArzMPLayer(nn.Module):
             lam2_j = v_j
             spec_j = torch.maximum(lam1_j.abs(), lam2_j.abs())
 
+            if self.normalize_edge_offsets:
+                rel_x_feat = rel_x / dx_val
+                rel_t_feat = rel_t / dt_val
+            else:
+                rel_x_feat = rel_x
+                rel_t_feat = rel_t
+
             is_adj_sp = (dm == 0) and (abs(di) == 1)
             r = torch.sign(rel_x)
 
@@ -385,7 +380,7 @@ class _ArzMPLayer(nn.Module):
             else:
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x, rel_t, r, spec_j,
+                    rel_x_feat, rel_t_feat, r, spec_j,
                 ], dim=-1)  # 2d + 4
                 gate = self._gate_nonadj(dm, rel_t, spec_i, dx_val)
                 nonadj_feats.append(msg_in)
@@ -396,8 +391,8 @@ class _ArzMPLayer(nn.Module):
 
         n_adj = len(adj_feats)
         n_nonadj = len(nonadj_feats)
-        adj_in = torch.stack(adj_feats, dim=3)            # [B, nt, nx, n_adj, 2d+12]
-        nonadj_in = torch.stack(nonadj_feats, dim=3)      # [B, nt, nx, n_nonadj, 2d+4]
+        adj_in = torch.stack(adj_feats, dim=3)
+        nonadj_in = torch.stack(nonadj_feats, dim=3)
         adj_out = self.adj_msg(adj_in.reshape(-1, adj_in.shape[-1])).reshape(B, nt, nx, n_adj, d)
         nonadj_out = self.nonadj_msg(nonadj_in.reshape(-1, nonadj_in.shape[-1])).reshape(B, nt, nx, n_nonadj, d)
         all_msgs = torch.cat([adj_out, nonadj_out], dim=3)
@@ -433,18 +428,27 @@ class HypNO_ARZ(nn.Module):
         decoder_depth: int = 3,
         skip: bool = True,
         use_checkpoint: bool = False,
+        normalize_edge_offsets: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
         self.skip = skip
         self.use_checkpoint = use_checkpoint
+        self.normalize_edge_offsets = normalize_edge_offsets
         if _ignored:
             print(f"[HypNO_ARZ] IGNORED kwargs = {sorted(_ignored.keys())}")
+        print(
+            f"[HypNO_ARZ] kx={stencil_k_x} kt={stencil_k_t} "
+            f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
+            f"skip={skip} normalize_edge_offsets={normalize_edge_offsets}"
+        )
 
         self.lifting = _ArzLifting(
             d_latent, d_hidden,
             stencil_k_x=stencil_k_x, stencil_k_t=stencil_k_t,
             activation=activation, causal_temporal=causal_temporal,
+            normalize_edge_offsets=normalize_edge_offsets,
+            d_hidden_nonadj=d_hidden_nonadj,
         )
 
         # Decoder outputs (rho, w) -- 2 channels.
@@ -457,6 +461,7 @@ class HypNO_ARZ(nn.Module):
                 activation=activation, causal_temporal=causal_temporal,
                 d_hidden_nonadj=d_hidden_nonadj,
                 shared_decoder=self.decoder,
+                normalize_edge_offsets=normalize_edge_offsets,
             )
             for _ in range(n_layers)
         ])

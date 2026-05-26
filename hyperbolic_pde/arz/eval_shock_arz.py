@@ -156,6 +156,7 @@ def main():
         d_latent=model_args["d_latent"], d_hidden=model_args["d_hidden"],
         n_layers=model_args["depth"], decoder_depth=model_args["decoder_depth"],
         skip=model_args["skip"], use_checkpoint=False,
+        normalize_edge_offsets=model_args.get("normalize_edge_offsets", True),
     ).to(args.device)
     model.load_state_dict(ck["model"])
     model.eval()

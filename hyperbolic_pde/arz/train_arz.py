@@ -72,6 +72,10 @@ def main():
     ap.add_argument("--skip", action="store_true", default=True)
     ap.add_argument("--no-skip", dest="skip", action="store_false")
     ap.add_argument("--use-checkpoint", action="store_true")
+    ap.add_argument("--normalize-edge-offsets",    dest="normalize_edge_offsets",
+                    action="store_true", default=True)
+    ap.add_argument("--no-normalize-edge-offsets", dest="normalize_edge_offsets",
+                    action="store_false")
     # loss weights
     ap.add_argument("--lambda-state",   type=float, default=1.0)
     ap.add_argument("--lambda-cons",    type=float, default=0.1)
@@ -126,6 +130,7 @@ def main():
         d_latent=args.d_latent, d_hidden=args.d_hidden,
         n_layers=args.depth, decoder_depth=args.decoder_depth,
         skip=args.skip, use_checkpoint=args.use_checkpoint,
+        normalize_edge_offsets=args.normalize_edge_offsets,
     ).to(args.device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[train_arz] model params = {n_params/1e6:.3f} M")

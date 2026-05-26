@@ -34,13 +34,11 @@ def rho_mass_loss(
 ) -> torch.Tensor:
     """Penalise drift in spatially-integrated rho (mass) per timestep.
 
-    Inputs shaped [B, nt, nx]. We compare integral over x at each t -- and
-    require the predicted integral to track the ground-truth integral. (For
-    periodic BCs the GT integral is constant; for ghost BCs it can change,
-    so tracking GT is the correct framing rather than constancy from t=0.)
+    Compares mean-over-x of rho at each t (so the loss is O(1) and resolution-
+    invariant). The predicted mean must track the ground-truth mean.
     """
-    mass_pred = rho_pred.sum(dim=-1)        # [B, nt]
-    mass_gt   = rho_gt.sum(dim=-1)
+    mass_pred = rho_pred.mean(dim=-1)        # [B, nt]
+    mass_gt   = rho_gt.mean(dim=-1)
     return F.mse_loss(mass_pred, mass_gt)
 
 
@@ -50,19 +48,21 @@ def balance_residual_loss(
 ) -> torch.Tensor:
     """Discrete check of d/dt integral(y) ~ integral((y_eq - y)/tau).
 
-    Uses centred differences in time on integral(y) over x. Inputs [B, nt, nx].
+    Both sides are O(1/tau). To keep this term O(1) regardless of tau (so a
+    fixed lambda_balance is meaningful), we compare tau*dI/dt to tau*int(S):
+    that's a rescaling of the same identity by a constant factor tau. Both
+    sides are then O(1), and additionally normalised per-cell by dividing by
+    nx (so the loss is comparable across grid resolutions).
     """
-    y = rho_pred * w_pred                     # [B, nt, nx]
-    I = y.sum(dim=-1)                          # [B, nt]
-    # centred difference; one-sided at the ends
-    dt = (t[1:] - t[:-1]).clamp(min=1e-8)      # [nt-1]
-    dIdt = (I[:, 1:] - I[:, :-1]) / dt         # [B, nt-1]
-    # Source integral evaluated at the midpoint of each interval (average of
-    # the two endpoints) to match the centred difference.
-    src = (_y_eq(rho_pred) - y) / tau           # [B, nt, nx]
-    src_int = src.sum(dim=-1)                  # [B, nt]
-    src_mid = 0.5 * (src_int[:, 1:] + src_int[:, :-1])
-    return F.mse_loss(dIdt, src_mid)
+    B, nt, nx = rho_pred.shape
+    y = rho_pred * w_pred                       # [B, nt, nx]
+    I = y.sum(dim=-1) / nx                       # [B, nt]   — mean over x
+    dt = (t[1:] - t[:-1]).clamp(min=1e-8)        # [nt-1]
+    dIdt = (I[:, 1:] - I[:, :-1]) / dt           # [B, nt-1]
+    # Source mean over x.
+    src_mean = (_y_eq(rho_pred) - y).mean(dim=-1)   # [B, nt], note: no /tau
+    # Multiply LHS by tau to cancel the 1/tau scale on the RHS.
+    return F.mse_loss(tau * dIdt, src_mean[:, :-1] * 0.5 + src_mean[:, 1:] * 0.5)
 
 
 def probe_loss(
