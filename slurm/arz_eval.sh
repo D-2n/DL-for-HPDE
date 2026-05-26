@@ -9,7 +9,7 @@
 
 set -euo pipefail
 cd /home/dzdrale/DL-for-HPDE
-export PYTHONPATH=/home/dzdrale/DL-for-HPDE:$PYTHONPATH
+export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
 CKPT=${1:-/home/dzdrale/scratch/runs/arz_st3/best.pt}
