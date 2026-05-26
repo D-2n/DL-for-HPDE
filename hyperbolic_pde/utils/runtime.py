@@ -59,11 +59,14 @@ def _resolve_path(data_cfg: dict, key: str) -> None:
 
 
 def resolve_data_paths(cfg: dict[str, Any]) -> dict[str, Any]:
-    data_cfg = cfg.get("data")
-    if not isinstance(data_cfg, dict):
-        return cfg
-    _resolve_path(data_cfg, "path")
-    _resolve_path(data_cfg, "test_path")
+    # Resolve any top-level section that looks like a data section ("data",
+    # "arz_data", "arz_trial", "paper_eval_data", ...). Anything with a
+    # `path` field is considered a candidate.
+    for section in cfg.values():
+        if isinstance(section, dict) and "path" in section:
+            _resolve_path(section, "path")
+            if "test_path" in section:
+                _resolve_path(section, "test_path")
     return cfg
 
 

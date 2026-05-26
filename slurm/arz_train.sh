@@ -1,33 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=arz_train
+#SBATCH --job-name=hypno_arz
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=/home/dzdrale/scratch/logs/arz_train_%j.log
+#SBATCH --output=/home/dzdrale/scratch/logs/hypno_arz_%j.log
 
-# Full train, architecture aligned with LWR hypno_st3.
-set -euo pipefail
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/runs /home/dzdrale/scratch/logs
 
-DATA=${1:-/home/dzdrale/scratch/arz_1d/arz_train.npz}
-CKPT=${2:-/home/dzdrale/scratch/runs/arz_st3}
-RESUME=${3:-}
+CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde_arz_cleps.yaml}
+RESUME=${2:-}
 
 if [ -n "$RESUME" ]; then
-  RESUME_FLAG="--resume"
+    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_arz.py --config $CONFIG --resume_run $RESUME
 else
-  RESUME_FLAG=""
+    /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/train_hypno_arz.py --config $CONFIG
 fi
-
-/home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.train_arz \
-  --data "$DATA" \
-  --ckpt "$CKPT" \
-  --kx 2 --kt 2 \
-  --d-latent 96 --d-hidden 96 --depth 7 --decoder-depth 3 \
-  --lambda-state 1.0 --lambda-cons 0.1 --lambda-balance 0.1 --lambda-probe 0.1 \
-  --epochs 200 --batch-size 8 --lr 1e-3 --seed 0 --amp \
-  $RESUME_FLAG

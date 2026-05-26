@@ -6,27 +6,12 @@
 #SBATCH --time=04:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_datagen_%j.log
 
-# Full datagen, LWR-shaped envelope.
-# 18 cells * 300 samples/cell = 5400 (matches LWR `data.num_samples`).
-set -euo pipefail
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/arz_1d /home/dzdrale/scratch/logs
 
-OUT=${1:-/home/dzdrale/scratch/arz_1d/arz_train.npz}
-N=${2:-5400}
-TAU=${3:-0.1}
+CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde_arz_cleps.yaml}
+SECTION=${2:-arz_data}
 
-/home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.datagen_arz \
-  --out "$OUT" \
-  --N "$N" \
-  --nx 128 --nt 128 \
-  --x-min -1.0 --x-max 1.0 --t-max 1.0 \
-  --tau "$TAU" \
-  --families riemann_stratified,piecewise_constant_stratified,piecewise_sine \
-  --segments 2,3,5,7,10,25 \
-  --rho-min 0.1 --rho-max 0.9 \
-  --v-min   0.1 --v-max   0.9 \
-  --refine 4 \
-  --boundary ghost \
-  --seed 0
+/home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/generate_arz_data.py \
+    --config $CONFIG --section $SECTION
