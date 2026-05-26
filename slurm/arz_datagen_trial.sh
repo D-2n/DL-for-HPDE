@@ -1,20 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=arz_datagen
+#SBATCH --job-name=arz_datagen_trial
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --time=04:00:00
-#SBATCH --output=/home/dzdrale/scratch/logs/arz_datagen_%j.log
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --time=00:30:00
+#SBATCH --output=/home/dzdrale/scratch/logs/arz_datagen_trial_%j.log
 
-# Full datagen, LWR-shaped envelope.
-# 18 cells * 300 samples/cell = 5400 (matches LWR `data.num_samples`).
+# POC trial: small N, LWR-shaped data envelope.
+# 18 cells (3 families x 6 segments) * 10 samples/cell = 180 samples.
+# Matches LWR: nx=128, nt=128, x in [-1,1], t_max=1.0, value range [0.1, 0.9].
 set -euo pipefail
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/arz_1d /home/dzdrale/scratch/logs
 
-OUT=${1:-/home/dzdrale/scratch/arz_1d/arz_train.npz}
-N=${2:-5400}
+OUT=${1:-/home/dzdrale/scratch/arz_1d/arz_trial.npz}
+N=${2:-180}
 TAU=${3:-0.1}
 
 /home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.datagen_arz \

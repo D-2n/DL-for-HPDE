@@ -33,13 +33,11 @@ from hyperbolic_pde.data.fvm import (
 )
 
 
-# Ranges for ARZ data: rho in [0,1], v in [0,1].
-# Some w values implied by (rho, v) live outside w_eq's range, which is fine
-# (that's exactly the off-equilibrium signal we care about).
-_RHO_MIN_IC = 0.02
-_RHO_MAX_IC = 0.98
-_V_MIN_IC = 0.02
-_V_MAX_IC = 0.98
+# Default value ranges (mirror LWR config: u in [0.1, 0.9]).
+_RHO_MIN_DEFAULT = 0.1
+_RHO_MAX_DEFAULT = 0.9
+_V_MIN_DEFAULT = 0.1
+_V_MAX_DEFAULT = 0.9
 
 
 IC_FUNCS = {
@@ -66,6 +64,7 @@ class ArzDatasetBundle:
 
 def _sample_rho_v_pair(
     ic_name: str, x: np.ndarray, num_segments: int, rng: np.random.Generator,
+    rho_min: float, rho_max: float, v_min: float, v_max: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Independently sample rho and v fields with the chosen IC family.
 
@@ -75,8 +74,8 @@ def _sample_rho_v_pair(
     if ic_name not in IC_FUNCS:
         raise ValueError(f"Unknown IC family {ic_name!r}; available: {list(IC_FUNCS)}")
     ic_fn = IC_FUNCS[ic_name]
-    rho0 = ic_fn(x, num_segments, _RHO_MIN_IC, _RHO_MAX_IC, rng)
-    v0 = ic_fn(x, num_segments, _V_MIN_IC, _V_MAX_IC, rng)
+    rho0 = ic_fn(x, num_segments, rho_min, rho_max, rng)
+    v0 = ic_fn(x, num_segments, v_min, v_max, rng)
     return rho0.astype(np.float64), v0.astype(np.float64)
 
 
@@ -124,6 +123,10 @@ def generate_arz_dataset(
     refine: int = 4,
     use_exact_riemann: bool = False,
     seed: int = 0,
+    rho_min: float = _RHO_MIN_DEFAULT,
+    rho_max: float = _RHO_MAX_DEFAULT,
+    v_min: float = _V_MIN_DEFAULT,
+    v_max: float = _V_MAX_DEFAULT,
 ) -> ArzDatasetBundle:
     """Generate a stratified ARZ dataset.
 
@@ -152,7 +155,8 @@ def generate_arz_dataset(
 
     print(
         f"[arz datagen] N={num_samples}  cells={n_cells}  per_cell={per_cell}  "
-        f"families={families}  segments={segments}  tau={tau}  refine={refine}"
+        f"families={families}  segments={segments}  tau={tau}  refine={refine}  "
+        f"rho in [{rho_min}, {rho_max}]  v in [{v_min}, {v_max}]"
     )
 
     i = 0
@@ -160,7 +164,10 @@ def generate_arz_dataset(
         for fam in families:
             for _ in range(per_cell):
                 # Sample IC in (rho, v).
-                rho0, v0 = _sample_rho_v_pair(fam, x.astype(np.float64), seg, rng)
+                rho0, v0 = _sample_rho_v_pair(
+                    fam, x.astype(np.float64), seg, rng,
+                    rho_min, rho_max, v_min, v_max,
+                )
                 rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
                 w0 = v0 + P.pressure(rho0)
                 rho_hist, w_hist = _solve_one(
@@ -245,6 +252,10 @@ if __name__ == "__main__":
     parser.add_argument("--use-exact-riemann", action="store_true",
                         help="Use exact homogeneous (tau=inf) solver for Riemann ICs.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--rho-min", type=float, default=_RHO_MIN_DEFAULT)
+    parser.add_argument("--rho-max", type=float, default=_RHO_MAX_DEFAULT)
+    parser.add_argument("--v-min",   type=float, default=_V_MIN_DEFAULT)
+    parser.add_argument("--v-max",   type=float, default=_V_MAX_DEFAULT)
     args = parser.parse_args()
 
     families = [s.strip() for s in args.families.split(",") if s.strip()]
@@ -255,6 +266,8 @@ if __name__ == "__main__":
         tau=args.tau, families=families, segments=segments,
         cfl=args.cfl, boundary=args.boundary, refine=args.refine,
         use_exact_riemann=args.use_exact_riemann, seed=args.seed,
+        rho_min=args.rho_min, rho_max=args.rho_max,
+        v_min=args.v_min,     v_max=args.v_max,
     )
     save_arz_dataset(bundle, args.out)
     print(f"[arz datagen] saved {args.out}  shapes: rho={bundle.rho.shape}")
