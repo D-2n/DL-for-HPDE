@@ -33,6 +33,7 @@ CASES = [
     "oblique_rarefaction",
     "circular_patch",
     "quadrant_riemann",
+    "fast_oblique_shock",
 ]
 CASE_TITLES = {
     "planar_shock":        "1. Planar shock (x)",
@@ -41,6 +42,7 @@ CASE_TITLES = {
     "oblique_rarefaction": "4. Oblique rarefaction (n=(1,1)/sqrt2)",
     "circular_patch":      "5. Circular patch (curved shock)",
     "quadrant_riemann":    "6. Quadrant Riemann (wave interaction)",
+    "fast_oblique_shock":  "7. Fast oblique shock (extremal states)",
 }
 
 
@@ -172,6 +174,22 @@ def make_initial_condition(case_name, X, Y):
         rho0[(X >= 0.0) & (Y >= 0.0)] = 0.1
         return rho0, {}
 
+    if case_name == "fast_oblique_shock":
+        # Both states near the low-density extremum -> jump small (admissible
+        # shock, rho_L < rho_R) but |1 - rho_L - rho_R| ~ 1, so the normal
+        # speed s_n = (n_x + beta*n_y)(1 - rho_L - rho_R) ~ 1.14 -- the
+        # shock crosses the whole [-1,1] domain inside t in [0,1].
+        rL, rR = 0.0, 0.05
+        nx, ny = 1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0)
+        # Start the shock at the lower-left corner so it has the full domain
+        # diagonal to traverse.
+        xi = nx * X + ny * Y - (nx * (-0.9) + ny * (-0.9))
+        rho0 = np.where(xi < 0.0, rL, rR).astype(np.float64)
+        s_n = (nx + BETA * ny) * (1.0 - rL - rR)
+        return rho0, {"kind": "shock_oblique_offset", "rL": rL, "rR": rR,
+                      "nx": nx, "ny": ny, "s_n": s_n,
+                      "x0": -0.9, "y0": -0.9}
+
     raise ValueError(f"unknown case: {case_name}")
 
 
@@ -198,6 +216,15 @@ def _overlay_theory(ax, theory, t, extent=(-1.0, 1.0, -1.0, 1.0)):
         # Line: n_x * x + n_y * y = s_n * t  =>  y = (s_n*t - n_x*x) / n_y
         xs = np.linspace(xlim[0], xlim[1], 200)
         ys = (theory["s_n"] * t - theory["nx"] * xs) / theory["ny"]
+        m = (ys >= ylim[0]) & (ys <= ylim[1])
+        ax.plot(xs[m], ys[m], "k--", linewidth=1.2)
+
+    elif kind == "shock_oblique_offset":
+        # Initial line passes through (x0, y0), so the constant in
+        # n.x + n.y = c + s_n * t is c = n_x*x0 + n_y*y0.
+        c = theory["nx"] * theory["x0"] + theory["ny"] * theory["y0"]
+        xs = np.linspace(xlim[0], xlim[1], 200)
+        ys = (c + theory["s_n"] * t - theory["nx"] * xs) / theory["ny"]
         m = (ys >= ylim[0]) & (ys <= ylim[1])
         ax.plot(xs[m], ys[m], "k--", linewidth=1.2)
 
