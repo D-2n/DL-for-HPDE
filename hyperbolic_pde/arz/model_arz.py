@@ -1,7 +1,7 @@
 """HypNO-ARZ: space-time GNN operator for 1D ARZ with relaxation.
 
 Mirrors hyperbolic_pde.models.hypno_st3 (HypNO-ST3 backbone) but swaps the
-boundary computations for the ARZ system (plan §5).
+boundary computations for the ARZ system (plan section 5).
 
 Design notes (post-tuning, 2026-05-26):
 
@@ -19,6 +19,17 @@ Design notes (post-tuning, 2026-05-26):
 
 Decoder outputs (rho, w) -- 2 channels.
 Lifting node input (9 channels): rho0, w0, v0, y0, V(rho0), v0-V(rho0), x, t, xi.
+
+This module also exposes `load_hypno_arz_from_checkpoint` -- a single helper
+that handles both checkpoint formats:
+
+  (A) legacy: dict with keys {model, opt, epoch, args, tau} from the old
+      CLI-flag trainer (`hyperbolic_pde.arz.train_arz`, removed).
+  (B) new (matches LWR): bare state_dict saved by
+      `hyperbolic_pde/scripts/train_hypno_arz.py`. The trainer writes the
+      architecture into `run_dir/config.yaml`, so reconstruction needs that
+      file too (pass via `config_path=` or let the helper auto-locate it
+      alongside the checkpoint).
 """
 from __future__ import annotations
 
@@ -497,3 +508,113 @@ class HypNO_ARZ(nn.Module):
         rho_pred = u_pred[..., 0]
         w_pred = u_pred[..., 1]
         return rho_pred, w_pred, u_hats
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoint loading (handles both legacy dict and new state_dict formats)
+# --------------------------------------------------------------------------- #
+def _cfg_to_kwargs(model_cfg: dict) -> dict:
+    """Translate a `hypno_arz` config block into HypNO_ARZ constructor kwargs."""
+    _dhn = model_cfg.get("d_hidden_nonadj", None)
+    return dict(
+        stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
+        stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
+        d_latent=int(model_cfg.get("d_latent", 96)),
+        d_hidden=int(model_cfg.get("d_hidden", 96)),
+        n_layers=int(model_cfg.get("n_layers", 7)),
+        activation=str(model_cfg.get("activation", "gelu")),
+        causal_temporal=bool(model_cfg.get("causal_temporal", True)),
+        d_hidden_nonadj=int(_dhn) if _dhn is not None else None,
+        decoder_depth=int(model_cfg.get("decoder_depth", 3)),
+        skip=bool(model_cfg.get("skip", True)),
+        use_checkpoint=False,
+        normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
+    )
+
+
+def load_hypno_arz_from_checkpoint(
+    ckpt_path,
+    device: str = "cpu",
+    config_path=None,
+):
+    """Reconstruct a HypNO_ARZ from a checkpoint file.
+
+    Auto-detects the format:
+      * **Legacy dict** (`{"model": ..., "args": {...}, "tau": ...}`): kwargs
+        come from `ck["args"]`.
+      * **Bare state_dict** (new trainer's `checkpoint_epoch*.pt`,
+        `model_final.pt`, or `<save_path>`): the architecture lives in
+        `<run_dir>/config.yaml`. The helper auto-locates that file by walking
+        upwards from `ckpt_path` (the new trainer writes it next to the
+        checkpoints). Override with explicit `config_path=`.
+
+    Returns
+    -------
+    model : HypNO_ARZ (on `device`, in eval mode)
+    tau   : float | None  -- pulled from the legacy dict if present,
+                              else from `arz_data.tau` / `arz_trial.tau` in
+                              the YAML, else None.
+    """
+    import yaml
+    from pathlib import Path as _Path
+
+    ckpt_path = _Path(ckpt_path)
+    raw = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    # Strip any torch.compile prefix.
+    def _strip(sd):
+        if isinstance(sd, dict) and any(k.startswith("_orig_mod.") for k in sd):
+            return {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
+        return sd
+
+    # --- Format detection ------------------------------------------------- #
+    is_legacy = isinstance(raw, dict) and "model" in raw and "args" in raw
+
+    if is_legacy:
+        a = raw["args"]
+        kwargs = dict(
+            stencil_k_x=a["kx"], stencil_k_t=a["kt"],
+            d_latent=a["d_latent"], d_hidden=a["d_hidden"],
+            n_layers=a["depth"], decoder_depth=a["decoder_depth"],
+            skip=a["skip"], use_checkpoint=False,
+            normalize_edge_offsets=a.get("normalize_edge_offsets", True),
+        )
+        model = HypNO_ARZ(**kwargs).to(device)
+        model.load_state_dict(_strip(raw["model"]))
+        model.eval()
+        tau = float(raw.get("tau")) if raw.get("tau") is not None else None
+        return model, tau
+
+    # New format: bare state_dict (plus optional torch.compile prefix).
+    state_dict = _strip(raw)
+
+    if config_path is None:
+        # The trainer writes config.yaml at run_dir/. Try sibling, then
+        # parent (when ckpt is at run_dir/checkpoint_epochN.pt) and grandparent.
+        for cand in (
+            ckpt_path.parent / "config.yaml",
+            ckpt_path.parent.parent / "config.yaml",
+        ):
+            if cand.exists():
+                config_path = cand
+                break
+        if config_path is None:
+            raise FileNotFoundError(
+                f"Could not locate config.yaml alongside {ckpt_path}. "
+                f"Pass config_path= explicitly."
+            )
+    with _Path(config_path).open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    model_cfg = cfg.get("hypno_arz", {})
+    kwargs = _cfg_to_kwargs(model_cfg)
+    model = HypNO_ARZ(**kwargs).to(device)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    # tau preference: arz_data > arz_trial > None.
+    tau = None
+    for sec in ("arz_data", "arz_trial"):
+        if sec in cfg and isinstance(cfg[sec], dict) and "tau" in cfg[sec]:
+            tau = float(cfg[sec]["tau"])
+            break
+    return model, tau

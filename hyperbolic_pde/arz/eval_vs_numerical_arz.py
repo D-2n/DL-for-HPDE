@@ -24,7 +24,7 @@ sys.path.append(str(ROOT.parent))
 from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
-from hyperbolic_pde.arz.model_arz import HypNO_ARZ
+from hyperbolic_pde.arz.model_arz import HypNO_ARZ, load_hypno_arz_from_checkpoint
 from hyperbolic_pde.data.fvm import _apply_ghost_bc, _weno5_reconstruct_left
 
 
@@ -141,33 +141,34 @@ def _run_baseline(name, rho0, w0, bundle, tau, boundary):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", type=Path, required=True)
+    ap.add_argument("--ckpt", type=Path, required=True,
+                    help="Checkpoint file (legacy dict OR bare state_dict from the new trainer).")
+    ap.add_argument("--config", type=Path, default=None,
+                    help="config.yaml describing the architecture (required for "
+                         "bare-state_dict checkpoints if it can't be auto-located "
+                         "next to the ckpt).")
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--baselines", type=str, default="weno5,godunov")
     ap.add_argument("--samples", type=int, default=20,
                     help="Cap on number of eval samples (use all if dataset smaller).")
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--boundary", type=str, default="ghost")
+    ap.add_argument("--tau", type=float, default=None,
+                    help="Override the relaxation tau used by the baselines "
+                         "(defaults to the dataset's bundle.tau).")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
     bundle = load_arz_dataset(args.data)
-    tau = float(bundle.tau)
+    tau = float(args.tau) if args.tau is not None else float(bundle.tau)
     N = bundle.rho.shape[0]
     take = min(args.samples, N)
 
-    # Load model.
-    ck = torch.load(args.ckpt, map_location=args.device, weights_only=False)
-    model_args = ck["args"]
-    model = HypNO_ARZ(
-        stencil_k_x=model_args["kx"], stencil_k_t=model_args["kt"],
-        d_latent=model_args["d_latent"], d_hidden=model_args["d_hidden"],
-        n_layers=model_args["depth"], decoder_depth=model_args["decoder_depth"],
-        skip=model_args["skip"], use_checkpoint=False,
-        normalize_edge_offsets=model_args.get("normalize_edge_offsets", True),
-    ).to(args.device)
-    model.load_state_dict(ck["model"])
-    model.eval()
+    # Load model (handles both legacy dict and new bare-state_dict formats).
+    model, _ck_tau = load_hypno_arz_from_checkpoint(
+        args.ckpt, device=args.device, config_path=args.config,
+    )
+    print(f"[eval_vs_numerical_arz] loaded {args.ckpt}  tau_eval={tau}")
 
     x = torch.tensor(bundle.x, dtype=torch.float32, device=args.device)
     t = torch.tensor(bundle.t, dtype=torch.float32, device=args.device)
