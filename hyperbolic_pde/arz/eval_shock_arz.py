@@ -149,7 +149,10 @@ def main():
                     help="Override the relaxation tau used by the baselines "
                          "(defaults to the dataset's bundle.tau).")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--figures", type=Path, default=None)
+    ap.add_argument("--figures", type=Path, default=None,
+                    help="If set, write per-sample band-overlay plots into "
+                         "this directory.")
+    ap.add_argument("--n-plots", type=int, default=5)
     args = ap.parse_args()
 
     bundle = load_arz_dataset(args.data)
@@ -167,6 +170,15 @@ def main():
 
     baselines = [b.strip() for b in args.baselines.split(",") if b.strip()]
     methods = ["model"] + baselines
+
+    plot_dir = None
+    if args.figures is not None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        plot_dir = Path(args.figures)
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[eval_shock_arz] writing figures to {plot_dir}")
 
     # rows: family, num_segments, method, region, channel, mean, std, n
     rows = []
@@ -220,6 +232,75 @@ def main():
                     if not np.isfinite(val):
                         continue
                     acc.setdefault((fam, seg, m, r_name, ch_name), []).append(val)
+
+        # Per-sample shock-band plot (rho channel: shows GT, model error,
+        # and the detected band overlay).
+        if plot_dir is not None and i < args.n_plots:
+            x_np = bundle.x.astype(np.float64)
+            t_np = bundle.t.astype(np.float64)
+            n_meth = 1 + len(preds)  # GT + each method
+            fig, axes = plt.subplots(2, n_meth, figsize=(4 * n_meth, 8),
+                                     constrained_layout=True)
+            # Row 0 col 0: GT rho with 1-shock band hatched and contact band dotted.
+            vmin, vmax = float(rho_gt.min()), float(rho_gt.max())
+            im = axes[0, 0].pcolormesh(x_np, t_np, rho_gt, shading="auto",
+                                       cmap="jet", vmin=vmin, vmax=vmax)
+            axes[0, 0].contour(x_np, t_np, mask_1shock.astype(float),
+                               levels=[0.5], colors="white", linewidths=0.7)
+            axes[0, 0].contour(x_np, t_np, mask_contact.astype(float),
+                               levels=[0.5], colors="black", linewidths=0.7,
+                               linestyles="dashed")
+            axes[0, 0].set_title("GT rho  (white=1-shock, black=contact)")
+            axes[0, 0].set_xlabel("x"); axes[0, 0].set_ylabel("t")
+            fig.colorbar(im, ax=axes[0, 0])
+
+            # Row 0 cols 1..: each method's rho prediction.
+            method_order = list(preds.keys())
+            err_vmax = None
+            for c, m in enumerate(method_order, start=1):
+                arr = preds[m][0]
+                im = axes[0, c].pcolormesh(x_np, t_np, arr, shading="auto",
+                                           cmap="jet", vmin=vmin, vmax=vmax)
+                axes[0, c].set_title(f"{m} rho")
+                axes[0, c].set_xlabel("x"); axes[0, c].set_ylabel("t")
+                fig.colorbar(im, ax=axes[0, c])
+                err = np.abs(arr - rho_gt)
+                err_vmax = err.max() if err_vmax is None else max(err_vmax, err.max())
+
+            # Row 1 col 0: GT rho restricted to combined band (highlight where
+            # the bands are).
+            band_view = np.where(mask_combined, rho_gt, np.nan)
+            im = axes[1, 0].pcolormesh(x_np, t_np, band_view, shading="auto",
+                                       cmap="jet", vmin=vmin, vmax=vmax)
+            axes[1, 0].set_title("GT inside combined band")
+            axes[1, 0].set_xlabel("x"); axes[1, 0].set_ylabel("t")
+            fig.colorbar(im, ax=axes[1, 0])
+            # Row 1 cols 1..: |method - GT| with the band outlined.
+            for c, m in enumerate(method_order, start=1):
+                err = np.abs(preds[m][0] - rho_gt)
+                im = axes[1, c].pcolormesh(x_np, t_np, err, shading="auto",
+                                           cmap="magma", vmin=0, vmax=err_vmax)
+                axes[1, c].contour(x_np, t_np, mask_1shock.astype(float),
+                                   levels=[0.5], colors="cyan", linewidths=0.6)
+                axes[1, c].contour(x_np, t_np, mask_contact.astype(float),
+                                   levels=[0.5], colors="lime", linewidths=0.6,
+                                   linestyles="dashed")
+                axes[1, c].set_title(f"|{m} - GT|")
+                axes[1, c].set_xlabel("x"); axes[1, c].set_ylabel("t")
+                fig.colorbar(im, ax=axes[1, c])
+
+            mae_full = {m: float(np.mean(np.abs(preds[m][0] - rho_gt))) for m in method_order}
+            mae_1sh  = {m: _mae(preds[m][0], rho_gt, mask_1shock) for m in method_order}
+            mae_con  = {m: _mae(preds[m][0], rho_gt, mask_contact) for m in method_order}
+            mae_str = "  ".join(
+                f"{m}: full={mae_full[m]:.2e}  1sh={mae_1sh[m]:.2e}  con={mae_con[m]:.2e}"
+                for m in method_order
+            )
+            fig.suptitle(
+                f"Sample {i}  fam={fam} seg={seg}  rho MAE -- {mae_str}"
+            )
+            fig.savefig(plot_dir / f"shock_sample_{i}_rho.png", dpi=150)
+            plt.close(fig)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", newline="") as f:

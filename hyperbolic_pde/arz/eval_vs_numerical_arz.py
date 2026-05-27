@@ -157,6 +157,11 @@ def main():
                     help="Override the relaxation tau used by the baselines "
                          "(defaults to the dataset's bundle.tau).")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--figures", type=Path, default=None,
+                    help="If set, write per-sample comparison plots into this "
+                         "directory (mirrors LWR eval_vs_numerical.py).")
+    ap.add_argument("--n-plots", type=int, default=5,
+                    help="Number of per-sample plots to save (default 5).")
     args = ap.parse_args()
 
     bundle = load_arz_dataset(args.data)
@@ -174,7 +179,21 @@ def main():
     t = torch.tensor(bundle.t, dtype=torch.float32, device=args.device)
 
     baselines = [b.strip() for b in args.baselines.split(",") if b.strip()]
+    methods_in_order = ["model"] + baselines
     results = []  # rows: family, num_segments, method, channel, mean, std, n
+
+    # Plotting setup (mirrors LWR eval_vs_numerical.py)
+    plot_dir = None
+    per_t_errors: dict = {}    # method -> list of [nt] arrays per (channel, sample)
+    if args.figures is not None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        plot_dir = Path(args.figures)
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        for m in methods_in_order:
+            per_t_errors[m] = {"rho": [], "w": []}
+        print(f"[eval_vs_numerical_arz] writing figures to {plot_dir}")
 
     # Iterate samples, compute MAE per (family, segments, method, channel).
     buckets: dict = {}
@@ -205,6 +224,9 @@ def main():
         buckets[key]["model"]["w"  ].append(float(np.mean(np.abs(w_p   - w_gt  ))))
         buckets[key]["model"]["v"  ].append(float(np.mean(np.abs(v_p   - v_gt  ))))
 
+        # Stash predictions for plotting (only kept when --figures is set).
+        sample_preds = {"model": (rho_p, w_p)} if plot_dir is not None else None
+
         # Baselines.
         for m in baselines:
             try:
@@ -216,6 +238,59 @@ def main():
             buckets[key][m]["rho"].append(float(np.mean(np.abs(rho_b - rho_gt))))
             buckets[key][m]["w"  ].append(float(np.mean(np.abs(w_b   - w_gt  ))))
             buckets[key][m]["v"  ].append(float(np.mean(np.abs(v_b   - v_gt  ))))
+            if sample_preds is not None:
+                sample_preds[m] = (rho_b, w_b)
+
+        # Per-sample plot + per-t error accumulation.
+        if plot_dir is not None:
+            x_np = bundle.x.astype(np.float64)
+            t_np = bundle.t.astype(np.float64)
+            # Per-t error (mean over x) for the global error-vs-t plot.
+            for m, (rho_m, w_m) in sample_preds.items():
+                per_t_errors[m]["rho"].append(np.mean(np.abs(rho_m - rho_gt), axis=1))
+                per_t_errors[m]["w"  ].append(np.mean(np.abs(w_m   - w_gt  ), axis=1))
+            if i < args.n_plots:
+                for ch_name, gt_arr, pred_dict in (
+                    ("rho", rho_gt, {m: sample_preds[m][0] for m in sample_preds}),
+                    ("w",   w_gt,   {m: sample_preds[m][1] for m in sample_preds}),
+                ):
+                    methods_present = ["GT"] + [m for m in methods_in_order if m in pred_dict]
+                    n_cols = len(methods_present)
+                    fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8),
+                                             constrained_layout=True)
+                    vmin = float(gt_arr.min()); vmax = float(gt_arr.max())
+                    # Row 0: GT + each method.
+                    err_vmax = None
+                    for c, name in enumerate(methods_present):
+                        arr = gt_arr if name == "GT" else pred_dict[name]
+                        im = axes[0, c].pcolormesh(x_np, t_np, arr, shading="auto",
+                                                   cmap="jet", vmin=vmin, vmax=vmax)
+                        axes[0, c].set_title(name)
+                        axes[0, c].set_xlabel("x"); axes[0, c].set_ylabel("t")
+                        fig.colorbar(im, ax=axes[0, c], label=ch_name)
+                        if name != "GT":
+                            err = np.abs(arr - gt_arr)
+                            err_vmax = err.max() if err_vmax is None else max(err_vmax, err.max())
+                    # Row 1: |method - GT| (col 0 blanked).
+                    axes[1, 0].axis("off")
+                    for c, name in enumerate(methods_present[1:], start=1):
+                        err = np.abs(pred_dict[name] - gt_arr)
+                        im = axes[1, c].pcolormesh(x_np, t_np, err, shading="auto",
+                                                   cmap="magma", vmin=0, vmax=err_vmax)
+                        axes[1, c].set_title(f"|{name} - GT|")
+                        axes[1, c].set_xlabel("x"); axes[1, c].set_ylabel("t")
+                        fig.colorbar(im, ax=axes[1, c])
+                    mae_strs = []
+                    for m in methods_in_order:
+                        if m in pred_dict:
+                            mae = np.mean(np.abs(pred_dict[m] - gt_arr))
+                            mae_strs.append(f"{m}={mae:.3e}")
+                    fig.suptitle(
+                        f"Sample {i}  channel={ch_name}  fam={fam} seg={seg}  "
+                        f"MAE: " + "  ".join(mae_strs)
+                    )
+                    fig.savefig(plot_dir / f"compare_sample_{i}_{ch_name}.png", dpi=150)
+                    plt.close(fig)
 
     # Emit CSV.
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +305,29 @@ def main():
                         continue
                     wr.writerow([fam, seg, m, ch, float(arr.mean()),
                                  float(arr.std(ddof=0)), int(arr.size)])
+
+    # Global error-vs-time plot (one panel per channel).
+    if plot_dir is not None and per_t_errors:
+        t_np = bundle.t.astype(np.float64)
+        fig, axes = plt.subplots(1, 2, figsize=(14, 4.5), constrained_layout=True)
+        colors = {"model": "tab:blue", "weno5": "tab:orange", "godunov": "tab:green"}
+        for ci, ch_name in enumerate(("rho", "w")):
+            for m in methods_in_order:
+                arrs = per_t_errors[m][ch_name]
+                if not arrs:
+                    continue
+                mean_curve = np.stack(arrs).mean(axis=0)
+                axes[ci].plot(t_np, mean_curve, label=m,
+                              color=colors.get(m, None))
+            axes[ci].set_xlabel("t")
+            axes[ci].set_ylabel(f"mean |{ch_name}_pred - {ch_name}_gt| over x")
+            axes[ci].set_title(f"Error vs time ({ch_name})")
+            axes[ci].set_yscale("log")
+            axes[ci].legend(); axes[ci].grid(True, alpha=0.3)
+        fig.savefig(plot_dir / "error_vs_time.png", dpi=150)
+        plt.close(fig)
+        print(f"[eval_vs_numerical_arz] saved error_vs_time.png and "
+              f"{min(take, args.n_plots) * 2} per-sample plots in {plot_dir}")
 
     # Pretty print to stdout.
     print(f"\n[eval_vs_numerical_arz] wrote {args.out}  (N={take} samples)")
