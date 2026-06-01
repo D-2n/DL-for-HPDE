@@ -256,35 +256,74 @@ def main():
                 ):
                     methods_present = ["GT"] + [m for m in methods_in_order if m in pred_dict]
                     n_cols = len(methods_present)
-                    fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8),
+                    # 3 rows now: GT/preds (row 0), shared-scale errors (row 1),
+                    # per-method-normalised errors for pattern visualisation (row 2).
+                    fig, axes = plt.subplots(3, n_cols, figsize=(4 * n_cols, 11),
                                              constrained_layout=True)
                     vmin = float(gt_arr.min()); vmax = float(gt_arr.max())
-                    # Row 0: GT + each method.
+                    # Compute per-method MAE up-front so it can go in panel titles.
+                    mae_per_method = {
+                        name: float(np.mean(np.abs(pred_dict[name] - gt_arr)))
+                        for name in methods_present[1:]
+                    }
+                    # Row 0: GT + each method, with MAE annotated on the title.
                     err_vmax = None
                     for c, name in enumerate(methods_present):
                         arr = gt_arr if name == "GT" else pred_dict[name]
                         im = axes[0, c].pcolormesh(x_np, t_np, arr, shading="auto",
                                                    cmap="jet", vmin=vmin, vmax=vmax)
-                        axes[0, c].set_title(name)
+                        if name == "GT":
+                            axes[0, c].set_title(name)
+                        else:
+                            axes[0, c].set_title(
+                                f"{name}\nMAE={mae_per_method[name]:.2e}"
+                            )
                         axes[0, c].set_xlabel("x"); axes[0, c].set_ylabel("t")
                         fig.colorbar(im, ax=axes[0, c], label=ch_name)
                         if name != "GT":
                             err = np.abs(arr - gt_arr)
                             err_vmax = err.max() if err_vmax is None else max(err_vmax, err.max())
-                    # Row 1: |method - GT| (col 0 blanked).
+                    # Row 1: |method - GT| on a SHARED colour scale -- compare magnitudes.
                     axes[1, 0].axis("off")
+                    axes[1, 0].text(
+                        0.5, 0.5,
+                        "shared err scale\n(compare magnitudes)",
+                        ha="center", va="center",
+                        transform=axes[1, 0].transAxes,
+                        fontsize=10,
+                    )
                     for c, name in enumerate(methods_present[1:], start=1):
                         err = np.abs(pred_dict[name] - gt_arr)
                         im = axes[1, c].pcolormesh(x_np, t_np, err, shading="auto",
                                                    cmap="magma", vmin=0, vmax=err_vmax)
-                        axes[1, c].set_title(f"|{name} - GT|")
+                        axes[1, c].set_title(f"|{name} - GT|  (shared)")
                         axes[1, c].set_xlabel("x"); axes[1, c].set_ylabel("t")
                         fig.colorbar(im, ax=axes[1, c])
-                    mae_strs = []
-                    for m in methods_in_order:
-                        if m in pred_dict:
-                            mae = np.mean(np.abs(pred_dict[m] - gt_arr))
-                            mae_strs.append(f"{m}={mae:.3e}")
+                    # Row 2: |method - GT| with per-method scaling -- reveal pattern
+                    # regardless of magnitude. Bright in this row does NOT mean bigger
+                    # error in absolute terms; check row-1 colourbars or the panel
+                    # title MAE for that.
+                    axes[2, 0].axis("off")
+                    axes[2, 0].text(
+                        0.5, 0.5,
+                        "per-method err scale\n(reveal pattern)",
+                        ha="center", va="center",
+                        transform=axes[2, 0].transAxes,
+                        fontsize=10,
+                    )
+                    for c, name in enumerate(methods_present[1:], start=1):
+                        err = np.abs(pred_dict[name] - gt_arr)
+                        local_vmax = float(err.max()) if err.size else 0.0
+                        im = axes[2, c].pcolormesh(x_np, t_np, err, shading="auto",
+                                                   cmap="magma", vmin=0,
+                                                   vmax=local_vmax if local_vmax > 0 else None)
+                        axes[2, c].set_title(
+                            f"|{name} - GT|  (own scale, max={local_vmax:.2e})"
+                        )
+                        axes[2, c].set_xlabel("x"); axes[2, c].set_ylabel("t")
+                        fig.colorbar(im, ax=axes[2, c])
+                    mae_strs = [f"{m}={mae_per_method[m]:.3e}"
+                                for m in methods_in_order if m in mae_per_method]
                     fig.suptitle(
                         f"Sample {i}  channel={ch_name}  fam={fam} seg={seg}  "
                         f"MAE: " + "  ".join(mae_strs)
