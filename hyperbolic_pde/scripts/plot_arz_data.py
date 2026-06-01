@@ -157,14 +157,19 @@ def _plot_one(bundle, idx: int, out_dir: Path) -> Path:
             cmap=cmap, interpolation="nearest",
         )
         if do_contour:
-            n_levels = 10
-            levels = np.linspace(field.min(), field.max(), n_levels)
-            ax.contour(
-                np.linspace(x[0], x[-1], field.shape[1]),
-                np.linspace(t[0], t[-1], field.shape[0]),
-                field,
-                levels=levels, colors="white", linewidths=0.4, alpha=0.6,
-            )
+            f_min = float(field.min()); f_max = float(field.max())
+            # Skip contouring on (near-)constant fields -- matplotlib rejects
+            # non-increasing levels.
+            if f_max - f_min > 1e-8:
+                levels = np.linspace(f_min, f_max, 10)
+                levels = np.unique(levels)
+                if levels.size >= 2:
+                    ax.contour(
+                        np.linspace(x[0], x[-1], field.shape[1]),
+                        np.linspace(t[0], t[-1], field.shape[0]),
+                        field,
+                        levels=levels, colors="white", linewidths=0.4, alpha=0.6,
+                    )
         _overlay_wave_lines(ax, info, cls, x0, t)
         ax.set_xlim(x[0], x[-1]); ax.set_ylim(t[0], t[-1])
         ax.set_xlabel("x"); ax.set_ylabel("t"); ax.set_title(title)
