@@ -214,10 +214,35 @@ def main() -> None:
         "--resume_run", type=str, default=None,
         help="Path to a previous run directory. Resumes from its latest checkpoint.",
     )
+    parser.add_argument(
+        "--auto_resume", action="store_true",
+        help="If set and --resume_run is not provided, look at "
+             "hyperbolic_pde/runs/hypno_arz/latest_run.txt and resume from "
+             "the run it points to (if it has at least one checkpoint). "
+             "Otherwise start a fresh run. Safe to use under SLURM --requeue.",
+    )
     args = parser.parse_args()
     print('--- STARTING HYPNO_ARZ TRAINING ---')
 
     resume_run_dir = Path(args.resume_run) if args.resume_run else None
+
+    # Auto-resume: if no explicit --resume_run, consult latest_run.txt and use
+    # that dir IF it contains at least one checkpoint_epoch*.pt. This makes
+    # SLURM preemption transparent -- on requeue the rerun picks up the
+    # previous run dir instead of starting from scratch.
+    if resume_run_dir is None and args.auto_resume:
+        latest_pointer = Path("hyperbolic_pde/runs/hypno_arz/latest_run.txt")
+        if latest_pointer.exists():
+            candidate = Path(latest_pointer.read_text(encoding="utf-8").strip())
+            ckpts = list(candidate.glob("checkpoint_epoch*.pt")) if candidate.exists() else []
+            if ckpts:
+                resume_run_dir = candidate
+                print(f"[auto_resume] picked up run from latest_run.txt: {resume_run_dir}")
+            else:
+                print(f"[auto_resume] {candidate} has no checkpoints; starting fresh")
+        else:
+            print(f"[auto_resume] {latest_pointer} missing; starting fresh")
+
     if resume_run_dir and (resume_run_dir / "config.yaml").exists():
         with (resume_run_dir / "config.yaml").open("r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
