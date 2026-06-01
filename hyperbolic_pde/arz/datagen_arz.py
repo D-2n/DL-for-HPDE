@@ -27,6 +27,7 @@ from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz import riemann_arz as Rie
 from hyperbolic_pde.data.fvm import (
+    _stratified_pair,
     piecewise_constant_stratified_ic,
     piecewise_sine_ic,
     riemann_stratified_ic,
@@ -62,15 +63,42 @@ class ArzDatasetBundle:
     tau: float                 # scalar metadata
 
 
+def _sample_riemann_colocated(
+    x: np.ndarray, rng: np.random.Generator,
+    rho_min: float, rho_max: float, v_min: float, v_max: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Riemann IC with rho and v jumps SHARING a single interface x0.
+
+    The previous implementation called riemann_stratified_ic twice with
+    independent x0 draws, so half the samples ended up with v_L == v_R at the
+    chosen Riemann interface (degenerate 1-wave, contact-only structure). Co-
+    locating both jumps guarantees every sample is a real two-channel Riemann
+    problem.
+    """
+    x0 = rng.uniform(x[0] + 0.2 * (x[-1] - x[0]), x[0] + 0.8 * (x[-1] - x[0]))
+    rho_left, rho_right = _stratified_pair(rho_min, rho_max, rng)
+    v_left,   v_right   = _stratified_pair(v_min,   v_max,   rng)
+    rho0 = np.where(x <= x0, rho_left, rho_right).astype(np.float64)
+    v0   = np.where(x <= x0, v_left,   v_right  ).astype(np.float64)
+    return rho0, v0
+
+
 def _sample_rho_v_pair(
     ic_name: str, x: np.ndarray, num_segments: int, rng: np.random.Generator,
     rho_min: float, rho_max: float, v_min: float, v_max: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Independently sample rho and v fields with the chosen IC family.
+    """Sample rho and v fields with the chosen IC family.
 
-    The two fields share the family/num_segments but use independent value
-    draws (the rng is shared; we just call the sampler twice in sequence).
+    For riemann_stratified, the two channels share a single jump location
+    (`_sample_riemann_colocated`) so the resulting Riemann problem actually
+    has a discontinuity in both rho AND v at the same interface.
+
+    For other families (piecewise_constant_stratified, piecewise_sine), the
+    two fields are still drawn independently — they aren't single-jump
+    problems, so co-location isn't a meaningful constraint.
     """
+    if ic_name == "riemann_stratified":
+        return _sample_riemann_colocated(x, rng, rho_min, rho_max, v_min, v_max)
     if ic_name not in IC_FUNCS:
         raise ValueError(f"Unknown IC family {ic_name!r}; available: {list(IC_FUNCS)}")
     ic_fn = IC_FUNCS[ic_name]
