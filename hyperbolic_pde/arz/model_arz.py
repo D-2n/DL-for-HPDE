@@ -62,8 +62,12 @@ def _w_eq(rho): return 1.0 + rho * rho
 class _ArzLifting(nn.Module):
     """Space-time lifting for ARZ (pure-pairwise edges).
 
-    Node input (9 channels):
-        rho0, w0, v0, y0, V(rho0), v0-V(rho0), x, t, xi=x/max(t,eps)
+    Node input:
+      * 9 channels if use_relaxation_features=True (default, ARZ-with-relaxation):
+            rho0, w0, v0, y0, V(rho0), v0-V(rho0), x, t, xi=x/max(t,eps)
+      * 7 channels if use_relaxation_features=False (homogeneous / Riemann):
+            rho0, w0, v0, y0, x, t, xi
+        (Veq and diseq are dropped; the network gets no equilibrium hint.)
 
     Adjacent edges (8 dims):
         [sign(rel_x), rel_t_feat, drho, dv, dw, theta, lam1_ij, lam2_ij]
@@ -79,15 +83,18 @@ class _ArzLifting(nn.Module):
         causal_temporal: bool = True,
         normalize_edge_offsets: bool = True,
         d_hidden_nonadj: Optional[int] = None,
+        use_relaxation_features: bool = True,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
         self.k_t = stencil_k_t
         self.causal = causal_temporal
         self.normalize_edge_offsets = normalize_edge_offsets
+        self.use_relaxation_features = use_relaxation_features
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
-        self.node_mlp = _make_mlp(9, d_hidden, d_latent, 2, activation)
+        n_node_in = 9 if use_relaxation_features else 7
+        self.node_mlp = _make_mlp(n_node_in, d_hidden, d_latent, 2, activation)
         self.adj_edge_mlp    = _make_mlp(8, d_hidden, d_latent, 2, activation)
         self.nonadj_edge_mlp = _make_mlp(3, dh_na,    d_latent, 2, activation)
 
@@ -140,15 +147,21 @@ class _ArzLifting(nn.Module):
 
         v0_bc = w0_bc - _p(rho0_bc)
         y0_bc = rho0_bc * w0_bc
-        Veq_bc = _Veq(rho0_bc)
-        diseq_bc = v0_bc - Veq_bc
         eps_t = max(dt_grid, 1e-6)
         xi_bc = x_bc / t_bc.clamp(min=eps_t)
 
-        node_in = torch.cat([
-            rho0_bc, w0_bc, v0_bc, y0_bc, Veq_bc, diseq_bc,
-            x_bc, t_bc, xi_bc,
-        ], dim=-1)  # [B, nt, nx, 9]
+        if self.use_relaxation_features:
+            Veq_bc = _Veq(rho0_bc)
+            diseq_bc = v0_bc - Veq_bc
+            node_in = torch.cat([
+                rho0_bc, w0_bc, v0_bc, y0_bc, Veq_bc, diseq_bc,
+                x_bc, t_bc, xi_bc,
+            ], dim=-1)  # [B, nt, nx, 9]
+        else:
+            node_in = torch.cat([
+                rho0_bc, w0_bc, v0_bc, y0_bc,
+                x_bc, t_bc, xi_bc,
+            ], dim=-1)  # [B, nt, nx, 7]
         h_node = self.node_mlp(node_in)
 
         # Pad rho0, w0 for neighbour lookups.
@@ -450,18 +463,21 @@ class HypNO_ARZ(nn.Module):
         skip: bool = True,
         use_checkpoint: bool = False,
         normalize_edge_offsets: bool = True,
+        use_relaxation_features: bool = True,
         **_ignored,
     ) -> None:
         super().__init__()
         self.skip = skip
         self.use_checkpoint = use_checkpoint
         self.normalize_edge_offsets = normalize_edge_offsets
+        self.use_relaxation_features = use_relaxation_features
         if _ignored:
             print(f"[HypNO_ARZ] IGNORED kwargs = {sorted(_ignored.keys())}")
         print(
             f"[HypNO_ARZ] kx={stencil_k_x} kt={stencil_k_t} "
             f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
-            f"skip={skip} normalize_edge_offsets={normalize_edge_offsets}"
+            f"skip={skip} normalize_edge_offsets={normalize_edge_offsets} "
+            f"use_relaxation_features={use_relaxation_features}"
         )
 
         self.lifting = _ArzLifting(
@@ -470,6 +486,7 @@ class HypNO_ARZ(nn.Module):
             activation=activation, causal_temporal=causal_temporal,
             normalize_edge_offsets=normalize_edge_offsets,
             d_hidden_nonadj=d_hidden_nonadj,
+            use_relaxation_features=use_relaxation_features,
         )
 
         # Decoder outputs (rho, w) -- 2 channels.
@@ -539,6 +556,7 @@ def _cfg_to_kwargs(model_cfg: dict) -> dict:
         skip=bool(model_cfg.get("skip", True)),
         use_checkpoint=False,
         normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
+        use_relaxation_features=bool(model_cfg.get("use_relaxation_features", True)),
     )
 
 

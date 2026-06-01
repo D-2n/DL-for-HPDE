@@ -89,6 +89,14 @@ def _solve_one(
     """Return rho_hist, w_hist of shape (nt, nx)."""
     nx = rho0.size
     if use_exact_riemann and ic_name == "riemann_stratified":
+        pass  # exact path below; tau is unused (homogeneous)
+    elif not np.isfinite(tau):
+        raise ValueError(
+            f"tau={tau} (non-finite) requires use_exact_riemann=True and "
+            f"families=[riemann_stratified] only; got ic_name={ic_name!r}."
+        )
+
+    if use_exact_riemann and ic_name == "riemann_stratified":
         # Detect the single jump location: pick the cell with the largest
         # adjacent jump in rho0 (or v0). riemann_stratified_ic builds a 2-segment
         # field, so this is well-defined.

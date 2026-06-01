@@ -183,7 +183,13 @@ def arz_total_loss(
 ):
     L_state = state_loss(rho_pred, w_pred, rho_gt, w_gt, w_weight=w_weight)
     L_cons  = rho_mass_loss(rho_pred, rho_gt)
-    L_bal   = balance_residual_loss(rho_pred, w_pred, t, tau)
+    # Skip balance term when disabled or when tau is non-finite (homogeneous
+    # / exact-Riemann setting): tau*dIdt would otherwise blow up to inf.
+    bal_active = (lambda_balance > 0.0) and np.isfinite(tau)
+    if bal_active:
+        L_bal = balance_residual_loss(rho_pred, w_pred, t, tau)
+    else:
+        L_bal = torch.zeros((), device=rho_pred.device, dtype=rho_pred.dtype)
     L_probe = probe_loss(u_hats, rho_gt, w_gt, w_weight=w_weight)
     L = (lambda_state * L_state + lambda_conservation * L_cons
          + lambda_balance * L_bal + lambda_probe * L_probe)
@@ -208,7 +214,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--data-section", type=str, default="arz_data",
-        help="Which dataset section to use (e.g. arz_data, arz_trial).",
+        help="Which dataset section to use (e.g. arz_data, arz_trial, arz_riemann_trial).",
+    )
+    parser.add_argument(
+        "--model-section", type=str, default="hypno_arz",
+        help="Which model/training section to use (e.g. hypno_arz, hypno_arz_riemann).",
     )
     parser.add_argument(
         "--resume_run", type=str, default=None,
@@ -252,7 +262,7 @@ def main() -> None:
     cfg = apply_runtime_overrides(cfg)
 
     data_cfg = cfg[args.data_section]
-    model_cfg = cfg["hypno_arz"]
+    model_cfg = cfg[args.model_section]
     print(
         f"[train_arz] config={args.config}  data_section={args.data_section}  "
         f"normalize_edge_offsets={model_cfg.get('normalize_edge_offsets', True)!r}  "
@@ -324,6 +334,7 @@ def main() -> None:
         skip=bool(model_cfg.get("skip", True)),
         use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
         normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
+        use_relaxation_features=bool(model_cfg.get("use_relaxation_features", True)),
     ).to(device)
 
     x_grid = torch.tensor(bundle.x, dtype=torch.float32, device=device)
@@ -379,9 +390,11 @@ def main() -> None:
     lambda_probe        = float(model_cfg.get("lambda_probe", 0.01))
     w_weight            = float(model_cfg.get("w_weight", 1.0))
     loss_type           = str(model_cfg.get("loss_type", "mae")).lower()
+    bal_disabled = (lambda_balance <= 0.0) or (not np.isfinite(tau))
+    bal_str = "OFF" if bal_disabled else f"{lambda_balance}"
     log.info(f"Training objective: {loss_type.upper()}  tau={tau}  "
              f"weights state={lambda_state} cons={lambda_conservation} "
-             f"bal={lambda_balance} probe={lambda_probe} w={w_weight}")
+             f"bal={bal_str} probe={lambda_probe} w={w_weight}")
 
     amp_dtype_str = str(model_cfg.get("amp_dtype", "none")).lower()
     if amp_dtype_str in ("bf16", "bfloat16"):
