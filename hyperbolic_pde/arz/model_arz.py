@@ -107,8 +107,13 @@ class _ArzLifting(nn.Module):
         r = torch.sign(rel_x)
         tau1 = F.softplus(self.phys_temp1).clamp(min=1e-6)
         tau2 = F.softplus(self.phys_temp2).clamp(min=1e-6)
-        g_up1 = torch.sigmoid(lam1_ij * r / tau1)
-        g_up2 = torch.sigmoid(lam2_ij * r / tau2)
+        # Upwind convention: edge `i <- j` should pass information when the
+        # wave at the interface flows from j toward i, i.e. when
+        # lambda_m * sign(x_j - x_i) < 0. The sigmoid argument therefore
+        # carries a leading minus sign so g_up_m is large (gate open) on
+        # upstream edges and small (gate closed) on downstream edges.
+        g_up1 = torch.sigmoid(-lam1_ij * r / tau1)
+        g_up2 = torch.sigmoid(-lam2_ij * r / tau2)
         g_up = 1.0 - (1.0 - g_up1) * (1.0 - g_up2)
         gamma = torch.sigmoid(self.phys_gamma)
         g_ent = 1.0 - (1.0 - gamma) * chi_1bad * (1.0 - theta)
@@ -280,8 +285,13 @@ class _ArzMPLayer(nn.Module):
         r = torch.sign(rel_x)
         tau1 = F.softplus(self.phys_temp1).clamp(min=1e-6)
         tau2 = F.softplus(self.phys_temp2).clamp(min=1e-6)
-        g_up1 = torch.sigmoid(lam1_ij * r / tau1)
-        g_up2 = torch.sigmoid(lam2_ij * r / tau2)
+        # Upwind convention: edge `i <- j` should pass information when the
+        # wave at the interface flows from j toward i, i.e. when
+        # lambda_m * sign(x_j - x_i) < 0. The sigmoid argument therefore
+        # carries a leading minus sign so g_up_m is large (gate open) on
+        # upstream edges and small (gate closed) on downstream edges.
+        g_up1 = torch.sigmoid(-lam1_ij * r / tau1)
+        g_up2 = torch.sigmoid(-lam2_ij * r / tau2)
         g_up = 1.0 - (1.0 - g_up1) * (1.0 - g_up2)
         gamma = torch.sigmoid(self.phys_gamma)
         g_ent = 1.0 - (1.0 - gamma) * chi_1bad * (1.0 - theta)
