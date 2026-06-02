@@ -564,6 +564,7 @@ def load_hypno_arz_from_checkpoint(
     ckpt_path,
     device: str = "cpu",
     config_path=None,
+    model_section: Optional[str] = None,
 ):
     """Reconstruct a HypNO_ARZ from a checkpoint file.
 
@@ -633,15 +634,39 @@ def load_hypno_arz_from_checkpoint(
             )
     with _Path(config_path).open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    model_cfg = cfg.get("hypno_arz", {})
+
+    # Pick model section: explicit arg > auto-detect from state_dict > "hypno_arz" default.
+    # The Riemann pretraining run uses hypno_arz_riemann with a 7-channel node MLP
+    # (use_relaxation_features=false); the relaxation run uses hypno_arz with 9 channels.
+    candidates = ("hypno_arz", "hypno_arz_riemann")
+    if model_section is None:
+        node_w = state_dict.get("lifting.node_mlp.0.weight")
+        if node_w is not None and node_w.shape[1] == 7:
+            # 7-channel lifting => relaxation features off => Riemann section
+            model_section = "hypno_arz_riemann" if "hypno_arz_riemann" in cfg else "hypno_arz"
+        else:
+            model_section = "hypno_arz" if "hypno_arz" in cfg else next(
+                (s for s in candidates if s in cfg), "hypno_arz"
+            )
+    if model_section not in cfg:
+        raise KeyError(
+            f"Section {model_section!r} not found in {config_path}; available: "
+            f"{sorted(k for k in cfg if isinstance(cfg.get(k), dict))}"
+        )
+    model_cfg = cfg.get(model_section, {})
     kwargs = _cfg_to_kwargs(model_cfg)
     model = HypNO_ARZ(**kwargs).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 
-    # tau preference: arz_data > arz_trial > None.
+    # tau preference: Riemann section (if Riemann model) > arz_data > arz_trial > None.
     tau = None
-    for sec in ("arz_data", "arz_trial"):
+    tau_order = (
+        ("arz_riemann_trial", "arz_data", "arz_trial")
+        if model_section == "hypno_arz_riemann"
+        else ("arz_data", "arz_trial", "arz_riemann_trial")
+    )
+    for sec in tau_order:
         if sec in cfg and isinstance(cfg[sec], dict) and "tau" in cfg[sec]:
             tau = float(cfg[sec]["tau"])
             break
