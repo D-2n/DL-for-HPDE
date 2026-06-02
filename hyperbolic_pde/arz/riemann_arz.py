@@ -41,16 +41,29 @@ from hyperbolic_pde.arz import physics_arz as P
 
 
 def _rho_star_from_w_minus_v(target: np.ndarray | float) -> np.ndarray | float:
-    """Solve p(rho) = target for the chosen pressure p = rho + rho^2.
+    """Solve p(rho) = target for the active pressure closure.
 
-    rho_*  >= 0 root.  target must be >= 0 (we clamp at 0).
+    Returns the >= 0 root. `target` is clamped at 0 for numerical safety.
+
+        p(rho) = rho            ->  rho_* = target
+        p(rho) = rho + rho^2    ->  rho_* = (-1 + sqrt(1 + 4*target)) / 2
     """
     target = np.maximum(np.asarray(target, dtype=np.float64), 0.0)
+    if P.get_pressure_form() == "rho":
+        return target
     return 0.5 * (-1.0 + np.sqrt(1.0 + 4.0 * target))
 
 
 def _rho_in_fan(xi: np.ndarray, w_L: float) -> np.ndarray:
-    """Density profile inside the 1-rarefaction fan along x/t = xi."""
+    """Density profile inside the 1-rarefaction fan along x/t = xi.
+
+    Across the fan, w is constant (= w_L) and xi = lambda1(rho) = v - rho*p'(rho).
+
+        p(rho) = rho           : xi = w_L - 2*rho                =>  rho = (w_L - xi)/2
+        p(rho) = rho + rho^2   : xi = w_L - 2*rho - 3*rho^2      =>  quadratic root below
+    """
+    if P.get_pressure_form() == "rho":
+        return np.maximum(0.5 * (w_L - xi), 0.0)
     disc = np.maximum(1.0 + 3.0 * (w_L - xi), 0.0)
     return (-1.0 + np.sqrt(disc)) / 3.0
 

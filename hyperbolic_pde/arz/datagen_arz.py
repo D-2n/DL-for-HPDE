@@ -61,6 +61,7 @@ class ArzDatasetBundle:
     num_segments: np.ndarray   # (N,) int
     ic_type: np.ndarray        # (N,) str
     tau: float                 # scalar metadata
+    p_form: str = "rho+rho2"   # pressure closure used to build the GT
 
 
 def _sample_riemann_colocated(
@@ -233,6 +234,7 @@ def generate_arz_dataset(
         num_segments=seg_meta,
         ic_type=np.array(ic_meta, dtype=np.str_),
         tau=float(tau),
+        p_form=P.get_pressure_form(),
     )
 
 
@@ -247,13 +249,15 @@ def save_arz_dataset(bundle: ArzDatasetBundle, path: Path) -> None:
         num_segments=bundle.num_segments,
         ic_type=bundle.ic_type,
         tau=np.array(bundle.tau, dtype=np.float32),
-        p_form=np.array("rho+rho2", dtype=np.str_),
+        p_form=np.array(P.get_pressure_form(), dtype=np.str_),
     )
 
 
 def load_arz_dataset(path: Path) -> ArzDatasetBundle:
     path = Path(path)
     d = np.load(path, allow_pickle=False)
+    # p_form may be absent in pre-toggle datasets; default to the original closure.
+    p_form = str(d["p_form"].item()) if "p_form" in d.files else "rho+rho2"
     return ArzDatasetBundle(
         x=d["x"], t=d["t"],
         rho=d["rho"], w=d["w"], v=d["v"],
@@ -261,6 +265,7 @@ def load_arz_dataset(path: Path) -> ArzDatasetBundle:
         num_segments=d["num_segments"],
         ic_type=np.array([str(s) for s in d["ic_type"]]),
         tau=float(d["tau"]),
+        p_form=p_form,
     )
 
 

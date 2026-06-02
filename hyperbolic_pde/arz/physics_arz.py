@@ -45,13 +45,63 @@ def _maximum(a, b):
 # --------------------------------------------------------------------------- #
 # Closures
 # --------------------------------------------------------------------------- #
+# Pressure form toggle. The whole ARZ codebase reads p / p' / w_eq / y_eq from
+# this module, so flipping _P_FORM here is the single point of control.
+#
+#   "rho+rho2" : p(rho) = rho + rho^2          (original AR-style closure)
+#   "rho"      : p(rho) = rho                  (linear -- simpler Riemann problem)
+#
+# Use `set_pressure_form(...)` from scripts at startup; never read _P_FORM
+# directly outside this module.
+_P_FORM = "rho+rho2"
+_VALID_P_FORMS = ("rho", "rho+rho2")
+
+
+def set_pressure_form(form: str) -> None:
+    """Globally switch the pressure closure used by pressure/dpressure/w_eq/y_eq."""
+    global _P_FORM
+    if form not in _VALID_P_FORMS:
+        raise ValueError(f"Unknown pressure_form={form!r}; expected one of {_VALID_P_FORMS}.")
+    _P_FORM = form
+
+
+def get_pressure_form() -> str:
+    return _P_FORM
+
+
+def _ones_like(rho):
+    """Backend-agnostic ones-like (broadcast-safe scalar substitute)."""
+    if _HAS_TORCH and isinstance(rho, torch.Tensor):
+        return torch.ones_like(rho)
+    if isinstance(rho, np.ndarray):
+        return np.ones_like(rho)
+    return 1.0
+
+
+def _zeros_like(rho):
+    if _HAS_TORCH and isinstance(rho, torch.Tensor):
+        return torch.zeros_like(rho)
+    if isinstance(rho, np.ndarray):
+        return np.zeros_like(rho)
+    return 0.0
+
+
 def pressure(rho):
-    """p(rho) = rho + rho^2."""
+    """p(rho)  -- closure chosen by `set_pressure_form`."""
+    if _P_FORM == "rho":
+        return rho
     return rho + rho * rho
 
 
 def dpressure(rho):
-    """p'(rho) = 1 + 2*rho."""
+    """p'(rho)  -- closure chosen by `set_pressure_form`.
+
+    Returns a tensor/array matching `rho` even when the derivative is constant,
+    so downstream broadcasting (e.g. lambda_ij = v - rho * p'(rho)) stays
+    shape-consistent.
+    """
+    if _P_FORM == "rho":
+        return _ones_like(rho)
     return 1.0 + 2.0 * rho
 
 
@@ -61,12 +111,17 @@ def Veq(rho):
 
 
 def w_eq(rho):
-    """w_eq(rho) = V(rho) + p(rho) = 1 + rho^2."""
+    """w_eq(rho) = V(rho) + p(rho)."""
+    if _P_FORM == "rho":
+        # 1 - rho + rho = 1; broadcast-safe.
+        return _ones_like(rho)
     return 1.0 + rho * rho
 
 
 def y_eq(rho):
-    """y_eq(rho) = rho * w_eq(rho) = rho + rho^3."""
+    """y_eq(rho) = rho * w_eq(rho)."""
+    if _P_FORM == "rho":
+        return rho                # = rho * 1
     return rho + rho * rho * rho
 
 

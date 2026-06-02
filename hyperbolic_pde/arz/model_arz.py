@@ -47,13 +47,33 @@ from hyperbolic_pde.models.hypno_st3 import (
     _spatial_pad_width,
 )
 
-# Frozen ARZ closures, kept in pure torch here (we re-implement them in-module
-# rather than importing physics_arz to avoid the numpy/torch dispatch overhead
-# inside the inner loop).
-def _p(rho): return rho + rho * rho
-def _dp(rho): return 1.0 + 2.0 * rho
-def _Veq(rho): return 1.0 - rho
-def _w_eq(rho): return 1.0 + rho * rho
+# Frozen ARZ closures. We branch on physics_arz._P_FORM at *call* time -- the
+# branch resolves to a single torch op either way, so the cost is negligible
+# (Python int compare) and we avoid the import-time freeze that would make the
+# pressure_form switch ineffective for already-instantiated models.
+from hyperbolic_pde.arz import physics_arz as _P_MOD
+
+
+def _p(rho):
+    if _P_MOD._P_FORM == "rho":
+        return rho
+    return rho + rho * rho
+
+
+def _dp(rho):
+    if _P_MOD._P_FORM == "rho":
+        return torch.ones_like(rho)
+    return 1.0 + 2.0 * rho
+
+
+def _Veq(rho):
+    return 1.0 - rho
+
+
+def _w_eq(rho):
+    if _P_MOD._P_FORM == "rho":
+        return torch.ones_like(rho)
+    return 1.0 + rho * rho
 
 
 # --------------------------------------------------------------------------- #

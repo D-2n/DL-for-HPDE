@@ -287,6 +287,19 @@ def main() -> None:
 
     bundle = load_arz_dataset(Path(data_cfg["path"]))
     tau = float(data_cfg.get("tau", bundle.tau))
+
+    # Pressure-closure switch: model + losses must agree with the dataset.
+    from hyperbolic_pde.arz.physics_arz import set_pressure_form, get_pressure_form
+    cfg_p_form = str(data_cfg.get("pressure_form", bundle.p_form))
+    if cfg_p_form != bundle.p_form:
+        log.warning(
+            f"pressure_form mismatch: config says {cfg_p_form!r}, dataset says "
+            f"{bundle.p_form!r}. Using dataset value to keep training consistent "
+            f"with the ground truth."
+        )
+        cfg_p_form = bundle.p_form
+    set_pressure_form(cfg_p_form)
+    log.info(f"pressure_form={get_pressure_form()}")
     log.info(
         f"Dataset: {data_cfg['path']}  N={bundle.rho.shape[0]}  "
         f"nt={bundle.t.shape[0]}  nx={bundle.x.shape[0]}  tau={tau}"

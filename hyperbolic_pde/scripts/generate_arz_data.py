@@ -51,7 +51,12 @@ def main() -> None:
     cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg[args.section]
 
+    # Apply pressure-closure switch *before* any physics computation runs.
+    from hyperbolic_pde.arz.physics_arz import set_pressure_form, get_pressure_form
+    p_form = str(data_cfg.get("pressure_form", "rho+rho2"))
+    set_pressure_form(p_form)
     print(f"[generate_arz_data] config={args.config}  section={args.section}")
+    print(f"[generate_arz_data] pressure_form={get_pressure_form()}")
     print(f"[generate_arz_data] target: {data_cfg['path']}")
 
     bundle = generate_arz_dataset(

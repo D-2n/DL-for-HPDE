@@ -169,6 +169,11 @@ def main():
     N = bundle.rho.shape[0]
     take = min(args.samples, N)
 
+    # Match the closure used by the dataset (and presumably the model).
+    from hyperbolic_pde.arz.physics_arz import set_pressure_form, get_pressure_form
+    set_pressure_form(bundle.p_form)
+    print(f"[eval_vs_numerical_arz] pressure_form={get_pressure_form()}")
+
     # Load model (handles both legacy dict and new bare-state_dict formats).
     model, _ck_tau = load_hypno_arz_from_checkpoint(
         args.ckpt, device=args.device, config_path=args.config,

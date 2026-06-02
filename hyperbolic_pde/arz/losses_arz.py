@@ -14,8 +14,20 @@ import torch
 import torch.nn.functional as F
 
 
-def _p(rho): return rho + rho * rho
-def _y_eq(rho): return rho + rho * rho * rho
+# Closures keyed off the global pressure_form switch (see physics_arz).
+from hyperbolic_pde.arz import physics_arz as _P_MOD
+
+
+def _p(rho):
+    if _P_MOD._P_FORM == "rho":
+        return rho
+    return rho + rho * rho
+
+
+def _y_eq(rho):
+    if _P_MOD._P_FORM == "rho":
+        return rho                  # rho * w_eq, w_eq = 1
+    return rho + rho * rho * rho
 
 
 def state_loss(
