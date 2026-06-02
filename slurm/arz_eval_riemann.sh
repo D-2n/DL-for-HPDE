@@ -12,12 +12,13 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
-# Usage: sbatch slurm/arz_eval_riemann.sh <run_dir> [ckpt_name] [data] [n_samples] [n_plots]
-RUN_DIR=${1:?usage: sbatch arz_eval_riemann.sh <run_dir> [ckpt_name] [data] [n_samples] [n_plots]}
+# Usage: sbatch slurm/arz_eval_riemann.sh <run_dir> [ckpt_name] [data] [n_samples] [n_plots] [baselines]
+RUN_DIR=${1:?usage: sbatch arz_eval_riemann.sh <run_dir> [ckpt_name] [data] [n_samples] [n_plots] [baselines]}
 CKPT_NAME=${2:-model_final.pt}
 DATA=${3:-/home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz}
 N=${4:-20}
 N_PLOTS=${5:-10}
+BASELINES=${6:-godunov}
 
 CKPT="$RUN_DIR/$CKPT_NAME"
 OUTDIR="$RUN_DIR/eval"
@@ -36,7 +37,7 @@ echo "[arz_eval_riemann] out  = $OUTDIR"
 /home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.eval_vs_numerical_arz \
     --ckpt "$CKPT" \
     --data "$DATA" \
-    --baselines weno5,godunov \
+    --baselines "$BASELINES" \
     --samples "$N" \
     --out "$OUTDIR/vs_numerical.csv" \
     --figures "$OUTDIR/figs_vs_numerical" \
