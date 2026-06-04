@@ -11,7 +11,9 @@
       "Bash(pip install:*)",
       "WebFetch(domain:arxiv.org)",
       "Bash(python:*)",
-      "Bash(ls -dt C:/Users/dimit/Desktop/repos/DL-for-HPDE/hyperbolic_pde/runs/hypno_st*/*/)"
+      "Bash(ls -dt C:/Users/dimit/Desktop/repos/DL-for-HPDE/hyperbolic_pde/runs/hypno_st*/*/)",
+      "Bash(py -c \"import py_compile; py_compile.compile\\(r'hyperbolic_pde/scripts/shock_comparison.py', doraise=True\\); print\\('compile ok'\\)\")",
+      "PowerShell(python -c \"import py_compile; py_compile.compile\\(r'hyperbolic_pde\\\\scripts\\\\shock_comparison.py', doraise=True\\); print\\('compile ok'\\)\")"
     ]
   }
 }

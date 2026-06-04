@@ -250,16 +250,65 @@ def _dilated_spatial_offsets(k_x: int) -> list[int]:
     return [1 + 2 * j for j in range(k_x)]
 
 
-def _spatial_pad_width(k_x: int, dilated_spatial: bool) -> int:
+def _double_batch_spatial_offsets(k_x: int, neighborhood_spacing: int) -> list[int]:
+    """One-sided double-batch spatial offsets.
+
+    Splits `k_x` neighbours per side into two equal blocks:
+      * Local block: `{1, ..., k_x/2}` (contiguous around the centre).
+      * Far block: `{k_x/2 + neighborhood_spacing,
+                     k_x/2 + neighborhood_spacing + 1, ...,
+                     k_x - 1 + neighborhood_spacing}`
+        (contiguous, starts `neighborhood_spacing` past the local block).
+
+    Requires `k_x` even and `neighborhood_spacing >= 1`. Example:
+    `k_x=4, neighborhood_spacing=8 -> [1, 2, 10, 11]`.
+    """
+    if k_x % 2 != 0:
+        raise ValueError(
+            f"double_batch requires k_x even; got k_x={k_x}."
+        )
+    if neighborhood_spacing < 1:
+        raise ValueError(
+            f"neighborhood_spacing must be >= 1; got {neighborhood_spacing}."
+        )
+    half = k_x // 2
+    local = list(range(1, half + 1))
+    far_start = half + neighborhood_spacing
+    far = list(range(far_start, far_start + half))
+    return local + far
+
+
+def _spatial_pad_width(
+    k_x: int,
+    dilated_spatial: bool,
+    double_batch: bool = False,
+    neighborhood_spacing: int = 1,
+) -> int:
     """Spatial padding needed to cover the stencil's maximum `|di|`.
 
-    Dense stencil reaches `k_x`; dilated stencil reaches `2*k_x - 1`.
+    Dense stencil reaches `k_x`; dilated stencil reaches `2*k_x - 1`;
+    double-batch stencil reaches `k_x - 1 + neighborhood_spacing`.
     """
+    if dilated_spatial and double_batch:
+        raise ValueError(
+            "double_batch and dilated_spatial are mutually exclusive."
+        )
+    if double_batch:
+        if k_x % 2 != 0:
+            raise ValueError(
+                f"double_batch requires k_x even; got k_x={k_x}."
+            )
+        return k_x - 1 + neighborhood_spacing
     return (2 * k_x - 1) if dilated_spatial else k_x
 
 
 def _enumerate_ball_offsets(
-    k_x: int, k_t: int, causal: bool, dilated_spatial: bool = False
+    k_x: int,
+    k_t: int,
+    causal: bool,
+    dilated_spatial: bool = False,
+    double_batch: bool = False,
+    neighborhood_spacing: int = 1,
 ) -> list[tuple[int, int]]:
     """Product-box space-time stencil (Chebyshev ball).
 
@@ -267,12 +316,25 @@ def _enumerate_ball_offsets(
     range is `|dm| <= k_t` (or `dm <= 0` when `causal=True`).
 
     Spatial range:
-      * `dilated_spatial=False`: dense `|di| <= k_x`.
+      * `dilated_spatial=False, double_batch=False`: dense `|di| <= k_x`.
       * `dilated_spatial=True` : `di in {0, +/-1, +/-3, ..., +/-(2*k_x-1)}`
         -- `k_x` neighbours per side, adjacent then 1-cell gaps.
+      * `double_batch=True` : local block `{1..k_x/2}` plus a far block
+        starting `neighborhood_spacing` cells past it (see
+        `_double_batch_spatial_offsets`). Temporal neighbourhood unchanged.
+
+    `dilated_spatial` and `double_batch` are mutually exclusive.
     """
+    if dilated_spatial and double_batch:
+        raise ValueError(
+            "double_batch and dilated_spatial are mutually exclusive."
+        )
     m_range = range(-k_t, 1) if causal else range(-k_t, k_t + 1)
-    if dilated_spatial:
+    if double_batch:
+        pos = _double_batch_spatial_offsets(k_x, neighborhood_spacing)
+        di_range = [0] + pos + [-o for o in pos]
+        di_range.sort()
+    elif dilated_spatial:
         pos = _dilated_spatial_offsets(k_x)
         di_range = [0] + pos + [-o for o in pos]
         di_range.sort()
@@ -343,9 +405,19 @@ class _SpaceTimeLiftingLayer(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        double_batch: bool = False,
+        neighborhood_spacing: int = 1,
         normalize_edge_offsets: bool = False,
     ) -> None:
         super().__init__()
+        if dilated_spatial and double_batch:
+            raise ValueError(
+                "double_batch and dilated_spatial are mutually exclusive."
+            )
+        if double_batch and stencil_k_x % 2 != 0:
+            raise ValueError(
+                f"double_batch requires stencil_k_x even; got {stencil_k_x}."
+            )
         self.k_x = stencil_k_x
         self.k_t = stencil_k_t
         self.radius_x = radius_x
@@ -357,6 +429,8 @@ class _SpaceTimeLiftingLayer(nn.Module):
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
         self.dilated_spatial = dilated_spatial
+        self.double_batch = double_batch
+        self.neighborhood_spacing = neighborhood_spacing
         self.normalize_edge_offsets = normalize_edge_offsets
         node_in = 5 if include_flux else 4
         self.node_mlp = _make_mlp(node_in, d_hidden, d_latent, 2, activation)
@@ -501,7 +575,11 @@ class _SpaceTimeLiftingLayer(nn.Module):
         # times matters for the node stream, which is already computed
         # above.  The edge features depend on u0_j (function of x_j
         # only) and on absolute x_j, t_j, so we only need to shift t_j.
-        pad_x = _spatial_pad_width(k_x, self.dilated_spatial)
+        pad_x = _spatial_pad_width(
+            k_x, self.dilated_spatial,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
+        )
         u0_pad = F.pad(u0.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
         x_pad = F.pad(x.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
         t_pad = F.pad(
@@ -512,7 +590,10 @@ class _SpaceTimeLiftingLayer(nn.Module):
         a0_i = a0_i_node
 
         offsets = _enumerate_ball_offsets(
-            k_x, k_t, self.causal, dilated_spatial=self.dilated_spatial
+            k_x, k_t, self.causal,
+            dilated_spatial=self.dilated_spatial,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
         )
 
         def _build_edge(di: int, dm: int):
@@ -677,6 +758,8 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        double_batch: bool = False,
+        neighborhood_spacing: int = 1,
         normalize_edge_offsets: bool = False,
         use_gaussian_spatial_smoothing: bool = False,
         spatial_smoothing_adjacent_mass: float = 0.8,
@@ -696,6 +779,16 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         self.include_flux = include_flux
         self.pure_pairwise_edges = pure_pairwise_edges
         self.dilated_spatial = dilated_spatial
+        self.double_batch = double_batch
+        self.neighborhood_spacing = neighborhood_spacing
+        if dilated_spatial and double_batch:
+            raise ValueError(
+                "double_batch and dilated_spatial are mutually exclusive."
+            )
+        if double_batch and k_x % 2 != 0:
+            raise ValueError(
+                f"double_batch requires k_x even; got {k_x}."
+            )
         self.normalize_edge_offsets = normalize_edge_offsets
         self.use_gaussian_spatial_smoothing = use_gaussian_spatial_smoothing
         self.spatial_smoothing_adjacent_mass = float(spatial_smoothing_adjacent_mass)
@@ -956,7 +1049,11 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         u_hat_i = u_hat.unsqueeze(-1)                                           # [B, nt, nx, 1]
 
         # Joint space-time padding.
-        pad_x = _spatial_pad_width(k_x, self.dilated_spatial)
+        pad_x = _spatial_pad_width(
+            k_x, self.dilated_spatial,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
+        )
         h_pad = _pad_space_time(h, pad_x, k_t)                                  # [B, nt+2k_t, nx+2*pad_x, d]
         u_hat_pad = _pad_space_time(u_hat.unsqueeze(-1), pad_x, k_t).squeeze(-1)# [B, nt+2k_t, nx+2*pad_x]
         x_pad = F.pad(x.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)  # [B, nx+2*pad_x]
@@ -970,7 +1067,10 @@ class _PhysicsSpaceTimeMPLayer(nn.Module):
         f_hat_i = u_hat_i * (1.0 - u_hat_i)
 
         offsets = _enumerate_ball_offsets(
-            k_x, k_t, self.causal, dilated_spatial=self.dilated_spatial
+            k_x, k_t, self.causal,
+            dilated_spatial=self.dilated_spatial,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
         )
 
         def _build_edge(di: int, dm: int):
@@ -1172,6 +1272,8 @@ class HypNO_ST3(nn.Module):
         include_flux: bool = True,
         pure_pairwise_edges: bool = False,
         dilated_spatial: bool = False,
+        double_batch: bool = False,
+        neighborhood_spacing: int = 1,
         normalize_edge_offsets: bool = False,
         decoder_depth: int = 3,
         use_gaussian_spatial_smoothing: bool = False,
@@ -1204,6 +1306,9 @@ class HypNO_ST3(nn.Module):
         print(f"  include_flux       = {include_flux}")
         print(f"  pure_pairwise_edges= {pure_pairwise_edges}")
         print(f"  dilated_spatial    = {dilated_spatial}")
+        print(f"  double_batch       = {double_batch}")
+        if double_batch:
+            print(f"    neighborhood_spacing = {neighborhood_spacing}")
         print(f"  normalize_edge_offsets = {normalize_edge_offsets}")
         print(f"  decoder_depth      = {decoder_depth}")
         print(f"  use_gaussian_spatial_smoothing = {use_gaussian_spatial_smoothing}")
@@ -1245,6 +1350,8 @@ class HypNO_ST3(nn.Module):
             include_flux=include_flux,
             pure_pairwise_edges=pure_pairwise_edges,
             dilated_spatial=dilated_spatial,
+            double_batch=double_batch,
+            neighborhood_spacing=neighborhood_spacing,
             normalize_edge_offsets=normalize_edge_offsets,
         )
 
@@ -1267,6 +1374,8 @@ class HypNO_ST3(nn.Module):
                 include_flux=include_flux,
                 pure_pairwise_edges=pure_pairwise_edges,
                 dilated_spatial=dilated_spatial,
+                double_batch=double_batch,
+                neighborhood_spacing=neighborhood_spacing,
                 normalize_edge_offsets=normalize_edge_offsets,
                 use_gaussian_spatial_smoothing=use_gaussian_spatial_smoothing,
                 spatial_smoothing_adjacent_mass=spatial_smoothing_adjacent_mass,

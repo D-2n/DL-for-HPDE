@@ -104,13 +104,21 @@ class _ArzLifting(nn.Module):
         normalize_edge_offsets: bool = True,
         d_hidden_nonadj: Optional[int] = None,
         use_relaxation_features: bool = True,
+        double_batch: bool = False,
+        neighborhood_spacing: int = 1,
     ) -> None:
         super().__init__()
+        if double_batch and stencil_k_x % 2 != 0:
+            raise ValueError(
+                f"double_batch requires stencil_k_x even; got {stencil_k_x}."
+            )
         self.k_x = stencil_k_x
         self.k_t = stencil_k_t
         self.causal = causal_temporal
         self.normalize_edge_offsets = normalize_edge_offsets
         self.use_relaxation_features = use_relaxation_features
+        self.double_batch = double_batch
+        self.neighborhood_spacing = neighborhood_spacing
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
         n_node_in = 9 if use_relaxation_features else 7
@@ -185,13 +193,21 @@ class _ArzLifting(nn.Module):
         h_node = self.node_mlp(node_in)
 
         # Pad rho0, w0 for neighbour lookups.
-        pad_x = _spatial_pad_width(self.k_x, dilated_spatial=False)
+        pad_x = _spatial_pad_width(
+            self.k_x, dilated_spatial=False,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
+        )
         rho0_pad = F.pad(rho0.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
         w0_pad   = F.pad(w0.unsqueeze(1),   (pad_x, pad_x), mode="replicate").squeeze(1)
         x_pad    = F.pad(x.unsqueeze(1),    (pad_x, pad_x), mode="replicate").squeeze(1)
         t_pad    = F.pad(t.view(1, 1, -1),  (self.k_t, self.k_t), mode="replicate").view(-1)
 
-        offsets = _enumerate_ball_offsets(self.k_x, self.k_t, self.causal)
+        offsets = _enumerate_ball_offsets(
+            self.k_x, self.k_t, self.causal,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
+        )
 
         adj_feats:    list[torch.Tensor] = []
         nonadj_feats: list[torch.Tensor] = []
@@ -286,12 +302,20 @@ class _ArzMPLayer(nn.Module):
         d_hidden_nonadj: Optional[int] = None,
         shared_decoder: Optional[nn.Module] = None,
         normalize_edge_offsets: bool = True,
+        double_batch: bool = False,
+        neighborhood_spacing: int = 1,
     ) -> None:
         super().__init__()
+        if double_batch and k_x % 2 != 0:
+            raise ValueError(
+                f"double_batch requires k_x even; got {k_x}."
+            )
         self.k_x = k_x
         self.k_t = k_t
         self.causal = causal_temporal
         self.normalize_edge_offsets = normalize_edge_offsets
+        self.double_batch = double_batch
+        self.neighborhood_spacing = neighborhood_spacing
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
@@ -364,7 +388,11 @@ class _ArzMPLayer(nn.Module):
         lam2_i = v_hat
         spec_i = torch.maximum(lam1_i.abs(), lam2_i.abs())
 
-        pad_x = _spatial_pad_width(self.k_x, dilated_spatial=False)
+        pad_x = _spatial_pad_width(
+            self.k_x, dilated_spatial=False,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
+        )
         h_pad = _pad_space_time(h, pad_x, self.k_t)
         rho_hat_pad = _pad_space_time(rho_hat, pad_x, self.k_t)
         w_hat_pad = _pad_space_time(w_hat, pad_x, self.k_t)
@@ -374,7 +402,11 @@ class _ArzMPLayer(nn.Module):
         x_i = x.unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
         t_i = t.view(1, nt, 1, 1).expand(B, nt, nx, 1)
 
-        offsets = _enumerate_ball_offsets(self.k_x, self.k_t, self.causal)
+        offsets = _enumerate_ball_offsets(
+            self.k_x, self.k_t, self.causal,
+            double_batch=self.double_batch,
+            neighborhood_spacing=self.neighborhood_spacing,
+        )
 
         adj_feats:    list[torch.Tensor] = []
         nonadj_feats: list[torch.Tensor] = []
@@ -484,6 +516,8 @@ class HypNO_ARZ(nn.Module):
         use_checkpoint: bool = False,
         normalize_edge_offsets: bool = True,
         use_relaxation_features: bool = True,
+        double_batch: bool = False,
+        neighborhood_spacing: int = 1,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -491,13 +525,17 @@ class HypNO_ARZ(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.normalize_edge_offsets = normalize_edge_offsets
         self.use_relaxation_features = use_relaxation_features
+        self.double_batch = double_batch
+        self.neighborhood_spacing = neighborhood_spacing
         if _ignored:
             print(f"[HypNO_ARZ] IGNORED kwargs = {sorted(_ignored.keys())}")
         print(
             f"[HypNO_ARZ] kx={stencil_k_x} kt={stencil_k_t} "
             f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
             f"skip={skip} normalize_edge_offsets={normalize_edge_offsets} "
-            f"use_relaxation_features={use_relaxation_features}"
+            f"use_relaxation_features={use_relaxation_features} "
+            f"double_batch={double_batch}"
+            + (f" neighborhood_spacing={neighborhood_spacing}" if double_batch else "")
         )
 
         self.lifting = _ArzLifting(
@@ -507,6 +545,8 @@ class HypNO_ARZ(nn.Module):
             normalize_edge_offsets=normalize_edge_offsets,
             d_hidden_nonadj=d_hidden_nonadj,
             use_relaxation_features=use_relaxation_features,
+            double_batch=double_batch,
+            neighborhood_spacing=neighborhood_spacing,
         )
 
         # Decoder outputs (rho, w) -- 2 channels.
@@ -520,6 +560,8 @@ class HypNO_ARZ(nn.Module):
                 d_hidden_nonadj=d_hidden_nonadj,
                 shared_decoder=self.decoder,
                 normalize_edge_offsets=normalize_edge_offsets,
+                double_batch=double_batch,
+                neighborhood_spacing=neighborhood_spacing,
             )
             for _ in range(n_layers)
         ])
@@ -577,6 +619,8 @@ def _cfg_to_kwargs(model_cfg: dict) -> dict:
         use_checkpoint=False,
         normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
         use_relaxation_features=bool(model_cfg.get("use_relaxation_features", True)),
+        double_batch=bool(model_cfg.get("double_batch", False)),
+        neighborhood_spacing=int(model_cfg.get("neighborhood_spacing", 1)),
     )
 
 
