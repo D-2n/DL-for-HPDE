@@ -357,13 +357,24 @@ class _ArzMPLayer(nn.Module):
     def _gate_nonadj(
         self, dm: int,
         rel_t: torch.Tensor,
+        rel_x: torch.Tensor,
         spec_radius_i: torch.Tensor,
         dx_grid: float,
     ) -> torch.Tensor:
         if dm == 0:
             return torch.ones_like(rel_t)
         cfl_scale = F.softplus(self.phys_cfl_scale).clamp(min=1e-6)
-        cfl = spec_radius_i * rel_t.abs() / dx_grid
+        # CFL number uses the edge's true spatial span |di|*dx (= |rel_x|),
+        # not the scalar grid dx, so long-reach diagonal edges are judged
+        # against the distance they actually cover. Pure-temporal edges
+        # (di==0, rel_x==0) span no space and are always inside the
+        # characteristic cone -> gate stays open.
+        dx_edge = rel_x.abs()
+        cfl = torch.where(
+            dx_edge > 0,
+            spec_radius_i * rel_t.abs() / dx_edge.clamp(min=1e-12),
+            torch.zeros_like(rel_t),
+        )
         return torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
 
     def forward(
@@ -468,7 +479,7 @@ class _ArzMPLayer(nn.Module):
                     h, h_j,
                     rel_x_feat, rel_t_feat, r, spec_j,
                 ], dim=-1)  # 2d + 4
-                gate = self._gate_nonadj(dm, rel_t, spec_i, dx_val)
+                gate = self._gate_nonadj(dm, rel_t, rel_x, spec_i, dx_val)
                 nonadj_feats.append(msg_in)
                 nonadj_gates.append(gate)
 
