@@ -1,0 +1,19 @@
+arz_data:
+  path: /home/dzdrale/scratch/arz_1d/arz_dataset_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_dataset_prho.npz
+  num_samples: 5400
+  pressure_form: rho
+
+arz_riemann_trial:
+  path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
+
+hypno_arz:
+  compile: false
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_prho.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_prho
+
+hypno_arz_riemann:
+  compile: false
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_riemann.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_riemann

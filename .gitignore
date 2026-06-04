@@ -12,6 +12,8 @@ hyperbolic_pde/runs/
 # Local configs
 hyperbolic_pde/configs/*.yaml
 hyperbolic_pde/configs/*.yml
+!hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho.yaml
+!hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho_db.yaml
 
 # Images
 *.png
