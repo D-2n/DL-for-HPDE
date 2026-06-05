@@ -286,11 +286,17 @@ class _ArzLifting(nn.Module):
 class _ArzMPLayer(nn.Module):
     """Two-edge-MLP space-time MP for ARZ (pure-pairwise).
 
-    Adjacent edges (2d + 12):
-        [h_i, h_j, r, lam1_ij, lam2_ij, lam1_ij*r, lam2_ij*r,
-         chi_up1, chi_up2, drho, dv, dw, theta, chi_1bad]
-    Non-adjacent edges (2d + 4):
-        [h_i, h_j, rel_x_feat, rel_t_feat, sign(rel_x), max(|lam1_j|,|lam2_j|)]
+    Adjacent edges (2d + 5):
+        [h_i, h_j, lam1_ij, lam2_ij, chi_up1, chi_up2, sign(rel_x)]
+    Non-adjacent edges (2d + 3):
+        [h_i, h_j, rel_x_feat, rel_t_feat, sign(rel_x)]
+
+    Pure-pairwise: the message carries only the endpoint latents plus minimal
+    pair-intrinsic interface scalars (the two interface eigenvalues and a
+    per-family upwind flag). Quantities the gate already consumes (theta,
+    chi_1bad) and node-native scalars (state jumps, neighbour spectral radius)
+    are kept out of the message. Mirrors the LWR pure-pairwise convention,
+    extended to ARZ's two characteristic families.
     """
 
     def __init__(
@@ -328,8 +334,8 @@ class _ArzMPLayer(nn.Module):
         self.phys_gamma = nn.Parameter(torch.tensor(-2.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
-        self.adj_msg = _make_mlp(2 * d_latent + 12, d_hidden, d_latent, 3, activation)
-        self.nonadj_msg = _make_mlp(2 * d_latent + 4, dh_na, d_latent, 3, activation)
+        self.adj_msg = _make_mlp(2 * d_latent + 5, d_hidden, d_latent, 3, activation)
+        self.nonadj_msg = _make_mlp(2 * d_latent + 3, dh_na, d_latent, 3, activation)
 
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
         self.W = nn.Linear(d_latent, d_latent)
@@ -436,9 +442,7 @@ class _ArzMPLayer(nn.Module):
             rel_x = x_j - x_i
             rel_t = t_j - t_i
             v_j = w_j - _p(rho_j)
-            lam1_j = v_j - rho_j * _dp(rho_j)
-            lam2_j = v_j
-            spec_j = torch.maximum(lam1_j.abs(), lam2_j.abs())
+            lam1_j = v_j - rho_j * _dp(rho_j)  # needed by the entropy flag below
 
             if self.normalize_edge_offsets:
                 rel_x_feat = rel_x / dx_val
@@ -465,20 +469,24 @@ class _ArzMPLayer(nn.Module):
                 lam1_R = torch.where(rel_x > 0, lam1_j, lam1_i)
                 chi_1bad = (lam1_L < lam1_R).float()
 
+                # Pure-pairwise: only the interface eigenvalues and per-family
+                # upwind flags. theta/chi_1bad are computed above but go to the
+                # gate only (not the message); drho/dv/dw and the lam*r products
+                # are dropped (node-native / gate-derivable).
                 msg_in = torch.cat([
                     h, h_j,
-                    r, lam1_ij, lam2_ij, lam1_ij * r, lam2_ij * r,
+                    lam1_ij, lam2_ij,
                     chi_up1, chi_up2,
-                    drho, dv, dw, theta, chi_1bad,
-                ], dim=-1)  # 2d + 12
+                    r,
+                ], dim=-1)  # 2d + 5
                 gate = self._gate_adj(rel_x, lam1_ij, lam2_ij, chi_1bad, theta)
                 adj_feats.append(msg_in)
                 adj_gates.append(gate)
             else:
                 msg_in = torch.cat([
                     h, h_j,
-                    rel_x_feat, rel_t_feat, r, spec_j,
-                ], dim=-1)  # 2d + 4
+                    rel_x_feat, rel_t_feat, r,
+                ], dim=-1)  # 2d + 3
                 gate = self._gate_nonadj(dm, rel_t, rel_x, spec_i, dx_val)
                 nonadj_feats.append(msg_in)
                 nonadj_gates.append(gate)
