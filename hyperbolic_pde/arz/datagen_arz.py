@@ -129,15 +129,16 @@ def _solve_one(
         # Detect the single jump location: pick the cell with the largest
         # adjacent jump in rho0 (or v0). riemann_stratified_ic builds a 2-segment
         # field, so this is well-defined.
-        x = np.linspace(x_min, x_max, nx, dtype=np.float64)
+        dx = (x_max - x_min) / nx
+        x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
         d = np.abs(np.diff(rho0)) + np.abs(np.diff(w0))
         j = int(np.argmax(d))
-        x0 = 0.5 * (x[j] + x[j + 1])
+        x0 = 0.5 * (x_mid[j] + x_mid[j + 1])
         rho_L = float(rho0[j]); w_L = float(w0[j])
         rho_R = float(rho0[j + 1]); w_R = float(w0[j + 1])
         t = np.linspace(0.0, t_max, nt, dtype=np.float64)
         rho_hist, w_hist, _ = Rie.solve_riemann_arz_xt(
-            rho_L, w_L, rho_R, w_R, x, t, x0=x0,
+            rho_L, w_L, rho_R, w_R, x_mid, t, x0=x0,
         )
         return rho_hist.astype(np.float32), w_hist.astype(np.float32)
     # Default: Strang-split FV with the configured tau.
@@ -146,6 +147,81 @@ def _solve_one(
         tau=tau, cfl=cfl, boundary=boundary, refine=refine,
     )
     return rho_hist, w_hist
+
+
+def generate_arz_riemann_exact_dataset(
+    num_samples: int,
+    nx: int, nt: int,
+    x_min: float, x_max: float, t_max: float,
+    seed: int = 0,
+    rho_min: float = _RHO_MIN_DEFAULT,
+    rho_max: float = _RHO_MAX_DEFAULT,
+    v_min: float = _V_MIN_DEFAULT,
+    v_max: float = _V_MAX_DEFAULT,
+) -> ArzDatasetBundle:
+    """Generate an exact-Riemann ARZ dataset evaluated at cell midpoints.
+
+    Ground truth is the exact homogeneous (tau=inf) solver sampled at
+    x_mid = x_min + (i + 0.5)*dx  for i=0..nx-1, for each output time t_k.
+    No FVM discretisation is used.
+    """
+    rng = np.random.default_rng(seed)
+    dx = (x_max - x_min) / nx
+    x_mid = np.array(
+        [x_min + (i + 0.5) * dx for i in range(nx)], dtype=np.float32
+    )
+    t = np.linspace(0.0, t_max, nt, dtype=np.float32)
+
+    rho_all  = np.zeros((num_samples, nt, nx), dtype=np.float32)
+    w_all    = np.zeros((num_samples, nt, nx), dtype=np.float32)
+    rho0_all = np.zeros((num_samples, nx), dtype=np.float32)
+    w0_all   = np.zeros((num_samples, nx), dtype=np.float32)
+    v0_all   = np.zeros((num_samples, nx), dtype=np.float32)
+
+    print(
+        f"[arz riemann exact datagen] N={num_samples}  nx={nx}  nt={nt}  "
+        f"x=[{x_min},{x_max}]  t_max={t_max}  "
+        f"rho in [{rho_min},{rho_max}]  v in [{v_min},{v_max}]"
+    )
+
+    for i in range(num_samples):
+        rho0, v0 = _sample_riemann_colocated(
+            x_mid.astype(np.float64), rng, rho_min, rho_max, v_min, v_max
+        )
+        rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
+        w0 = v0 + P.pressure(rho0)
+
+        # Detect jump location from IC values.
+        d = np.abs(np.diff(rho0)) + np.abs(np.diff(w0))
+        j = int(np.argmax(d))
+        x0 = 0.5 * (x_mid[j] + x_mid[j + 1])
+        rho_L = float(rho0[j]);     w_L = float(w0[j])
+        rho_R = float(rho0[j + 1]); w_R = float(w0[j + 1])
+
+        rho_hist, w_hist, _ = Rie.solve_riemann_arz_xt(
+            rho_L, w_L, rho_R, w_R,
+            x_mid.astype(np.float64), t.astype(np.float64), x0=x0,
+        )
+        rho_all[i]  = rho_hist.astype(np.float32)
+        w_all[i]    = w_hist.astype(np.float32)
+        rho0_all[i] = rho0.astype(np.float32)
+        w0_all[i]   = w0.astype(np.float32)
+        v0_all[i]   = v0.astype(np.float32)
+
+        if (i + 1) % max(1, num_samples // 10) == 0:
+            print(f"  {i+1}/{num_samples}", flush=True)
+
+    v_all = w_all - P.pressure(rho_all)
+
+    return ArzDatasetBundle(
+        x=x_mid, t=t,
+        rho=rho_all, w=w_all, v=v_all,
+        rho0=rho0_all, w0=w0_all, v0=v0_all,
+        num_segments=np.ones(num_samples, dtype=np.int64),
+        ic_type=np.array(["riemann_stratified"] * num_samples, dtype=np.str_),
+        tau=float("inf"),
+        p_form=P.get_pressure_form(),
+    )
 
 
 def generate_arz_dataset(
@@ -292,6 +368,9 @@ if __name__ == "__main__":
     parser.add_argument("--refine", type=int, default=4)
     parser.add_argument("--use-exact-riemann", action="store_true",
                         help="Use exact homogeneous (tau=inf) solver for Riemann ICs.")
+    parser.add_argument("--exact-riemann-only", action="store_true",
+                        help="Generate a pure exact-Riemann dataset evaluated at cell midpoints "
+                             "(no FVM; overrides --families/--segments/--tau).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rho-min", type=float, default=_RHO_MIN_DEFAULT)
     parser.add_argument("--rho-max", type=float, default=_RHO_MAX_DEFAULT)
@@ -299,16 +378,25 @@ if __name__ == "__main__":
     parser.add_argument("--v-max",   type=float, default=_V_MAX_DEFAULT)
     args = parser.parse_args()
 
-    families = [s.strip() for s in args.families.split(",") if s.strip()]
-    segments = [int(s) for s in args.segments.split(",") if s.strip()]
-    bundle = generate_arz_dataset(
-        num_samples=args.N, nx=args.nx, nt=args.nt,
-        x_min=args.x_min, x_max=args.x_max, t_max=args.t_max,
-        tau=args.tau, families=families, segments=segments,
-        cfl=args.cfl, boundary=args.boundary, refine=args.refine,
-        use_exact_riemann=args.use_exact_riemann, seed=args.seed,
-        rho_min=args.rho_min, rho_max=args.rho_max,
-        v_min=args.v_min,     v_max=args.v_max,
-    )
+    if args.exact_riemann_only:
+        bundle = generate_arz_riemann_exact_dataset(
+            num_samples=args.N, nx=args.nx, nt=args.nt,
+            x_min=args.x_min, x_max=args.x_max, t_max=args.t_max,
+            seed=args.seed,
+            rho_min=args.rho_min, rho_max=args.rho_max,
+            v_min=args.v_min,     v_max=args.v_max,
+        )
+    else:
+        families = [s.strip() for s in args.families.split(",") if s.strip()]
+        segments = [int(s) for s in args.segments.split(",") if s.strip()]
+        bundle = generate_arz_dataset(
+            num_samples=args.N, nx=args.nx, nt=args.nt,
+            x_min=args.x_min, x_max=args.x_max, t_max=args.t_max,
+            tau=args.tau, families=families, segments=segments,
+            cfl=args.cfl, boundary=args.boundary, refine=args.refine,
+            use_exact_riemann=args.use_exact_riemann, seed=args.seed,
+            rho_min=args.rho_min, rho_max=args.rho_max,
+            v_min=args.v_min,     v_max=args.v_max,
+        )
     save_arz_dataset(bundle, args.out)
     print(f"[arz datagen] saved {args.out}  shapes: rho={bundle.rho.shape}")

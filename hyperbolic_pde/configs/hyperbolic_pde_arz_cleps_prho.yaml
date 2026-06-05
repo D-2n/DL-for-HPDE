@@ -8,6 +8,12 @@ arz_riemann_trial:
   path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
   test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
 
+arz_riemann_exact_prho:
+  path: /home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho.npz
+  pressure_form: rho
+  num_samples: 2000
+
 hypno_arz:
   compile: false
   save_path: /home/dzdrale/scratch/runs/hypno_arz_prho.pt

@@ -306,6 +306,8 @@ def main() -> None:
     )
 
     N = bundle.rho.shape[0]
+    if "num_samples" in data_cfg:
+        N = min(N, int(data_cfg["num_samples"]))
     train_idx, _ = split_indices(N, float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
     val_fraction = float(data_cfg.get("val_fraction", 0.1))
     train_idx, val_idx = split_train_val(train_idx, val_fraction, int(cfg.get("seed", 42)))
