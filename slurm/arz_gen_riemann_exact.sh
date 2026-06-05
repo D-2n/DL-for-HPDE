@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=arz_gen_riemann_exact
-#SBATCH --partition=cpu
-#SBATCH --cpus-per-task=8
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:a100:1
+#SBATCH --cpus-per-gpu=4
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_gen_riemann_exact_%j.log

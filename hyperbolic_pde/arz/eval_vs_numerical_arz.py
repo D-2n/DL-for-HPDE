@@ -212,7 +212,7 @@ def main():
 
         rho_gt = bundle.rho[i].astype(np.float64)
         w_gt   = bundle.w[i].astype(np.float64)
-        v_gt   = w_gt - (rho_gt + rho_gt * rho_gt)
+        v_gt   = w_gt - P.pressure(rho_gt)
         rho0   = bundle.rho0[i].astype(np.float64)
         w0     = bundle.w0[i].astype(np.float64)
 
@@ -224,7 +224,7 @@ def main():
                 x, t,
             )
         rho_p = rho_p[0].cpu().numpy(); w_p = w_p[0].cpu().numpy()
-        v_p = w_p - (rho_p + rho_p * rho_p)
+        v_p = w_p - P.pressure(rho_p)
         buckets[key]["model"]["rho"].append(float(np.mean(np.abs(rho_p - rho_gt))))
         buckets[key]["model"]["w"  ].append(float(np.mean(np.abs(w_p   - w_gt  ))))
         buckets[key]["model"]["v"  ].append(float(np.mean(np.abs(v_p   - v_gt  ))))
@@ -232,14 +232,15 @@ def main():
         # Stash predictions for plotting (only kept when --figures is set).
         sample_preds = {"model": (rho_p, w_p)} if plot_dir is not None else None
 
-        # Baselines.
+        # For exact-Riemann datasets (tau=inf) run baselines as homogeneous ARZ.
+        baseline_tau = tau if np.isfinite(tau) else 1e6
         for m in baselines:
             try:
-                rho_b, w_b = _run_baseline(m, rho0, w0, bundle, tau, args.boundary)
+                rho_b, w_b = _run_baseline(m, rho0, w0, bundle, baseline_tau, args.boundary)
             except Exception as e:
                 print(f"  [warn] {m} failed on sample {i}: {e}", flush=True)
                 continue
-            v_b = w_b - (rho_b + rho_b * rho_b)
+            v_b = w_b - P.pressure(rho_b)
             buckets[key][m]["rho"].append(float(np.mean(np.abs(rho_b - rho_gt))))
             buckets[key][m]["w"  ].append(float(np.mean(np.abs(w_b   - w_gt  ))))
             buckets[key][m]["v"  ].append(float(np.mean(np.abs(v_b   - v_gt  ))))
