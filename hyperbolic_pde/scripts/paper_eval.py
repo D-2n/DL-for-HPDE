@@ -31,9 +31,17 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import solve_conservation_fvm
 from hyperbolic_pde.models.hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3
+from hyperbolic_pde.models.fno import FNO2d
 
-SOLVERS = ["HypNO-ST3", "WENO5", "Godunov"]
-COLORS = {"HypNO-ST3": "tab:blue", "WENO5": "tab:orange", "Godunov": "tab:green"}
+# Solver order. FNO is appended at runtime only if its checkpoint is found, so
+# that runs without a trained FNO still produce HypNO-ST3 / WENO5 / Godunov.
+BASE_SOLVERS = ["HypNO-ST3", "WENO5", "Godunov"]
+COLORS = {
+    "HypNO-ST3": "tab:blue",
+    "WENO5": "tab:orange",
+    "Godunov": "tab:green",
+    "FNO": "tab:red",
+}
 
 # Maximum number of segment values to spell out in the figure title before
 # truncation; beyond this just write "[v0, v1, ..., v_last]".
@@ -102,6 +110,36 @@ def build_model(model_cfg: dict, device: torch.device) -> HypNO_ST3:
     return model
 
 
+def make_fno_input(
+    u0_np: np.ndarray, x_np: np.ndarray, t_np: np.ndarray
+) -> torch.Tensor:
+    """Build the (1, 3, nx, nt) input tensor the FNO expects (mirrors FNODataset)."""
+    x_t = torch.tensor(x_np, dtype=torch.float32)
+    t_t = torch.tensor(t_np, dtype=torch.float32)
+    u0_t = torch.tensor(u0_np, dtype=torch.float32)
+    X, T = torch.meshgrid(x_t, t_t, indexing="ij")
+    u0_grid = u0_t.unsqueeze(1).repeat(1, t_t.numel())
+    inp = torch.stack([X, T, u0_grid], dim=0).unsqueeze(0)  # (1, 3, nx, nt)
+    return inp
+
+
+def load_fno(fno_cfg: dict, weights_path: Path, device: torch.device) -> FNO2d:
+    model = FNO2d(
+        in_channels=3,
+        out_channels=1,
+        width=int(fno_cfg["width"]),
+        modes_x=int(fno_cfg["modes_x"]),
+        modes_t=int(fno_cfg["modes_t"]),
+        layers=int(fno_cfg["layers"]),
+    ).to(device)
+    state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+    if any(k.startswith("_orig_mod.") for k in state_dict):
+        state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
+
 def extract_segment_values(u0: np.ndarray, atol: float = 1e-6) -> list[float]:
     """Return the sequence of distinct adjacent segment values in u0.
 
@@ -150,6 +188,17 @@ def main() -> None:
         "--out_dir", type=str, default="paper_eval",
         help="Output subdirectory under run-dir (default: paper_eval).",
     )
+    parser.add_argument(
+        "--fno-weights", type=str, default=None,
+        help="Path to trained FNO checkpoint. Defaults to cfg['fno']['save_path']. "
+             "On CLEPS the trained weights are at "
+             "hyperbolic_pde/runs/fno_epoch200.pt. If neither is found, FNO is "
+             "skipped and only HypNO-ST3 / WENO5 / Godunov are reported.",
+    )
+    parser.add_argument(
+        "--no-fno", action="store_true",
+        help="Skip the FNO baseline even if a checkpoint exists.",
+    )
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -192,6 +241,32 @@ def main() -> None:
     model.load_state_dict(state_dict)
     model.eval()
     print(f"Loaded HypNO-ST3 from {weights_path}")
+
+    # ---- Optional FNO baseline --------------------------------------- #
+    # Resolve the FNO checkpoint: explicit --fno-weights wins, else
+    # cfg['fno']['save_path']. The CLEPS-trained weights live at
+    # hyperbolic_pde/runs/fno_epoch200.pt. If nothing is found (or --no-fno),
+    # FNO is dropped from the solver list and the script behaves as before.
+    fno_model = None
+    fno_cfg = cfg.get("fno")
+    if not args.no_fno and fno_cfg is not None:
+        if args.fno_weights is not None:
+            fno_weights = Path(args.fno_weights)
+        else:
+            fno_weights = Path(fno_cfg.get("save_path", "hyperbolic_pde/runs/fno.pt"))
+        if fno_weights.exists():
+            fno_model = load_fno(fno_cfg, fno_weights, device)
+            print(f"Loaded FNO from {fno_weights}")
+        else:
+            print(
+                f"FNO checkpoint not found at {fno_weights}; skipping FNO baseline. "
+                f"Pass --fno-weights to point at it (CLEPS: "
+                f"hyperbolic_pde/runs/fno_epoch200.pt)."
+            )
+    elif args.no_fno:
+        print("--no-fno given; skipping FNO baseline.")
+
+    SOLVERS = list(BASE_SOLVERS) + (["FNO"] if fno_model is not None else [])
 
     x_grid = torch.tensor(x_np, dtype=torch.float32, device=device)
     t_grid = torch.tensor(t_np, dtype=torch.float32, device=device)
@@ -245,6 +320,13 @@ def main() -> None:
             )
         return pred_t[0].cpu().numpy()
 
+    def run_fno(u0_np: np.ndarray) -> np.ndarray:
+        inp = make_fno_input(u0_np, x_np, t_np).to(device)
+        with torch.no_grad():
+            pred = fno_model(inp)  # (1, 1, nx, nt)
+        # FNO predicts in (nx, nt) layout; transpose to (nt, nx) like the GT.
+        return pred[0, 0].cpu().numpy().T
+
     n_total = u0_all.shape[0]
     for idx in range(n_total):
         seg = int(seg_all[idx])
@@ -270,6 +352,8 @@ def main() -> None:
         hypno_np = run_hypno(u0_np)
 
         preds = {"HypNO-ST3": hypno_np, "WENO5": weno, "Godunov": godunov}
+        if fno_model is not None:
+            preds["FNO"] = run_fno(u0_np)
         for name, pred in preds.items():
             mae_by_cell[cell][name].append(mae(pred, lh))
 

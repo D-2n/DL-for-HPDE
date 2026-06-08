@@ -35,7 +35,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz import physics_arz as P
-from hyperbolic_pde.arz.riemann_arz import _rho_star_from_w_minus_v
+from hyperbolic_pde.arz.riemann_arz import _rho_star_from_w_minus_v, solve_riemann_arz_xt
 
 
 def _classify(rho_L, w_L, rho_R, w_R):
@@ -99,27 +99,31 @@ def _overlay_wave_lines(ax, info, cls, x0, t):
     ax.legend(loc="upper left", fontsize=7, framealpha=0.7)
 
 
-def _plot_one(bundle, idx: int, out_dir: Path) -> Path:
+def _plot_one(bundle, idx: int, out_dir: Path, nx_hires: int = 1000) -> Path:
     x = bundle.x
     t = bundle.t
-    rho = bundle.rho[idx]; w = bundle.w[idx]; v = bundle.v[idx]
     rho0 = bundle.rho0[idx]; v0 = bundle.v0[idx]
     ic = str(bundle.ic_type[idx])
 
     x0, rho_L, w_L, rho_R, w_R = _interface_states(bundle, idx)
     cls, info = _classify(rho_L, w_L, rho_R, w_R)
 
+    # Re-evaluate exact solution at high resolution for plotting.
+    x_hi = np.linspace(float(x[0]), float(x[-1]), nx_hires)
+    rho, w, v = solve_riemann_arz_xt(rho_L, w_L, rho_R, w_R, x_hi, t.astype(np.float64), x0=x0)
+    rho = rho.astype(np.float32); w = w.astype(np.float32); v = v.astype(np.float32)
+
     fig, axes = plt.subplots(
         2, 3, figsize=(13.5, 7.0),
         gridspec_kw={"height_ratios": [1.0, 3.0]},
     )
 
-    # Row 0: IC traces + metadata.
-    axes[0, 0].plot(x, rho0, lw=1.2)
+    # Row 0: IC traces (hi-res exact at t=0) + metadata.
+    axes[0, 0].plot(x_hi, rho[0], lw=1.2)
     axes[0, 0].axvline(x0, color="k", lw=0.6, ls=":")
     axes[0, 0].set_title(r"$\rho_0(x)$"); axes[0, 0].set_xlabel("x")
     axes[0, 0].grid(True, alpha=0.3)
-    axes[0, 1].plot(x, v0, lw=1.2, color="tab:orange")
+    axes[0, 1].plot(x_hi, v[0], lw=1.2, color="tab:orange")
     axes[0, 1].axvline(x0, color="k", lw=0.6, ls=":")
     axes[0, 1].set_title(r"$v_0(x)$"); axes[0, 1].set_xlabel("x")
     axes[0, 1].grid(True, alpha=0.3)
@@ -144,15 +148,14 @@ def _plot_one(bundle, idx: int, out_dir: Path) -> Path:
         color=cls_color,
     )
 
-    # Row 1: heatmaps with overlays.
-    extent = [x[0], x[-1], t[0], t[-1]]
+    # Row 1: heatmaps with overlays (hi-res exact solution).
     panels = [
         (axes[1, 0], rho, r"$\rho(x,t)$", "viridis", True),   # contour overlay
         (axes[1, 1], w,   r"$w(x,t)$",    "magma",   False),
         (axes[1, 2], v,   r"$v(x,t)$",    "cividis", True),
     ]
     for ax, field, title, cmap, do_contour in panels:
-        im = ax.pcolormesh(x, t, field, cmap=cmap, shading="nearest")
+        im = ax.pcolormesh(x_hi, t, field, cmap=cmap, shading="nearest")
         _overlay_wave_lines(ax, info, cls, x0, t)
         ax.set_xlim(x[0], x[-1]); ax.set_ylim(t[0], t[-1])
         ax.set_xlabel("x"); ax.set_ylabel("t"); ax.set_title(title)
