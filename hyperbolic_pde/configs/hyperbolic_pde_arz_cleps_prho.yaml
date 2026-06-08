@@ -13,6 +13,8 @@ arz_riemann_exact_prho:
   test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho.npz
   pressure_form: rho
   num_samples: 2000
+  train_fraction: 0.8
+  val_fraction: 0.1
 
 hypno_arz:
   compile: false
