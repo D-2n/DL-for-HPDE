@@ -247,13 +247,32 @@ def main() -> None:
     # cfg['fno']['save_path']. The CLEPS-trained weights live at
     # hyperbolic_pde/runs/fno_epoch200.pt. If nothing is found (or --no-fno),
     # FNO is dropped from the solver list and the script behaves as before.
+    #
+    # Older run configs (e.g. run_20260518_*) predate the `fno:` block. When that
+    # block is absent we fall back to the base config's `fno:` defaults so an
+    # explicit --fno-weights still works; if the base config also lacks it, use
+    # the standard FNO2d hyperparameters (width 128, modes 24/24, layers 8).
     fno_model = None
-    fno_cfg = cfg.get("fno")
-    if not args.no_fno and fno_cfg is not None:
+    if args.no_fno:
+        print("--no-fno given; skipping FNO baseline.")
+    else:
+        fno_cfg = cfg.get("fno")
+        if fno_cfg is None:
+            base_path = ROOT / "configs" / "hyperbolic_pde.yaml"
+            try:
+                with base_path.open("r", encoding="utf-8") as f:
+                    fno_cfg = (yaml.safe_load(f) or {}).get("fno")
+            except OSError:
+                fno_cfg = None
+        if fno_cfg is None:
+            fno_cfg = {"width": 128, "modes_x": 24, "modes_t": 24, "layers": 8}
+            print("No 'fno:' block in run or base config; using default FNO2d hyperparameters.")
+
         if args.fno_weights is not None:
             fno_weights = Path(args.fno_weights)
         else:
             fno_weights = Path(fno_cfg.get("save_path", "hyperbolic_pde/runs/fno.pt"))
+
         if fno_weights.exists():
             fno_model = load_fno(fno_cfg, fno_weights, device)
             print(f"Loaded FNO from {fno_weights}")
@@ -263,8 +282,6 @@ def main() -> None:
                 f"Pass --fno-weights to point at it (CLEPS: "
                 f"hyperbolic_pde/runs/fno_epoch200.pt)."
             )
-    elif args.no_fno:
-        print("--no-fno given; skipping FNO baseline.")
 
     SOLVERS = list(BASE_SOLVERS) + (["FNO"] if fno_model is not None else [])
 
