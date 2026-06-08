@@ -21,6 +21,7 @@ N=${2:-5000}
   --nx 128 --nt 128 \
   --x-min -1.0 --x-max 1.0 --t-max 1.0 \
   --exact-riemann-only \
+  --pressure-form rho \
   --seed 42 \
   --rho-min 0.1 --rho-max 0.9 \
   --v-min 0.1 --v-max 0.9

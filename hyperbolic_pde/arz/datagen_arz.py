@@ -376,7 +376,13 @@ if __name__ == "__main__":
     parser.add_argument("--rho-max", type=float, default=_RHO_MAX_DEFAULT)
     parser.add_argument("--v-min",   type=float, default=_V_MIN_DEFAULT)
     parser.add_argument("--v-max",   type=float, default=_V_MAX_DEFAULT)
+    parser.add_argument("--pressure-form", type=str, default=None,
+                        help="Pressure closure: 'rho' or 'rho+rho2' (default: current module default).")
     args = parser.parse_args()
+
+    if args.pressure_form is not None:
+        P.set_pressure_form(args.pressure_form)
+    print(f"[arz datagen] pressure_form={P.get_pressure_form()}")
 
     if args.exact_riemann_only:
         bundle = generate_arz_riemann_exact_dataset(
