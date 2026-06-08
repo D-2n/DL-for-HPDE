@@ -26,7 +26,12 @@ RUN_DIR=${1:?"pass the run directory as the first argument"}
 shift
 
 FNO_WEIGHTS=/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/fno_epoch200.pt
+# Older runs (e.g. run_20260518_*) have a config.yaml that predates the
+# paper_eval_data block, so the dataset must be passed explicitly. Pass a
+# different --data_path in [extra args] to override (argparse keeps the last).
+DATA_PATH=/home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_paper_eval.npz
 
 /home/dzdrale/hypno_env/bin/python hyperbolic_pde/scripts/paper_eval.py \
     --run-dir "$RUN_DIR" \
+    --data_path "$DATA_PATH" \
     --fno-weights "$FNO_WEIGHTS" "$@"
