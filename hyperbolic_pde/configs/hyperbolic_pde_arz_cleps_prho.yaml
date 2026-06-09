@@ -4,6 +4,36 @@ arz_data:
   num_samples: 5400
   pressure_form: rho
 
+arz_data_bigger:
+  # Self-contained (base hyperbolic_pde_arz.yaml is gitignored and won't reach
+  # the cluster, so this block must not rely on deep-merge from the base).
+  # 3 ic_types x 6 num_segments x 360/cell = 6480 (divisible by 18).
+  path: /home/dzdrale/scratch/arz_1d/arz_dataset_bigger_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_dataset_bigger_prho.npz
+  num_samples: 6480
+  pressure_form: rho
+  nx: 128
+  nt: 128
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
+  cfl: 0.4
+  stratify: true
+  ic_types: [piecewise_constant_stratified, piecewise_sine, riemann_stratified]
+  num_segments: [2, 3, 5, 7, 10, 25]
+  rho_min: 0.1
+  rho_max: 0.9
+  v_min: 0.1
+  v_max: 0.9
+  ic_points: 128
+  boundary: ghost
+  refine: 4
+  tau: 0.1
+  use_exact_riemann: false
+  train_fraction: 0.8
+  val_fraction: 0.1
+  num_workers: null
+
 arz_riemann_trial:
   path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
   test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
