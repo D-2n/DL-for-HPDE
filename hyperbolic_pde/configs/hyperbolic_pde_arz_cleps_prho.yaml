@@ -34,6 +34,39 @@ arz_data_bigger:
   val_fraction: 0.1
   num_workers: null
 
+arz_paper_eval_data:
+  # Stratified ID+OOD eval set for arz_paper_eval / arz_shock_paper_export.
+  # Finite tau so WENO5/Godunov baselines are valid (LWR-like FV ground truth).
+  # Self-contained (base config is gitignored -- see arz_data_bigger note).
+  # num_segments mixes training segs (ID) with new segs (OOD) vs arz_data's
+  # [2,3,5,7,10,25]: {2,5,10} are ID, {8,20,30,50} are OOD.
+  # 3 ic_types x 7 num_segments x 60/cell = 1260 (divisible by 21).
+  path: /home/dzdrale/scratch/arz_1d/arz_dataset_paper_eval_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_dataset_paper_eval_prho.npz
+  num_samples: 1260
+  pressure_form: rho
+  nx: 128
+  nt: 128
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
+  cfl: 0.4
+  stratify: true
+  ic_types: [piecewise_constant_stratified, piecewise_sine, riemann_stratified]
+  num_segments: [2, 5, 8, 10, 20, 30, 50]
+  rho_min: 0.1
+  rho_max: 0.9
+  v_min: 0.1
+  v_max: 0.9
+  ic_points: 128
+  boundary: ghost
+  refine: 4
+  tau: 0.1
+  use_exact_riemann: false
+  train_fraction: 0.8
+  val_fraction: 0.1
+  num_workers: null
+
 arz_riemann_trial:
   path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
   test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz

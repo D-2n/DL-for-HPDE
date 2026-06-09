@@ -62,7 +62,10 @@ def detect_1shock_band(
     """
     nt, nx = rho.shape
     out = np.zeros_like(rho, dtype=bool)
-    dp_rho = 1.0 + 2.0 * rho
+    # p'(rho) from the active pressure closure (set_pressure_form). Hardcoding
+    # 1+2*rho here was wrong for pressure_form="rho" (prho) datasets, where
+    # p'(rho)=1; P.dpressure honours the global switch.
+    dp_rho = P.dpressure(rho)
     lam1 = v - rho * dp_rho
     for k in range(nt):
         dv = np.diff(v[k])                              # nx-1
