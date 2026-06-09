@@ -12,20 +12,25 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
-CKPT=${1:?usage: sbatch arz_eval_riemann_exact.sh <checkpoint.pt>}
+CKPT=${1:?usage: sbatch arz_eval_riemann_exact.sh <checkpoint.pt> [data] [outdir] [n_plots] [samples] [baselines]}
 DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho.npz}
 OUTDIR=${3:-/home/dzdrale/scratch/results}
 N_PLOTS=${4:-5}
+N=${5:-200}
+# WENO5 is unstable / slow on exact-Riemann ARZ data (overflow near vacuum,
+# blows the walltime); default to godunov only, matching arz_eval_riemann.sh
+# (commit 566fdfd "weno off for arz for now"). Pass weno5,godunov to re-enable.
+BASELINES=${6:-godunov}
 
 /home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.eval_vs_numerical_arz \
   --ckpt "$CKPT" --data "$DATA" \
-  --baselines weno5,godunov --samples 200 \
+  --baselines "$BASELINES" --samples "$N" \
   --out "$OUTDIR/arz_riemann_exact_vs_numerical.csv" \
   --figures "$OUTDIR/figs_riemann_exact_vs_numerical" --n-plots "$N_PLOTS"
 
 /home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.eval_shock_arz \
   --ckpt "$CKPT" --data "$DATA" \
-  --baselines weno5,godunov --samples 200 \
+  --baselines "$BASELINES" --samples "$N" \
   --tau-shock 0.06 --band-halfwidth 2 --tv-mult 1.5 \
   --out "$OUTDIR/arz_riemann_exact_shock.csv" \
   --figures "$OUTDIR/figs_riemann_exact_shock" --n-plots "$N_PLOTS"
