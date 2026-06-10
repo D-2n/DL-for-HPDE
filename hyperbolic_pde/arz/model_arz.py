@@ -66,6 +66,47 @@ def _dp(rho):
     return 1.0 + 2.0 * rho
 
 
+def _entropy_bad_1shock(
+    rho_i, v_i, lam1_i, rho_j, v_j, lam1_j, rel_x, lam1_ij,
+    delta: float = 0.01, eps: float = 1e-6,
+):
+    """Lax-inadmissibility flag for the genuinely-nonlinear 1-field.
+
+    Mirrors the LWR Oleinik gate (hypno_st3._physics_gate_ball): a discontinuity
+    is an *admissible* 1-shock iff the 1-characteristics converge into it,
+
+        lambda1(U_L) >= s1 >= lambda1(U_R),
+
+    where s1 is the Rankine-Hugoniot speed. Across a genuine 1-wave the
+    1-Riemann invariant w is preserved, so s1 follows from RH on the rho
+    component, s1 = (rho_R*v_R - rho_L*v_L)/(rho_R - rho_L); it falls back to the
+    interface eigenvalue lam1_ij when |rho_R - rho_L| is below eps (smooth
+    limit). The flag is 1 only when the interface *looks like* a 1-shock
+    (lambda1_L > lambda1_R, converging) yet FAILS the speed bracketing -- i.e.
+    a speed-inadmissible shock. Rarefaction-shaped interfaces
+    (lambda1_L < lambda1_R) are NOT flagged here; they are simply not 1-shocks
+    and the upwind gate handles their information flow.
+
+    L/R are assigned by the edge orientation: for rel_x>0 the source cell i is
+    the left state, else the neighbour j is.
+    """
+    rho_L = torch.where(rel_x > 0, rho_i, rho_j)
+    rho_R = torch.where(rel_x > 0, rho_j, rho_i)
+    v_L = torch.where(rel_x > 0, v_i, v_j)
+    v_R = torch.where(rel_x > 0, v_j, v_i)
+    lam1_L = torch.where(rel_x > 0, lam1_i, lam1_j)
+    lam1_R = torch.where(rel_x > 0, lam1_j, lam1_i)
+
+    drho = rho_R - rho_L
+    drho_safe = torch.where(drho.abs() < eps, torch.ones_like(drho), drho)
+    s1_rh = (rho_R * v_R - rho_L * v_L) / drho_safe
+    s1 = torch.where(drho.abs() < eps, lam1_ij, s1_rh)
+
+    is_1shock = (lam1_L > lam1_R).float()                       # converging chars
+    entropy_ok = ((lam1_L >= s1 - delta) & (s1 >= lam1_R - delta)).float()
+    return is_1shock * (1.0 - entropy_ok)
+
+
 def _Veq(rho):
     return 1.0 - rho
 
@@ -244,9 +285,9 @@ class _ArzLifting(nn.Module):
                 lam2_ij = v_ij
                 lam1_i = v0_bc - rho0_bc * _dp(rho0_bc)
                 lam1_jn = v_j - rho_j * _dp(rho_j)
-                lam1_L = torch.where(rel_x > 0, lam1_i, lam1_jn)
-                lam1_R = torch.where(rel_x > 0, lam1_jn, lam1_i)
-                chi_1bad = (lam1_L < lam1_R).float()
+                chi_1bad = _entropy_bad_1shock(
+                    rho0_bc, v0_bc, lam1_i, rho_j, v_j, lam1_jn, rel_x, lam1_ij,
+                )
 
                 edge_in = torch.cat([
                     r, rel_t_feat,
@@ -286,17 +327,17 @@ class _ArzLifting(nn.Module):
 class _ArzMPLayer(nn.Module):
     """Two-edge-MLP space-time MP for ARZ (pure-pairwise).
 
-    Adjacent edges (2d + 5):
-        [h_i, h_j, lam1_ij, lam2_ij, chi_up1, chi_up2, sign(rel_x)]
+    Adjacent edges (2d + 3):
+        [h_i, h_j, lam1_ij, lam2_ij, sign(rel_x)]
     Non-adjacent edges (2d + 3):
         [h_i, h_j, rel_x_feat, rel_t_feat, sign(rel_x)]
 
     Pure-pairwise: the message carries only the endpoint latents plus minimal
-    pair-intrinsic interface scalars (the two interface eigenvalues and a
-    per-family upwind flag). Quantities the gate already consumes (theta,
-    chi_1bad) and node-native scalars (state jumps, neighbour spectral radius)
-    are kept out of the message. Mirrors the LWR pure-pairwise convention,
-    extended to ARZ's two characteristic families.
+    pair-intrinsic interface scalars (the two interface eigenvalues and the edge
+    orientation). Quantities the gate already consumes (theta, chi_1bad, the
+    per-family upwind flags) and node-native scalars (state jumps, neighbour
+    spectral radius) are kept out of the message. Mirrors the LWR pure-pairwise
+    convention, extended to ARZ's two characteristic families.
     """
 
     def __init__(
@@ -334,7 +375,7 @@ class _ArzMPLayer(nn.Module):
         self.phys_gamma = nn.Parameter(torch.tensor(-2.0))
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
-        self.adj_msg = _make_mlp(2 * d_latent + 5, d_hidden, d_latent, 3, activation)
+        self.adj_msg = _make_mlp(2 * d_latent + 3, d_hidden, d_latent, 3, activation)
         self.nonadj_msg = _make_mlp(2 * d_latent + 3, dh_na, d_latent, 3, activation)
 
         self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
@@ -459,26 +500,23 @@ class _ArzMPLayer(nn.Module):
                 v_ij = 0.5 * (v_hat + v_j)
                 lam1_ij = v_ij - rho_ij * _dp(rho_ij)
                 lam2_ij = v_ij
-                drho = rho_j - rho_hat
                 dv = v_j - v_hat
                 dw = w_j - w_hat
                 theta = dw.abs() / (dw.abs() + dv.abs() + 1e-8)
-                chi_up1 = (lam1_ij * r < 0).float()
-                chi_up2 = (lam2_ij * r < 0).float()
-                lam1_L = torch.where(rel_x > 0, lam1_i, lam1_j)
-                lam1_R = torch.where(rel_x > 0, lam1_j, lam1_i)
-                chi_1bad = (lam1_L < lam1_R).float()
+                chi_1bad = _entropy_bad_1shock(
+                    rho_hat, v_hat, lam1_i, rho_j, v_j, lam1_j, rel_x, lam1_ij,
+                )
 
-                # Pure-pairwise: only the interface eigenvalues and per-family
-                # upwind flags. theta/chi_1bad are computed above but go to the
-                # gate only (not the message); drho/dv/dw and the lam*r products
-                # are dropped (node-native / gate-derivable).
+                # Pure-pairwise: only the interface eigenvalues. The per-family
+                # upwind flags (chi_up1/chi_up2) were removed -- they duplicate
+                # what the upwind gate already encodes from lam*_ij and r, and
+                # carried no interpretable signal in the message. theta/chi_1bad
+                # feed the gate only, not the message.
                 msg_in = torch.cat([
                     h, h_j,
                     lam1_ij, lam2_ij,
-                    chi_up1, chi_up2,
                     r,
-                ], dim=-1)  # 2d + 5
+                ], dim=-1)  # 2d + 3
                 gate = self._gate_adj(rel_x, lam1_ij, lam2_ij, chi_1bad, theta)
                 adj_feats.append(msg_in)
                 adj_gates.append(gate)
