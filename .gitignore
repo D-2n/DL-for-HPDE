@@ -15,6 +15,9 @@ hyperbolic_pde/configs/*.yml
 !hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho.yaml
 !hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho_db.yaml
 
+# LaTeX writeup (not tracked)
+writeup/
+
 # Images
 *.png
 *.jpg
