@@ -162,6 +162,12 @@ def main():
                          "directory (mirrors LWR eval_vs_numerical.py).")
     ap.add_argument("--n-plots", type=int, default=5,
                     help="Number of per-sample plots to save (default 5).")
+    ap.add_argument("--model-variant", type=str, default="auto",
+                    choices=["auto", "mark1", "mark2"],
+                    help="Model class. 'auto' uses mark2 when --model-section says "
+                         "so, else mark1.")
+    ap.add_argument("--model-section", type=str, default="hypno_arz_mark2",
+                    help="Config section for mark2 reconstruction.")
     args = ap.parse_args()
 
     bundle = load_arz_dataset(args.data)
@@ -174,11 +180,24 @@ def main():
     set_pressure_form(bundle.p_form)
     print(f"[eval_vs_numerical_arz] pressure_form={get_pressure_form()}")
 
-    # Load model (handles both legacy dict and new bare-state_dict formats).
-    model, _ck_tau = load_hypno_arz_from_checkpoint(
-        args.ckpt, device=args.device, config_path=args.config,
-    )
-    print(f"[eval_vs_numerical_arz] loaded {args.ckpt}  tau_eval={tau}")
+    # Resolve variant: auto -> mark2 iff the model-section name says so.
+    variant = args.model_variant
+    if variant == "auto":
+        variant = "mark2" if "mark2" in args.model_section else "mark1"
+
+    # Load model. Mark2 = (rho,v) decoder; its forward still returns
+    # (rho, w, u_hats) with w recovered, so the eval path below is unchanged.
+    if variant == "mark2":
+        from hyperbolic_pde.arz.model_arz_mark2 import load_hypno_arz_mark2_from_checkpoint
+        model, _ck_tau = load_hypno_arz_mark2_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    else:
+        model, _ck_tau = load_hypno_arz_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+        )
+    print(f"[eval_vs_numerical_arz] loaded {args.ckpt}  variant={variant}  tau_eval={tau}")
 
     x = torch.tensor(bundle.x, dtype=torch.float32, device=args.device)
     t = torch.tensor(bundle.t, dtype=torch.float32, device=args.device)
