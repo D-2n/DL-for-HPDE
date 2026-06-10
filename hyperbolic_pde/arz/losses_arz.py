@@ -97,6 +97,63 @@ def probe_loss(
     return torch.stack(losses).mean()
 
 
+def state_loss_rv(
+    rho_pred: torch.Tensor, v_pred: torch.Tensor,
+    rho_gt: torch.Tensor,   v_gt:   torch.Tensor,
+    v_weight: float = 1.0,
+) -> torch.Tensor:
+    """MSE on the PRIMITIVE pair (rho, v) -- Mark2 frame. v_weight reweights v."""
+    l_rho = F.mse_loss(rho_pred, rho_gt)
+    l_v   = F.mse_loss(v_pred,   v_gt)
+    return l_rho + v_weight * l_v
+
+
+def probe_loss_rv(
+    u_hats_rv: List[torch.Tensor],
+    rho_gt: torch.Tensor, v_gt: torch.Tensor,
+    v_weight: float = 1.0,
+) -> torch.Tensor:
+    """Mean (rho, v) MSE across per-layer readouts (each [B,nt,nx,2] = (rho,v))."""
+    losses = []
+    for uh in u_hats_rv:
+        l_rho = F.mse_loss(uh[..., 0], rho_gt)
+        l_v   = F.mse_loss(uh[..., 1], v_gt)
+        losses.append(l_rho + v_weight * l_v)
+    if not losses:
+        return torch.tensor(0.0, device=rho_gt.device)
+    return torch.stack(losses).mean()
+
+
+def mark2_total_loss(
+    rho_pred: torch.Tensor, v_pred: torch.Tensor,
+    u_hats_rv: List[torch.Tensor],
+    rho_gt: torch.Tensor, v_gt: torch.Tensor,
+    *,
+    lambda_state: float = 1.0,
+    lambda_conservation: float = 1.0,
+    lambda_probe: float = 0.01,
+    v_weight: float = 1.0,
+) -> tuple:
+    """HypNO-ARZ Mark2 objective (homogeneous): (rho,v)-frame state + probe,
+    plus rho mass conservation. No relaxation-balance term (tau=inf).
+
+    Returns (scalar_loss, info_dict). v_gt is computed by the caller from
+    w_gt via v = w - p(rho_gt).
+    """
+    L_state = state_loss_rv(rho_pred, v_pred, rho_gt, v_gt, v_weight=v_weight)
+    L_cons  = rho_mass_loss(rho_pred, rho_gt)
+    L_probe = probe_loss_rv(u_hats_rv, rho_gt, v_gt, v_weight=v_weight)
+    L = lambda_state * L_state + lambda_conservation * L_cons + lambda_probe * L_probe
+    info = {
+        "state": float(L_state.detach().item()),
+        "cons":  float(L_cons.detach().item()),
+        "bal":   0.0,
+        "probe": float(L_probe.detach().item()),
+        "total": float(L.detach().item()),
+    }
+    return L, info
+
+
 def total_loss(
     rho_pred: torch.Tensor, w_pred: torch.Tensor,
     u_hats: List[torch.Tensor],

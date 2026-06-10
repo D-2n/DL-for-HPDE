@@ -27,8 +27,10 @@ from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.losses_arz import (
     state_loss, rho_mass_loss, balance_residual_loss, probe_loss,
+    mark2_total_loss,
 )
 from hyperbolic_pde.arz.model_arz import HypNO_ARZ
+from hyperbolic_pde.arz.model_arz_mark2 import HypNO_ARZ_Mark2, cfg_to_kwargs_m2
 
 
 # --------------------------------------------------------------------------- #
@@ -165,6 +167,14 @@ def _find_latest_checkpoint(run_dir: Path):
     return latest, epoch
 
 
+def _p_gt(rho: torch.Tensor) -> torch.Tensor:
+    """Pressure p(rho) for ground-truth tensors, honoring the active closure."""
+    from hyperbolic_pde.arz import physics_arz as _Pm
+    if _Pm._P_FORM == "rho":
+        return rho
+    return rho + rho * rho
+
+
 def _diseq_score(rho0: np.ndarray, w0: np.ndarray) -> np.ndarray:
     """Average |v0 - V(rho0)| per sample; > thresh -> off-equilibrium."""
     v0 = w0 - (rho0 + rho0 * rho0)
@@ -219,6 +229,12 @@ def main() -> None:
     parser.add_argument(
         "--model-section", type=str, default="hypno_arz",
         help="Which model/training section to use (e.g. hypno_arz, hypno_arz_riemann).",
+    )
+    parser.add_argument(
+        "--model-variant", type=str, default="auto",
+        choices=["auto", "mark1", "mark2"],
+        help="Which model class. 'auto' picks mark2 when the model-section name "
+             "contains 'mark2', else mark1 (HypNO_ARZ).",
     )
     parser.add_argument(
         "--resume_run", type=str, default=None,
@@ -336,21 +352,32 @@ def main() -> None:
     _dhn = model_cfg.get("d_hidden_nonadj", None)
     d_hidden_nonadj = int(_dhn) if _dhn is not None else None
 
-    model = HypNO_ARZ(
-        stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
-        stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
-        d_latent=int(model_cfg.get("d_latent", 96)),
-        d_hidden=int(model_cfg.get("d_hidden", 96)),
-        n_layers=int(model_cfg.get("n_layers", 7)),
-        activation=str(model_cfg.get("activation", "gelu")),
-        causal_temporal=bool(model_cfg.get("causal_temporal", True)),
-        d_hidden_nonadj=d_hidden_nonadj,
-        decoder_depth=int(model_cfg.get("decoder_depth", 3)),
-        skip=bool(model_cfg.get("skip", True)),
-        use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
-        normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
-        use_relaxation_features=bool(model_cfg.get("use_relaxation_features", True)),
-    ).to(device)
+    # Resolve model variant (auto -> mark2 iff section name says so).
+    variant = args.model_variant
+    if variant == "auto":
+        variant = "mark2" if "mark2" in args.model_section else "mark1"
+    log.info(f"Model variant: {variant}")
+
+    if variant == "mark2":
+        m2_kwargs = cfg_to_kwargs_m2(model_cfg)
+        m2_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
+        model = HypNO_ARZ_Mark2(**m2_kwargs).to(device)
+    else:
+        model = HypNO_ARZ(
+            stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
+            stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
+            d_latent=int(model_cfg.get("d_latent", 96)),
+            d_hidden=int(model_cfg.get("d_hidden", 96)),
+            n_layers=int(model_cfg.get("n_layers", 7)),
+            activation=str(model_cfg.get("activation", "gelu")),
+            causal_temporal=bool(model_cfg.get("causal_temporal", True)),
+            d_hidden_nonadj=d_hidden_nonadj,
+            decoder_depth=int(model_cfg.get("decoder_depth", 3)),
+            skip=bool(model_cfg.get("skip", True)),
+            use_checkpoint=bool(model_cfg.get("use_checkpoint", True)),
+            normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
+            use_relaxation_features=bool(model_cfg.get("use_relaxation_features", True)),
+        ).to(device)
 
     x_grid = torch.tensor(bundle.x, dtype=torch.float32, device=device)
     t_grid = torch.tensor(bundle.t, dtype=torch.float32, device=device)
@@ -449,15 +476,26 @@ def main() -> None:
 
             opt.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
-                rho_p, w_p, u_hats = model(rho0, w0, x_grid, t_grid)
-                loss, info = arz_total_loss(
-                    rho_p, w_p, u_hats, rho_gt, w_gt, t_grid, tau,
-                    lambda_state=lambda_state,
-                    lambda_conservation=lambda_conservation,
-                    lambda_balance=lambda_balance,
-                    lambda_probe=lambda_probe,
-                    w_weight=w_weight, loss_type=loss_type,
-                )
+                if variant == "mark2":
+                    rho_p, v_p, w_p, u_hats_rv = model.forward_primitive(rho0, w0, x_grid, t_grid)
+                    v_gt = w_gt - _p_gt(rho_gt)
+                    loss, info = mark2_total_loss(
+                        rho_p, v_p, u_hats_rv, rho_gt, v_gt,
+                        lambda_state=lambda_state,
+                        lambda_conservation=lambda_conservation,
+                        lambda_probe=lambda_probe,
+                        v_weight=w_weight,
+                    )
+                else:
+                    rho_p, w_p, u_hats = model(rho0, w0, x_grid, t_grid)
+                    loss, info = arz_total_loss(
+                        rho_p, w_p, u_hats, rho_gt, w_gt, t_grid, tau,
+                        lambda_state=lambda_state,
+                        lambda_conservation=lambda_conservation,
+                        lambda_balance=lambda_balance,
+                        lambda_probe=lambda_probe,
+                        w_weight=w_weight, loss_type=loss_type,
+                    )
             loss.backward()
             if grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
@@ -506,15 +544,26 @@ def main() -> None:
                     v_rho0 = v_rho0.to(device); v_w0 = v_w0.to(device)
                     v_rho = v_rho.to(device);   v_w  = v_w.to(device)
                     with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
-                        vrp, vwp, vuh = model(v_rho0, v_w0, x_grid, t_grid)
-                        vL, _ = arz_total_loss(
-                            vrp, vwp, vuh, v_rho, v_w, t_grid, tau,
-                            lambda_state=lambda_state,
-                            lambda_conservation=lambda_conservation,
-                            lambda_balance=lambda_balance,
-                            lambda_probe=lambda_probe,
-                            w_weight=w_weight, loss_type=loss_type,
-                        )
+                        if variant == "mark2":
+                            vrp, vvp_, vwp, vuh_rv = model.forward_primitive(v_rho0, v_w0, x_grid, t_grid)
+                            v_v_gt = v_w - _p_gt(v_rho)
+                            vL, _ = mark2_total_loss(
+                                vrp, vvp_, vuh_rv, v_rho, v_v_gt,
+                                lambda_state=lambda_state,
+                                lambda_conservation=lambda_conservation,
+                                lambda_probe=lambda_probe,
+                                v_weight=w_weight,
+                            )
+                        else:
+                            vrp, vwp, vuh = model(v_rho0, v_w0, x_grid, t_grid)
+                            vL, _ = arz_total_loss(
+                                vrp, vwp, vuh, v_rho, v_w, t_grid, tau,
+                                lambda_state=lambda_state,
+                                lambda_conservation=lambda_conservation,
+                                lambda_balance=lambda_balance,
+                                lambda_probe=lambda_probe,
+                                w_weight=w_weight, loss_type=loss_type,
+                            )
                     B = v_rho0.size(0)
                     v_mse = float(((vrp - v_rho).pow(2) + (vwp - v_w).pow(2)).mean().item())
                     val_loss += vL.item() * B

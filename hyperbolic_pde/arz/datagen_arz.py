@@ -84,6 +84,42 @@ def _sample_riemann_colocated(
     return rho0, v0
 
 
+def _sample_riemann_vacuum_free(
+    x: np.ndarray, rng: np.random.Generator,
+    rho_min: float, rho_max: float, v_min: float, v_max: float,
+) -> Tuple[float, float, float, float, float]:
+    """Sample a homogeneous-ARZ Riemann problem that is VACUUM-FREE BY
+    CONSTRUCTION and whose every density state lies in [rho_min, rho_max].
+
+    Rationale (2026-06-10): drawing the four endpoints (rho_L,v_L,rho_R,v_R) at
+    random produces ~10% vacuum intermediate states (w_L - v_R < 0 => rho_* clamped
+    to 0) and ~10% over-jam (rho_* > 1) under [0.1,0.9]^2 sampling. Both are
+    unphysical / unrepresentable by the (sigmoid-rho) decoder. Instead we sample
+    the PHYSICAL degrees of freedom directly and derive the rest from the Riemann
+    invariants, so rho_L, rho_*, rho_R are all in range and rho_* is never 0:
+
+      independent draws:  rho_L, rho_star, rho_R  in [rho_min, rho_max];  v_* in [v_min,v_max]
+      contact (v preserved):     v_R = v_*
+      1-wave  (w preserved):     v_L = v_* + p(rho_*) - p(rho_L)
+                                 (since w_L = w_*  =>  v_L + p(rho_L) = v_* + p(rho_*))
+
+    v_L is left UNBOUNDED (it is whatever w-preservation dictates; ARZ velocity
+    may be negative/large and the model's v output is linear/unbounded).
+
+    Returns (rho_L, v_L, rho_R, v_R, x0).
+    """
+    rho_L    = float(rng.uniform(rho_min, rho_max))
+    rho_star = float(rng.uniform(rho_min, rho_max))
+    rho_R    = float(rng.uniform(rho_min, rho_max))
+    v_star   = float(rng.uniform(v_min, v_max))
+    v_R = v_star
+    # p(rho) honoring the active closure; pressure() handles rho vs rho+rho^2.
+    v_L = v_star + float(P.pressure(np.array(rho_star)) - P.pressure(np.array(rho_L)))
+    x0 = float(rng.uniform(x[0] + 0.2 * (x[-1] - x[0]),
+                           x[0] + 0.8 * (x[-1] - x[0])))
+    return rho_L, v_L, rho_R, v_R, x0
+
+
 def _sample_rho_v_pair(
     ic_name: str, x: np.ndarray, num_segments: int, rng: np.random.Generator,
     rho_min: float, rho_max: float, v_min: float, v_max: float,
@@ -181,26 +217,28 @@ def generate_arz_riemann_exact_dataset(
     print(
         f"[arz riemann exact datagen] N={num_samples}  nx={nx}  nt={nt}  "
         f"x=[{x_min},{x_max}]  t_max={t_max}  "
-        f"rho in [{rho_min},{rho_max}]  v in [{v_min},{v_max}]"
+        f"rho in [{rho_min},{rho_max}]  v* in [{v_min},{v_max}]  "
+        f"(vacuum-free intermediate-state sampling)"
     )
 
+    xm = x_mid.astype(np.float64)
     for i in range(num_samples):
-        rho0, v0 = _sample_riemann_colocated(
-            x_mid.astype(np.float64), rng, rho_min, rho_max, v_min, v_max
+        # Vacuum-free: sample rho_L, rho_*, rho_R, v_* directly so rho_* is in
+        # range by construction and (w_L - v_R) >= p(rho_min) > 0 always.
+        rho_L, v_L, rho_R, v_R, x0 = _sample_riemann_vacuum_free(
+            xm, rng, rho_min, rho_max, v_min, v_max
         )
-        rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
-        w0 = v0 + P.pressure(rho0)
+        w_L = v_L + float(P.pressure(np.array(rho_L)))
+        w_R = v_R + float(P.pressure(np.array(rho_R)))
 
-        # Detect jump location from IC values.
-        d = np.abs(np.diff(rho0)) + np.abs(np.diff(w0))
-        j = int(np.argmax(d))
-        x0 = 0.5 * (x_mid[j] + x_mid[j + 1])
-        rho_L = float(rho0[j]);     w_L = float(w0[j])
-        rho_R = float(rho0[j + 1]); w_R = float(w0[j + 1])
+        # Build the IC field on the grid from the two states at the interface x0.
+        rho0 = np.where(xm <= x0, rho_L, rho_R).astype(np.float64)
+        v0   = np.where(xm <= x0, v_L,   v_R  ).astype(np.float64)
+        w0   = v0 + P.pressure(rho0)
 
         rho_hist, w_hist, _ = Rie.solve_riemann_arz_xt(
             rho_L, w_L, rho_R, w_R,
-            x_mid.astype(np.float64), t.astype(np.float64), x0=x0,
+            xm, t.astype(np.float64), x0=x0,
         )
         rho_all[i]  = rho_hist.astype(np.float32)
         w_all[i]    = w_hist.astype(np.float32)
