@@ -87,7 +87,11 @@ def solve_arz_weno5(rho0, w0, x_min, x_max, t_max, nt_out, tau, cfl=0.2, boundar
     rho0 = np.asarray(rho0, dtype=np.float64)
     w0   = np.asarray(w0,   dtype=np.float64)
     nx = rho0.size
-    dx = (x_max - x_min) / (nx - 1)
+    # Finite-volume cell width: dx = L/nx (nx cells), matching the dataset's
+    # midpoint grid. Using L/(nx-1) here gave the wrong propagation speed and a
+    # half-cell spatial offset vs the ground truth. [x_min, x_max] is the FULL
+    # domain extent (true edges), not the midpoint min/max.
+    dx = (x_max - x_min) / nx
     t_out = np.linspace(0.0, t_max, nt_out, dtype=np.float64)
     rho = np.maximum(rho0.copy(), P.RHO_MIN)
     y = rho * w0
@@ -123,7 +127,13 @@ def solve_arz_weno5(rho0, w0, x_min, x_max, t_max, nt_out, tau, cfl=0.2, boundar
 # --------------------------------------------------------------------------- #
 def _run_baseline(name, rho0, w0, bundle, tau, boundary):
     nt = bundle.t.shape[0]
-    x_min = float(bundle.x.min()); x_max = float(bundle.x.max())
+    # bundle.x are CELL MIDPOINTS (datagen: x_min + (i+0.5)*dx). Recover the
+    # TRUE domain edges so the baseline solvers build the same midpoint grid as
+    # the dataset/model rather than a linspace-endpoints grid half a cell off.
+    xb = np.asarray(bundle.x, dtype=np.float64)
+    dx = float(xb[1] - xb[0])
+    x_min = float(xb[0] - 0.5 * dx)
+    x_max = float(xb[-1] + 0.5 * dx)
     t_max = float(bundle.t.max())
     if name == "godunov":
         _, _, rho_h, w_h = Ref.solve_arz_reference(

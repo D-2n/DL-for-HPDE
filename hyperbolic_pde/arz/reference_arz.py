@@ -150,9 +150,15 @@ def solve_arz_reference(
     y_f = rho_f * w_f
     rho_f = np.maximum(rho_f, P.RHO_MIN)
 
-    x_fine = np.linspace(x_min, x_max, nx_fine, dtype=np.float64)
-    dx_fine = (x_max - x_min) / (nx_fine - 1)
-    x_out = np.linspace(x_min, x_max, nx, dtype=np.float32)
+    # Finite-volume cell-centred grid: nx cells of width dx = L/nx, centres at
+    # x_min + (i+0.5)*dx. This MUST match the dataset's midpoint convention
+    # (datagen_arz uses dx = (x_max-x_min)/nx, centres x_min+(i+0.5)*dx), or the
+    # baseline lands half a cell off the ground truth and the dx used in the flux
+    # divergence is wrong by a factor nx/(nx-1). [x_min, x_max] here is the FULL
+    # domain extent (the caller passes the true edges, not the midpoint min/max).
+    dx_fine = (x_max - x_min) / nx_fine
+    x_fine = x_min + (np.arange(nx_fine) + 0.5) * dx_fine
+    x_out = (x_min + (np.arange(nx) + 0.5) * ((x_max - x_min) / nx)).astype(np.float32)
     t_out = np.linspace(0.0, t_max, nt_out, dtype=np.float64)
 
     rho_hist = np.empty((nt_out, nx), dtype=np.float32)
