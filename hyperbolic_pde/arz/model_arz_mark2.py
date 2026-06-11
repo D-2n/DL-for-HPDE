@@ -87,12 +87,16 @@ def _adj_interface_physics(rho_i, v_i, w_i, rho_j, v_j, w_j, rel_x):
     s_2 = v_ij  # contact speed (LD): secant == eigenvalue, v constant across it
     # Soft physics router.
     theta = dw.abs() / (dw.abs() + dv.abs() + _THETA_EPS)
-    # Entropy (Oleinik/Lax) flag for the 1-wave: violated if lam1 increases L->R.
+    # Entropy (Lax) flag for the 1-wave: an admissible 1-shock satisfies the
+    # bracket lam1(U_R) < s_1 < lam1(U_L). It is violated only by an expansion
+    # shock, where the secant speed s_1 falls OUTSIDE that bracket. A rarefaction
+    # (lam1_L < lam1_R, with s_1 between them) is admissible and is NOT flagged.
+    # NOTE: the old test `lam1_L < lam1_R` mislabeled every rarefaction as bad.
     lam1_i = v_i - rho_i * _dp(rho_i)
     lam1_j = v_j - rho_j * _dp(rho_j)
     lam1_L = torch.where(rel_x > 0, lam1_i, lam1_j)
     lam1_R = torch.where(rel_x > 0, lam1_j, lam1_i)
-    chi_1bad = (lam1_L < lam1_R).float()
+    chi_1bad = ((s_1 > lam1_L) | (s_1 < lam1_R)).float()
     return {
         "s_1": s_1, "s_2": s_2, "drho": drho, "dw": dw,
         "theta": theta, "chi_1bad": chi_1bad,
