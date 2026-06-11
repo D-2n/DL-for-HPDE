@@ -412,9 +412,20 @@ def main() -> None:
     scheduler = None
     total_steps = epochs * max(1, len(loader))
     schedule = model_cfg.get("lr_schedule")
+    warmup_steps = int(model_cfg.get("lr_warmup_steps", 0))
     if schedule == "cosine":
         lr_min = float(model_cfg.get("lr_min", 1.0e-5))
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
+        if warmup_steps > 0:
+            # Linear warmup 0->lr over warmup_steps, then cosine over the rest.
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                opt, start_factor=1e-3, end_factor=1.0, total_iters=warmup_steps)
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=max(1, total_steps - warmup_steps), eta_min=lr_min)
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                opt, schedulers=[warmup, cosine], milestones=[warmup_steps])
+            log.info(f"LR schedule: linear warmup {warmup_steps} steps -> cosine to {lr_min}")
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
         if start_epoch > 1:
             for _ in range((start_epoch - 1) * len(loader)):
                 scheduler.step()
