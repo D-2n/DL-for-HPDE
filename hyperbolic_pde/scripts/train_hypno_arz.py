@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from datetime import datetime
@@ -252,12 +253,23 @@ def main() -> None:
 
     resume_run_dir = Path(args.resume_run) if args.resume_run else None
 
-    # Auto-resume: if no explicit --resume_run, consult latest_run.txt and use
-    # that dir IF it contains at least one checkpoint_epoch*.pt. This makes
-    # SLURM preemption transparent -- on requeue the rerun picks up the
+    # Auto-resume: if no explicit --resume_run, consult the latest-run pointer
+    # and use that dir IF it contains at least one checkpoint_epoch*.pt. This
+    # makes SLURM preemption transparent -- on requeue the rerun picks up the
     # previous run dir instead of starting from scratch.
+    #
+    # Under SLURM the pointer is keyed by job ID (latest_run_job<ID>.txt):
+    # requeue preserves the job ID, so each job resumes exactly its OWN run.
+    # The global latest_run.txt is NOT used as a fallback there -- with
+    # concurrent jobs it could point at another job's run dir, and two jobs
+    # writing one run dir would clobber each other's checkpoints.
     if resume_run_dir is None and args.auto_resume:
-        latest_pointer = Path("hyperbolic_pde/runs/hypno_arz/latest_run.txt")
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        if slurm_job_id:
+            latest_pointer = Path(
+                f"hyperbolic_pde/runs/hypno_arz/latest_run_job{slurm_job_id}.txt")
+        else:
+            latest_pointer = Path("hyperbolic_pde/runs/hypno_arz/latest_run.txt")
         if latest_pointer.exists():
             candidate = Path(latest_pointer.read_text(encoding="utf-8").strip())
             ckpts = list(candidate.glob("checkpoint_epoch*.pt")) if candidate.exists() else []
@@ -296,6 +308,12 @@ def main() -> None:
         latest_path = Path("hyperbolic_pde/runs/hypno_arz/latest_run.txt")
         latest_path.parent.mkdir(parents=True, exist_ok=True)
         latest_path.write_text(str(run_dir), encoding="utf-8")
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        if slurm_job_id:
+            # Per-job pointer for --auto_resume under SLURM requeue (the job
+            # keeps its ID across preemption, so the rerun finds this run).
+            (latest_path.parent / f"latest_run_job{slurm_job_id}.txt").write_text(
+                str(run_dir), encoding="utf-8")
     log = setup_logging(run_dir)
     log.info(f"Run directory: {run_dir}")
     log.info(f"Device: {device}")
