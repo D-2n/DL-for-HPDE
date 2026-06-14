@@ -24,6 +24,25 @@ def _p(rho):
     return rho + rho * rho
 
 
+def _dist(diff: torch.Tensor, loss_type: str) -> torch.Tensor:
+    """Elementwise distance, mirroring train_hypno_st3's `_dist`.
+
+    'mae' -> |diff|, 'mse' -> diff^2, 'huber' -> smooth-L1 (delta=0.1).
+    The caller takes the mean (so this returns a per-element tensor).
+    """
+    lt = loss_type.lower()
+    if lt == "mae":
+        return diff.abs()
+    if lt == "mse":
+        return diff.pow(2)
+    if lt == "huber":
+        # Huber/smooth-L1 around delta: quadratic for |diff|<delta, linear past.
+        delta = 0.1
+        a = diff.abs()
+        return torch.where(a < delta, 0.5 * diff.pow(2) / delta, a - 0.5 * delta)
+    raise ValueError(f"loss_type must be 'mae', 'mse', or 'huber', got {loss_type!r}")
+
+
 def _y_eq(rho):
     if _P_MOD._P_FORM == "rho":
         return rho                  # rho * w_eq, w_eq = 1
@@ -43,6 +62,7 @@ def state_loss(
 
 def rho_mass_loss(
     rho_pred: torch.Tensor, rho_gt: torch.Tensor,
+    loss_type: str = "mse",
 ) -> torch.Tensor:
     """Penalise drift in spatially-integrated rho (mass) per timestep.
 
@@ -51,7 +71,7 @@ def rho_mass_loss(
     """
     mass_pred = rho_pred.mean(dim=-1)        # [B, nt]
     mass_gt   = rho_gt.mean(dim=-1)
-    return F.mse_loss(mass_pred, mass_gt)
+    return _dist(mass_pred - mass_gt, loss_type).mean()
 
 
 def balance_residual_loss(
@@ -101,10 +121,12 @@ def state_loss_rv(
     rho_pred: torch.Tensor, v_pred: torch.Tensor,
     rho_gt: torch.Tensor,   v_gt:   torch.Tensor,
     v_weight: float = 1.0,
+    loss_type: str = "mse",
 ) -> torch.Tensor:
-    """MSE on the PRIMITIVE pair (rho, v) -- Mark2 frame. v_weight reweights v."""
-    l_rho = F.mse_loss(rho_pred, rho_gt)
-    l_v   = F.mse_loss(v_pred,   v_gt)
+    """Distance on the PRIMITIVE pair (rho, v) -- Mark2 frame. v_weight reweights
+    v; loss_type selects mae/mse/huber elementwise."""
+    l_rho = _dist(rho_pred - rho_gt, loss_type).mean()
+    l_v   = _dist(v_pred   - v_gt,   loss_type).mean()
     return l_rho + v_weight * l_v
 
 
@@ -112,12 +134,13 @@ def probe_loss_rv(
     u_hats_rv: List[torch.Tensor],
     rho_gt: torch.Tensor, v_gt: torch.Tensor,
     v_weight: float = 1.0,
+    loss_type: str = "mse",
 ) -> torch.Tensor:
-    """Mean (rho, v) MSE across per-layer readouts (each [B,nt,nx,2] = (rho,v))."""
+    """Mean (rho, v) distance across per-layer readouts (each [B,nt,nx,2]=(rho,v))."""
     losses = []
     for uh in u_hats_rv:
-        l_rho = F.mse_loss(uh[..., 0], rho_gt)
-        l_v   = F.mse_loss(uh[..., 1], v_gt)
+        l_rho = _dist(uh[..., 0] - rho_gt, loss_type).mean()
+        l_v   = _dist(uh[..., 1] - v_gt,   loss_type).mean()
         losses.append(l_rho + v_weight * l_v)
     if not losses:
         return torch.tensor(0.0, device=rho_gt.device)
@@ -133,16 +156,18 @@ def mark2_total_loss(
     lambda_conservation: float = 1.0,
     lambda_probe: float = 0.01,
     v_weight: float = 1.0,
+    loss_type: str = "mse",
 ) -> tuple:
     """HypNO-ARZ Mark2 objective (homogeneous): (rho,v)-frame state + probe,
     plus rho mass conservation. No relaxation-balance term (tau=inf).
+    loss_type selects the elementwise distance (mae/mse/huber) for all terms.
 
     Returns (scalar_loss, info_dict). v_gt is computed by the caller from
     w_gt via v = w - p(rho_gt).
     """
-    L_state = state_loss_rv(rho_pred, v_pred, rho_gt, v_gt, v_weight=v_weight)
-    L_cons  = rho_mass_loss(rho_pred, rho_gt)
-    L_probe = probe_loss_rv(u_hats_rv, rho_gt, v_gt, v_weight=v_weight)
+    L_state = state_loss_rv(rho_pred, v_pred, rho_gt, v_gt, v_weight=v_weight, loss_type=loss_type)
+    L_cons  = rho_mass_loss(rho_pred, rho_gt, loss_type=loss_type)
+    L_probe = probe_loss_rv(u_hats_rv, rho_gt, v_gt, v_weight=v_weight, loss_type=loss_type)
     L = lambda_state * L_state + lambda_conservation * L_cons + lambda_probe * L_probe
     info = {
         "state": float(L_state.detach().item()),

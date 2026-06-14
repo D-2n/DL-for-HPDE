@@ -124,15 +124,16 @@ hypno_arz_mark2:
 
   optimizer: adamw
   epochs: 220
-  lr: 3.0e-4
+  lr: 4.0e-4          # batch 8->16: sqrt(2) Adam scaling of the 3e-4 base
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
   lr_min: 1.0e-5
-  lr_warmup_steps: 360
-  batch_size: 8
-  amp_dtype: none
+  lr_warmup_steps: 180   # 2 epochs at batch 16 (90 batches/epoch) -- halved from 360
+  batch_size: 16
+  amp_dtype: bf16
 
+  loss_type: mae        # mae|mse|huber; now wired into mark2_total_loss
   w_weight: 1.0
   lambda_state: 1.0
   lambda_conservation: 1.0

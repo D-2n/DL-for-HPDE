@@ -461,9 +461,15 @@ def main() -> None:
     lambda_probe        = float(model_cfg.get("lambda_probe", 0.01))
     w_weight            = float(model_cfg.get("w_weight", 1.0))
     loss_type           = str(model_cfg.get("loss_type", "mae")).lower()
+    if loss_type not in ("mae", "mse", "huber"):
+        raise ValueError(
+            f"loss_type must be 'mae', 'mse', or 'huber', got {loss_type!r}")
+    # The mark2 loss honors loss_type for every term; the mark1 arz_total_loss
+    # path is hardcoded MSE -- flag that in the banner so the log isn't lying.
+    obj_str = loss_type.upper() if variant == "mark2" else f"MSE (mark1 ignores loss_type={loss_type!r})"
     bal_disabled = (lambda_balance <= 0.0) or (not np.isfinite(tau))
     bal_str = "OFF" if bal_disabled else f"{lambda_balance}"
-    log.info(f"Training objective: {loss_type.upper()}  tau={tau}  "
+    log.info(f"Training objective: {obj_str}  tau={tau}  "
              f"weights state={lambda_state} cons={lambda_conservation} "
              f"bal={bal_str} probe={lambda_probe} w={w_weight}")
 
@@ -514,6 +520,7 @@ def main() -> None:
                         lambda_conservation=lambda_conservation,
                         lambda_probe=lambda_probe,
                         v_weight=w_weight,
+                        loss_type=loss_type,
                     )
                 else:
                     rho_p, w_p, u_hats = model(rho0, w0, x_grid, t_grid)
@@ -526,26 +533,38 @@ def main() -> None:
                         w_weight=w_weight, loss_type=loss_type,
                     )
             loss.backward()
+            # clip_grad_norm_ returns the PRE-clip total norm; capture it so we
+            # can see whether clipping is actually firing (effective lr would be
+            # lr/||g|| when ||g|| > grad_clip, silently altering the schedule).
             if grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
+                gnorm = float(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float(grad_clip)).item())
+            else:
+                gnorm = float(torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float("inf")).item())
             opt.step()
             if scheduler is not None:
                 scheduler.step()
 
             with torch.no_grad():
-                batch_mse = float(((rho_p - rho_gt).pow(2) + (w_p - w_gt).pow(2)).mean().item())
+                # Monitoring metric: (rho, w)-frame MAE, matching the (mae)
+                # objective. Independent of loss_type so it stays a stable
+                # yardstick, but reported as MAE to align with the objective.
+                batch_mae = float(((rho_p - rho_gt).abs() + (w_p - w_gt).abs()).mean().item())
             epoch_loss_sum += loss.item() * rho0.size(0)
-            epoch_mse_sum  += batch_mse   * rho0.size(0)
+            epoch_mse_sum  += batch_mae   * rho0.size(0)
             epoch_count += rho0.size(0)
 
             if log_batch_every > 0 and step % log_batch_every == 0:
                 n_batches = len(loader)
                 batch_idx = (step - 1) % n_batches + 1
+                clip_flag = "*" if (grad_clip is not None and gnorm > float(grad_clip)) else " "
                 log.info(
                     f"  epoch {epoch:3d} batch {batch_idx}/{n_batches} | "
                     f"loss={loss.item():.3e} | state={info['state']:.3e} "
                     f"cons={info['cons']:.3e} bal={info['bal']:.3e} "
-                    f"probe={info['probe']:.3e} | mse={batch_mse:.3e}"
+                    f"probe={info['probe']:.3e} | mae={batch_mae:.3e} "
+                    f"| gnorm={gnorm:.2e}{clip_flag}"
                 )
                 for h in log.handlers: h.flush()
 
@@ -554,7 +573,7 @@ def main() -> None:
         lr_now = opt.param_groups[0]["lr"]
         log.info(
             f"epoch {epoch:3d}/{epochs} | optim_loss={train_losses[-1]:.3e} | "
-            f"mse={train_mses[-1]:.3e} | lr={lr_now:.2e} | {gpu_status()}"
+            f"mae={train_mses[-1]:.3e} | lr={lr_now:.2e} | {gpu_status()}"
         )
         for h in log.handlers: h.flush()
 
@@ -582,6 +601,7 @@ def main() -> None:
                                 lambda_conservation=lambda_conservation,
                                 lambda_probe=lambda_probe,
                                 v_weight=w_weight,
+                                loss_type=loss_type,
                             )
                         else:
                             vrp, vwp, vuh = model(v_rho0, v_w0, x_grid, t_grid)
@@ -594,9 +614,10 @@ def main() -> None:
                                 w_weight=w_weight, loss_type=loss_type,
                             )
                     B = v_rho0.size(0)
-                    v_mse = float(((vrp - v_rho).pow(2) + (vwp - v_w).pow(2)).mean().item())
+                    # (rho, w)-frame MAE monitor, matching the train-loop metric.
+                    v_mae = float(((vrp - v_rho).abs() + (vwp - v_w).abs()).mean().item())
                     val_loss += vL.item() * B
-                    val_mse  += v_mse * B
+                    val_mse  += v_mae * B
                     val_count += B
                     # Per-channel and eq/off MAE.
                     vvp = vwp - (vrp + vrp * vrp)
@@ -621,7 +642,7 @@ def main() -> None:
             val_losses.append(val_avg); val_mses.append(val_mse_avg)
             log.info(
                 f"epoch {epoch:3d}/{epochs} | val_optim_loss={val_avg:.3e} | "
-                f"val_mse={val_mse_avg:.3e} | "
+                f"val_mae={val_mse_avg:.3e} | "
                 f"mae rho/w/v={mae_rho/n:.3e}/{mae_w/n:.3e}/{mae_v/n:.3e} | "
                 f"mae eq/off={(mae_eq_sum/max(1,n_eq)):.3e}/{(mae_off_sum/max(1,n_off)):.3e} | "
                 f"{gpu_status()}"
@@ -653,11 +674,11 @@ def main() -> None:
     ax_loss.set_xlabel("Epoch"); ax_loss.set_ylabel(f"Optim loss ({loss_type.upper()}-based)")
     ax_loss.set_title("Optimization loss"); ax_loss.set_yscale("log")
     ax_loss.legend(); ax_loss.grid(True, alpha=0.3)
-    ax_mse.plot(ep_range, train_mses, label="Train MSE")
+    ax_mse.plot(ep_range, train_mses, label="Train MAE")
     if val_loader is not None and val_mses:
-        ax_mse.plot(val_epochs, val_mses, label="Val MSE")
-    ax_mse.set_xlabel("Epoch"); ax_mse.set_ylabel("MSE")
-    ax_mse.set_title("State MSE (monitoring)"); ax_mse.set_yscale("log")
+        ax_mse.plot(val_epochs, val_mses, label="Val MAE")
+    ax_mse.set_xlabel("Epoch"); ax_mse.set_ylabel("MAE")
+    ax_mse.set_title("State MAE (rho,w monitoring)"); ax_mse.set_yscale("log")
     ax_mse.legend(); ax_mse.grid(True, alpha=0.3)
     fig.suptitle("HypNO-ARZ training curves")
     curve_path = run_dir / "loss_curves.png"
