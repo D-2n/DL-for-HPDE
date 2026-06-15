@@ -103,19 +103,19 @@ hypno_arz_riemann:
 # config is gitignored and won't reach the cluster). Pair with the exact-Riemann
 # data section (arz_riemann_exact_prho) -- Mark2 is tau=inf only.
 hypno_arz_mark2:
-  stencil_k_x: 6
-  stencil_k_t: 4
+  stencil_k_x: 7
+  stencil_k_t: 5
   d_latent: 96
   d_hidden: 96
   d_hidden_nonadj: null
-  n_layers: 8
+  n_layers: 12
   activation: gelu
   causal_temporal: true
-  decoder_depth: 4
+  decoder_depth: 5
   adj_depth: 3
   nonadj_depth: 3
   update_depth: 3
-  update_hidden: null
+  update_hidden: 96
   skip: false
   use_upwind_gate: false
   normalize_edge_offsets: true
@@ -124,13 +124,13 @@ hypno_arz_mark2:
 
   optimizer: adamw
   epochs: 220
-  lr: 4.0e-4          # batch 8->16: sqrt(2) Adam scaling of the 3e-4 base
+  lr: 3.0e-4          # batch 8 base (no sqrt(2) bump -- that was for batch 16)
   weight_decay: 1.0e-4
   grad_clip: 1.0
   lr_schedule: cosine
-  lr_min: 1.0e-5
-  lr_warmup_steps: 180   # 2 epochs at batch 16 (90 batches/epoch) -- halved from 360
-  batch_size: 16
+  lr_min: 5.0e-6
+  lr_warmup_steps: 360   # 2 epochs at batch 8 (~180 batches/epoch)
+  batch_size: 8
   amp_dtype: bf16
 
   loss_type: mae        # mae|mse|huber; now wired into mark2_total_loss
