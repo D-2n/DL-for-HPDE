@@ -135,10 +135,15 @@ def _run_baseline(name, rho0, w0, bundle, tau, boundary):
     x_min = float(xb[0] - 0.5 * dx)
     x_max = float(xb[-1] + 0.5 * dx)
     t_max = float(bundle.t.max())
-    if name == "godunov":
+    if name in ("godunov", "hll"):
+        # 'godunov' = exact-Riemann flux (sharp contact, the LWR-equivalent).
+        # 'hll'     = the old HLL flux (contact-smearing) -- kept selectable so
+        #             the two can be compared. Previously 'godunov' silently ran
+        #             HLL; that was the mislabel behind the over-smeared baseline.
         _, _, rho_h, w_h = Ref.solve_arz_reference(
             rho0, w0, x_min, x_max, t_max, nt_out=nt,
             tau=tau, cfl=0.4, boundary=boundary, refine=1,
+            flux_scheme=("godunov" if name == "godunov" else "hll"),
         )
         return rho_h, w_h
     if name == "weno5":
@@ -398,7 +403,8 @@ def main():
     if plot_dir is not None and per_t_errors:
         t_np = bundle.t.astype(np.float64)
         fig, axes = plt.subplots(1, 3, figsize=(20, 4.5), constrained_layout=True)
-        colors = {"model": "tab:blue", "weno5": "tab:orange", "godunov": "tab:green"}
+        colors = {"model": "tab:blue", "weno5": "tab:orange",
+                  "godunov": "tab:green", "hll": "tab:red"}
         for ci, ch_name in enumerate(("rho", "v", "w")):
             for m in methods_in_order:
                 arrs = per_t_errors[m][ch_name]

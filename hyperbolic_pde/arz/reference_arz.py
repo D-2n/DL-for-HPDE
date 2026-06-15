@@ -5,8 +5,14 @@ Strang splitting per step:
     U <- HLL_hyperbolic(dt)
     U <- ODE_source(dt/2)
 
-Hyperbolic flux: HLL on conserved (rho, y) with wave-speed estimates from
-lambda1, lambda2 at the left/right states.
+Hyperbolic flux (selectable via flux_scheme):
+  * 'hll' (default): HLL on conserved (rho, y) with wave-speed estimates from
+    lambda1, lambda2. Fast, but averages the linearly-degenerate 2-contact away
+    (over-smears it). This is the dataset ground-truth flux -- do NOT change the
+    default, or regenerated data shifts.
+  * 'godunov': exact-Riemann flux (see _godunov_flux) -- solves the true ARZ
+    Riemann problem per interface and samples at xi=0. Sharp contact; the system
+    analogue of the LWR exact-Godunov flux. For baselines/eval, not datagen.
 
 Source step: at fixed rho, dy/dt = (y_eq(rho) - y) / tau is linear, exactly
 integrable over dt:
@@ -77,14 +83,65 @@ def _hll_flux(
     return F1, F2
 
 
+# --------------------------------------------------------------------------- #
+# Exact (true Godunov) numerical flux
+# --------------------------------------------------------------------------- #
+def _godunov_flux(
+    rho_L: np.ndarray, y_L: np.ndarray,
+    rho_R: np.ndarray, y_R: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Exact Godunov flux for ARZ: solve the TRUE Riemann problem at each
+    interface and sample the self-similar solution at xi = x/t = 0, then take
+    its physical flux. This is the system analogue of the LWR exact-Godunov
+    flux (fvm.godunov_flux) -- it resolves BOTH the GNL 1-wave and the
+    linearly-degenerate 2-contact exactly, unlike HLL which averages the
+    contact away into a single intermediate state.
+
+    Reuses the exact ARZ Riemann solver `solve_riemann_arz` (the same one that
+    generates the dataset ground truth). solve_riemann_arz is scalar-per-call,
+    so we loop interfaces -- baselines are not on the training hot path.
+    """
+    from hyperbolic_pde.arz.riemann_arz import solve_riemann_arz
+
+    n = rho_L.shape[0]
+    # Recover primitive w on each side (interface states).
+    _, w_L, _ = P.to_primitive(rho_L, y_L)
+    _, w_R, _ = P.to_primitive(rho_R, y_R)
+
+    rho_face = np.empty(n, dtype=np.float64)
+    w_face = np.empty(n, dtype=np.float64)
+    xi0 = np.array([0.0])  # sample the Riemann solution at the cell interface
+    for i in range(n):
+        r, wv, _ = solve_riemann_arz(
+            float(rho_L[i]), float(w_L[i]),
+            float(rho_R[i]), float(w_R[i]),
+            xi0,
+        )
+        rho_face[i] = r[0]
+        w_face[i] = wv[0]
+
+    F1, F2 = P.flux_from_rw(rho_face, w_face)
+    return F1, F2
+
+
 def _hyperbolic_step(
     rho: np.ndarray, y: np.ndarray,
     dx: float, dt: float, boundary: str,
+    flux_scheme: str = "hll",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """First-order Godunov-HLL update on (rho, y)."""
+    """First-order finite-volume hyperbolic update on (rho, y).
+
+    flux_scheme: 'hll' (default, fast, contact-smearing) or 'godunov' (exact
+    Riemann flux, sharp contact -- the LWR-equivalent Godunov).
+    """
     rho_ext = _pad_ghost(rho, 1, boundary)
     y_ext = _pad_ghost(y, 1, boundary)
-    F1, F2 = _hll_flux(rho_ext[:-1], y_ext[:-1], rho_ext[1:], y_ext[1:])
+    if flux_scheme == "godunov":
+        F1, F2 = _godunov_flux(rho_ext[:-1], y_ext[:-1], rho_ext[1:], y_ext[1:])
+    elif flux_scheme == "hll":
+        F1, F2 = _hll_flux(rho_ext[:-1], y_ext[:-1], rho_ext[1:], y_ext[1:])
+    else:
+        raise ValueError(f"flux_scheme must be 'hll' or 'godunov', got {flux_scheme!r}")
     rho_new = rho - (dt / dx) * (F1[1:] - F1[:-1])
     y_new = y - (dt / dx) * (F2[1:] - F2[:-1])
     # Floor rho to RHO_MIN to keep w extraction safe.
@@ -111,8 +168,12 @@ def solve_arz_reference(
     cfl: float = 0.4,
     boundary: str = "periodic",
     refine: int = 1,
+    flux_scheme: str = "hll",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Solve 1D ARZ with relaxation.
+
+    flux_scheme : 'hll' (default -- preserves the dataset ground-truth solver)
+        or 'godunov' (exact-Riemann flux, sharp contact; for baselines/eval).
 
     Parameters
     ----------
@@ -186,7 +247,8 @@ def solve_arz_reference(
 
         # Strang: 1/2 source -> hyperbolic -> 1/2 source.
         y_f = _source_step(rho_f, y_f, 0.5 * dt, tau)
-        rho_f, y_f = _hyperbolic_step(rho_f, y_f, dx_fine, dt, boundary)
+        rho_f, y_f = _hyperbolic_step(rho_f, y_f, dx_fine, dt, boundary,
+                                      flux_scheme=flux_scheme)
         y_f = _source_step(rho_f, y_f, 0.5 * dt, tau)
         # Refresh w_f from (rho_f, y_f) for CFL next iter.
         _, w_f, _ = P.to_primitive(rho_f, y_f)
