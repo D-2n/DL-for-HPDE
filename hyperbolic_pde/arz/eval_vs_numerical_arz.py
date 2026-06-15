@@ -178,7 +178,7 @@ def main():
     ap.add_argument("--n-plots", type=int, default=5,
                     help="Number of per-sample plots to save (default 5).")
     ap.add_argument("--model-variant", type=str, default="auto",
-                    choices=["auto", "mark1", "mark2"],
+                    choices=["auto", "mark1", "mark2", "mark2_1"],
                     help="Model class. 'auto' uses mark2 when --model-section says "
                          "so, else mark1.")
     ap.add_argument("--model-section", type=str, default="hypno_arz_mark2",
@@ -195,14 +195,26 @@ def main():
     set_pressure_form(bundle.p_form)
     print(f"[eval_vs_numerical_arz] pressure_form={get_pressure_form()}")
 
-    # Resolve variant: auto -> mark2 iff the model-section name says so.
+    # Resolve variant: auto -> mark2_1 > mark2 > mark1 by section name.
+    # (mark2_1 must be checked FIRST -- "mark2_1" contains "mark2".)
     variant = args.model_variant
     if variant == "auto":
-        variant = "mark2" if "mark2" in args.model_section else "mark1"
+        if "mark2_1" in args.model_section:
+            variant = "mark2_1"
+        elif "mark2" in args.model_section:
+            variant = "mark2"
+        else:
+            variant = "mark1"
 
-    # Load model. Mark2 = (rho,v) decoder; its forward still returns
+    # Load model. mark2 / mark2_1 = (rho,v) decoder; forward still returns
     # (rho, w, u_hats) with w recovered, so the eval path below is unchanged.
-    if variant == "mark2":
+    if variant == "mark2_1":
+        from hyperbolic_pde.arz.model_arz_mark2_1 import load_hypno_arz_mark2_1_from_checkpoint
+        model, _ck_tau = load_hypno_arz_mark2_1_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    elif variant == "mark2":
         from hyperbolic_pde.arz.model_arz_mark2 import load_hypno_arz_mark2_from_checkpoint
         model, _ck_tau = load_hypno_arz_mark2_from_checkpoint(
             args.ckpt, device=args.device, config_path=args.config,
@@ -254,7 +266,7 @@ def main():
         rho0_t = torch.tensor(rho0[None], dtype=torch.float32, device=args.device)
         w0_t   = torch.tensor(w0[None],   dtype=torch.float32, device=args.device)
         with torch.no_grad():
-            if variant == "mark2":
+            if variant in ("mark2", "mark2_1"):
                 # Get v DIRECTLY from the decoder (the model's actual output),
                 # NOT v = w - p(rho). The latter just inverts the w = v + p(rho)
                 # recovery, so it would hide any inconsistency in the decoded

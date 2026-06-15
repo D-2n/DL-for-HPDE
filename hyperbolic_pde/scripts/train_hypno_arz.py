@@ -32,6 +32,7 @@ from hyperbolic_pde.arz.losses_arz import (
 )
 from hyperbolic_pde.arz.model_arz import HypNO_ARZ
 from hyperbolic_pde.arz.model_arz_mark2 import HypNO_ARZ_Mark2, cfg_to_kwargs_m2
+from hyperbolic_pde.arz.model_arz_mark2_1 import HypNO_ARZ_Mark2_1, cfg_to_kwargs_m2_1
 
 
 # --------------------------------------------------------------------------- #
@@ -233,9 +234,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--model-variant", type=str, default="auto",
-        choices=["auto", "mark1", "mark2"],
-        help="Which model class. 'auto' picks mark2 when the model-section name "
-             "contains 'mark2', else mark1 (HypNO_ARZ).",
+        choices=["auto", "mark1", "mark2", "mark2_1"],
+        help="Which model class. 'auto' picks mark2_1 when the section name "
+             "contains 'mark2_1', else mark2 when it contains 'mark2', else "
+             "mark1 (HypNO_ARZ).",
     )
     parser.add_argument(
         "--resume_run", type=str, default=None,
@@ -370,13 +372,25 @@ def main() -> None:
     _dhn = model_cfg.get("d_hidden_nonadj", None)
     d_hidden_nonadj = int(_dhn) if _dhn is not None else None
 
-    # Resolve model variant (auto -> mark2 iff section name says so).
+    # Resolve model variant (auto: mark2_1 > mark2 > mark1 by section name).
     variant = args.model_variant
     if variant == "auto":
-        variant = "mark2" if "mark2" in args.model_section else "mark1"
+        if "mark2_1" in args.model_section:
+            variant = "mark2_1"
+        elif "mark2" in args.model_section:
+            variant = "mark2"
+        else:
+            variant = "mark1"
     log.info(f"Model variant: {variant}")
+    # mark2 and mark2_1 share the (rho,v) decoder frame, forward_primitive, and
+    # mark2_total_loss -- they differ ONLY in the message feature vector.
+    is_m2_family = variant in ("mark2", "mark2_1")
 
-    if variant == "mark2":
+    if variant == "mark2_1":
+        m2_kwargs = cfg_to_kwargs_m2_1(model_cfg)
+        m2_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
+        model = HypNO_ARZ_Mark2_1(**m2_kwargs).to(device)
+    elif variant == "mark2":
         m2_kwargs = cfg_to_kwargs_m2(model_cfg)
         m2_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
         model = HypNO_ARZ_Mark2(**m2_kwargs).to(device)
@@ -466,7 +480,7 @@ def main() -> None:
             f"loss_type must be 'mae', 'mse', or 'huber', got {loss_type!r}")
     # The mark2 loss honors loss_type for every term; the mark1 arz_total_loss
     # path is hardcoded MSE -- flag that in the banner so the log isn't lying.
-    obj_str = loss_type.upper() if variant == "mark2" else f"MSE (mark1 ignores loss_type={loss_type!r})"
+    obj_str = loss_type.upper() if is_m2_family else f"MSE (mark1 ignores loss_type={loss_type!r})"
     bal_disabled = (lambda_balance <= 0.0) or (not np.isfinite(tau))
     bal_str = "OFF" if bal_disabled else f"{lambda_balance}"
     log.info(f"Training objective: {obj_str}  tau={tau}  "
@@ -511,7 +525,7 @@ def main() -> None:
 
             opt.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
-                if variant == "mark2":
+                if is_m2_family:
                     rho_p, v_p, w_p, u_hats_rv = model.forward_primitive(rho0, w0, x_grid, t_grid)
                     v_gt = w_gt - _p_gt(rho_gt)
                     loss, info = mark2_total_loss(
@@ -592,7 +606,7 @@ def main() -> None:
                     v_rho0 = v_rho0.to(device); v_w0 = v_w0.to(device)
                     v_rho = v_rho.to(device);   v_w  = v_w.to(device)
                     with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
-                        if variant == "mark2":
+                        if is_m2_family:
                             vrp, vvp_, vwp, vuh_rv = model.forward_primitive(v_rho0, v_w0, x_grid, t_grid)
                             v_v_gt = v_w - _p_gt(v_rho)
                             vL, _ = mark2_total_loss(
