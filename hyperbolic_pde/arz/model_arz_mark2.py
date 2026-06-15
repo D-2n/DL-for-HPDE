@@ -130,6 +130,8 @@ class _ArzLiftingM2(nn.Module):
         use_upwind_gate: bool = False,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        aggregation_mode: str = "materialized",
+        edge_chunk_size: int = 16,
     ) -> None:
         super().__init__()
         self.k_x = stencil_k_x
@@ -139,6 +141,8 @@ class _ArzLiftingM2(nn.Module):
         self.use_upwind_gate = use_upwind_gate
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
+        self.aggregation_mode = aggregation_mode
+        self.edge_chunk_size = edge_chunk_size
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
         self.node_mlp = _make_mlp(7, d_hidden, d_latent, 2, activation)
@@ -196,46 +200,85 @@ class _ArzLiftingM2(nn.Module):
             double_batch=self.double_batch,
             neighborhood_spacing=self.neighborhood_spacing,
         )
+        adj_offsets = [(di, dm) for (di, dm) in offsets if dm == 0 and abs(di) == 1]
+        nonadj_offsets = [(di, dm) for (di, dm) in offsets if not (dm == 0 and abs(di) == 1)]
 
-        msgs: list[torch.Tensor] = []
-        gates: list[torch.Tensor] = []
-
-        for di, dm in offsets:
+        # --- per-offset message/gate builders (shared by both modes) -------- #
+        def _adj_msg_gate(di, dm):
             rho_j = rho0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             w_j   = w0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             x_j   = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
-            t_j   = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
+            rel_x = x_j - x_bc
+            v_j = w_j - _p(rho_j)
+            ph = _adj_interface_physics(rho0_bc, v0_bc, w0_bc, rho_j, v_j, w_j, rel_x)
+            gnl_in = torch.cat([h_node, h_node, ph["s_1"], ph["drho"], ph["sign_rel_x"]], dim=-1)
+            ld_in  = torch.cat([h_node, h_node, ph["s_2"], ph["dw"],  ph["sign_rel_x"]], dim=-1)
+            m_gnl = self.msg_gnl(gnl_in)
+            m_ld  = self.msg_ld(ld_in)
+            theta = ph["theta"]
+            g_ent = self._g_ent(ph["chi_1bad"])
+            if self.use_upwind_gate:
+                g_ent = g_ent * self._g_up(ph["s_1"], ph["sign_rel_x"])
+            msg = (1.0 - theta) * g_ent * m_gnl + theta * m_ld
+            gate = torch.ones_like(rel_x)
+            return msg, gate
+
+        def _nonadj_geo(di, dm):
+            """Return the non-adj geometric edge features for one offset (no MLP)."""
+            x_j = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+            t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
             rel_x = x_j - x_bc
             rel_t = t_j - t_bc
-            v_j = w_j - _p(rho_j)
-
             if self.normalize_edge_offsets:
                 rel_x_feat = rel_x / dx_grid
                 rel_t_feat = rel_t / dt_grid
             else:
                 rel_x_feat = rel_x
                 rel_t_feat = rel_t
-
-            is_adj_sp = (dm == 0) and (abs(di) == 1)
             sign_rel_x = torch.sign(rel_x)
+            return rel_x_feat, rel_t_feat, sign_rel_x
 
+        if self.aggregation_mode == "chunked":
+            num = None
+            den = None
+            for di, dm in adj_offsets:
+                msg, gate = _adj_msg_gate(di, dm)
+                contrib = gate * msg
+                num = contrib if num is None else num + contrib
+                den = gate if den is None else den + gate
+            cs = max(1, int(self.edge_chunk_size))
+            for s in range(0, len(nonadj_offsets), cs):
+                chunk = nonadj_offsets[s : s + cs]
+                rxs, rts, sgn = [], [], []
+                for di, dm in chunk:
+                    rx, rt, sg = _nonadj_geo(di, dm)
+                    rxs.append(rx); rts.append(rt); sgn.append(sg)
+                rel_x_feat = torch.stack(rxs, dim=3)            # [B,nt,nx,C,1]
+                rel_t_feat = torch.stack(rts, dim=3)
+                sign_rel_x = torch.stack(sgn, dim=3)
+                h_exp = h_node.unsqueeze(3).expand(-1, -1, -1, len(chunk), -1)
+                geo_in = torch.cat([h_exp, h_exp, rel_x_feat, rel_t_feat, sign_rel_x], dim=-1)
+                msg_c = self.nonadj_msg(geo_in)                 # [B,nt,nx,C,d]
+                gate_c = torch.ones_like(rel_x_feat)            # lifting: gate==1
+                contrib = (gate_c * msg_c).sum(dim=3)
+                num = contrib if num is None else num + contrib
+                gden = gate_c.sum(dim=3)
+                den = gden if den is None else den + gden
+            agg = num / (den + 1e-3)
+            return self.combine(torch.cat([h_node, agg], dim=-1))
+
+        # --- materialized (default, reference path) ------------------------- #
+        msgs: list[torch.Tensor] = []
+        gates: list[torch.Tensor] = []
+        for di, dm in offsets:
+            is_adj_sp = (dm == 0) and (abs(di) == 1)
             if is_adj_sp:
-                ph = _adj_interface_physics(rho0_bc, v0_bc, w0_bc, rho_j, v_j, w_j, rel_x)
-                gnl_in = torch.cat([h_node, h_node, ph["s_1"], ph["drho"], ph["sign_rel_x"]], dim=-1)
-                ld_in  = torch.cat([h_node, h_node, ph["s_2"], ph["dw"],  ph["sign_rel_x"]], dim=-1)
-                m_gnl = self.msg_gnl(gnl_in)
-                m_ld  = self.msg_ld(ld_in)
-                theta = ph["theta"]
-                g_ent = self._g_ent(ph["chi_1bad"])
-                if self.use_upwind_gate:
-                    g_ent = g_ent * self._g_up(ph["s_1"], ph["sign_rel_x"])
-                msg = (1.0 - theta) * g_ent * m_gnl + theta * m_ld
-                gate = torch.ones_like(rel_x)
+                msg, gate = _adj_msg_gate(di, dm)
             else:
+                rel_x_feat, rel_t_feat, sign_rel_x = _nonadj_geo(di, dm)
                 geo_in = torch.cat([h_node, h_node, rel_x_feat, rel_t_feat, sign_rel_x], dim=-1)
                 msg = self.nonadj_msg(geo_in)
-                gate = torch.ones_like(rel_x)
-
+                gate = torch.ones_like(rel_x_feat)
             msgs.append(msg)
             gates.append(gate)
 
@@ -269,6 +312,8 @@ class _ArzMPLayerM2(nn.Module):
         use_upwind_gate: bool = False,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        aggregation_mode: str = "materialized",
+        edge_chunk_size: int = 16,
     ) -> None:
         super().__init__()
         self.k_x = k_x
@@ -278,6 +323,8 @@ class _ArzMPLayerM2(nn.Module):
         self.use_upwind_gate = use_upwind_gate
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
+        self.aggregation_mode = aggregation_mode
+        self.edge_chunk_size = edge_chunk_size
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
         upd_h = d_hidden if update_hidden is None else update_hidden
@@ -316,6 +363,20 @@ class _ArzMPLayerM2(nn.Module):
             torch.zeros_like(rel_t),
         )
         return torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
+
+    def _g_cfl_chunked(self, dm_is_zero, rel_t, rel_x, spec_i):
+        """Vectorized CFL gate over a stacked offset chunk. `dm_is_zero` is a
+        bool tensor broadcastable to `rel_t` flagging pure-spatial (dm==0) edges,
+        which get gate==1 (matching the scalar `_g_cfl` early return)."""
+        cfl_scale = F.softplus(self.phys_cfl_scale).clamp(min=1e-6)
+        dx_edge = rel_x.abs()
+        cfl = torch.where(
+            dx_edge > 0,
+            spec_i * rel_t.abs() / dx_edge.clamp(min=1e-12),
+            torch.zeros_like(rel_t),
+        )
+        g = torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
+        return torch.where(dm_is_zero, torch.ones_like(g), g)
 
     def _decode_primitive(self, h):
         """Shared decoder -> (rho, v, w). rho and v both LINEAR (matching the
@@ -362,11 +423,25 @@ class _ArzMPLayerM2(nn.Module):
             double_batch=self.double_batch,
             neighborhood_spacing=self.neighborhood_spacing,
         )
+        adj_offsets = [(di, dm) for (di, dm) in offsets if dm == 0 and abs(di) == 1]
+        nonadj_offsets = [(di, dm) for (di, dm) in offsets if not (dm == 0 and abs(di) == 1)]
 
-        msgs: list[torch.Tensor] = []
-        gates: list[torch.Tensor] = []
+        def _gather_j(di, dm):
+            h_j = h_pad[:, self.k_t + dm : self.k_t + dm + nt,
+                            pad_x + di : pad_x + di + nx, :]
+            x_j = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+            t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
+            rel_x = x_j - x_i
+            rel_t = t_j - t_i
+            if self.normalize_edge_offsets:
+                rel_x_feat = rel_x / dx_val
+                rel_t_feat = rel_t / dt_val
+            else:
+                rel_x_feat = rel_x
+                rel_t_feat = rel_t
+            return h_j, rel_x, rel_t, rel_x_feat, rel_t_feat, torch.sign(rel_x)
 
-        for di, dm in offsets:
+        def _adj_msg_gate(di, dm):
             h_j = h_pad[:, self.k_t + dm : self.k_t + dm + nt,
                             pad_x + di : pad_x + di + nx, :]
             rho_j = rho_pad[:, self.k_t + dm : self.k_t + dm + nt,
@@ -376,37 +451,74 @@ class _ArzMPLayerM2(nn.Module):
             w_j = w_pad[:, self.k_t + dm : self.k_t + dm + nt,
                             pad_x + di : pad_x + di + nx, :]
             x_j = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
-            t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
             rel_x = x_j - x_i
-            rel_t = t_j - t_i
+            ph = _adj_interface_physics(rho_hat, v_hat, w_hat, rho_j, v_j, w_j, rel_x)
+            gnl_in = torch.cat([h, h_j, ph["s_1"], ph["drho"], ph["sign_rel_x"]], dim=-1)
+            ld_in  = torch.cat([h, h_j, ph["s_2"], ph["dw"],  ph["sign_rel_x"]], dim=-1)
+            m_gnl = self.msg_gnl(gnl_in)
+            m_ld  = self.msg_ld(ld_in)
+            theta = ph["theta"]
+            g_ent = self._g_ent(ph["chi_1bad"])
+            if self.use_upwind_gate:
+                g_ent = g_ent * self._g_up(ph["s_1"], ph["sign_rel_x"])
+            msg = (1.0 - theta) * g_ent * m_gnl + theta * m_ld
+            gate = torch.ones_like(rel_x)
+            return msg, gate
 
-            if self.normalize_edge_offsets:
-                rel_x_feat = rel_x / dx_val
-                rel_t_feat = rel_t / dt_val
-            else:
-                rel_x_feat = rel_x
-                rel_t_feat = rel_t
+        if self.aggregation_mode == "chunked":
+            num = None
+            den = None
+            for di, dm in adj_offsets:
+                msg, gate = _adj_msg_gate(di, dm)
+                contrib = gate * msg
+                num = contrib if num is None else num + contrib
+                den = gate if den is None else den + gate
+            cs = max(1, int(self.edge_chunk_size))
+            for s in range(0, len(nonadj_offsets), cs):
+                chunk = nonadj_offsets[s : s + cs]
+                hjs, rxs, rts, rxf, rtf, sgn, dmz = [], [], [], [], [], [], []
+                for di, dm in chunk:
+                    h_j, rel_x, rel_t, rel_x_feat, rel_t_feat, sign_rel_x = _gather_j(di, dm)
+                    hjs.append(h_j); rxs.append(rel_x); rts.append(rel_t)
+                    rxf.append(rel_x_feat); rtf.append(rel_t_feat); sgn.append(sign_rel_x)
+                    dmz.append(dm == 0)
+                h_j_c = torch.stack(hjs, dim=3)                 # [B,nt,nx,C,d]
+                rel_x_c = torch.stack(rxs, dim=3)
+                rel_t_c = torch.stack(rts, dim=3)
+                rel_x_feat_c = torch.stack(rxf, dim=3)
+                rel_t_feat_c = torch.stack(rtf, dim=3)
+                sign_c = torch.stack(sgn, dim=3)
+                C = len(chunk)
+                h_exp = h.unsqueeze(3).expand(-1, -1, -1, C, -1)
+                geo_in = torch.cat([h_exp, h_j_c, rel_x_feat_c, rel_t_feat_c, sign_c], dim=-1)
+                msg_c = self.nonadj_msg(geo_in)                 # [B,nt,nx,C,d]
+                dm_is_zero = torch.tensor(
+                    dmz, device=h.device, dtype=torch.bool
+                ).view(1, 1, 1, C, 1)
+                spec_c = spec_i.unsqueeze(3)                    # [B,nt,nx,1,1] broadcasts
+                gate_c = self._g_cfl_chunked(dm_is_zero, rel_t_c, rel_x_c, spec_c)
+                contrib = (gate_c * msg_c).sum(dim=3)
+                num = contrib if num is None else num + contrib
+                gden = gate_c.sum(dim=3)
+                den = gden if den is None else den + gden
+            agg = num / (den + 1e-3)
+            upd_in = torch.cat([h, agg], dim=-1)
+            h_nonlocal = self.update_net(upd_in)
+            h_local = self.W(h)
+            return self.act(h_nonlocal + h_local)
 
+        # --- materialized (default, reference path) ------------------------- #
+        msgs: list[torch.Tensor] = []
+        gates: list[torch.Tensor] = []
+        for di, dm in offsets:
             is_adj_sp = (dm == 0) and (abs(di) == 1)
-            sign_rel_x = torch.sign(rel_x)
-
             if is_adj_sp:
-                ph = _adj_interface_physics(rho_hat, v_hat, w_hat, rho_j, v_j, w_j, rel_x)
-                gnl_in = torch.cat([h, h_j, ph["s_1"], ph["drho"], ph["sign_rel_x"]], dim=-1)
-                ld_in  = torch.cat([h, h_j, ph["s_2"], ph["dw"],  ph["sign_rel_x"]], dim=-1)
-                m_gnl = self.msg_gnl(gnl_in)
-                m_ld  = self.msg_ld(ld_in)
-                theta = ph["theta"]
-                g_ent = self._g_ent(ph["chi_1bad"])
-                if self.use_upwind_gate:
-                    g_ent = g_ent * self._g_up(ph["s_1"], ph["sign_rel_x"])
-                msg = (1.0 - theta) * g_ent * m_gnl + theta * m_ld
-                gate = torch.ones_like(rel_x)
+                msg, gate = _adj_msg_gate(di, dm)
             else:
+                h_j, rel_x, rel_t, rel_x_feat, rel_t_feat, sign_rel_x = _gather_j(di, dm)
                 geo_in = torch.cat([h, h_j, rel_x_feat, rel_t_feat, sign_rel_x], dim=-1)
                 msg = self.nonadj_msg(geo_in)
                 gate = self._g_cfl(dm, rel_t, rel_x, spec_i)
-
             msgs.append(msg)
             gates.append(gate)
 
@@ -453,11 +565,17 @@ class HypNO_ARZ_Mark2(nn.Module):
         normalize_edge_offsets: bool = True,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        aggregation_mode: str = "materialized",
+        edge_chunk_size: int = 16,
         **_ignored,
     ) -> None:
         super().__init__()
         self.skip = skip
         self.use_checkpoint = use_checkpoint
+        if aggregation_mode not in ("materialized", "chunked"):
+            raise ValueError(
+                f"aggregation_mode must be 'materialized' or 'chunked', got {aggregation_mode!r}"
+            )
         if _ignored:
             print(f"[HypNO_ARZ_Mark2] IGNORED kwargs = {sorted(_ignored.keys())}")
         print(
@@ -465,7 +583,8 @@ class HypNO_ARZ_Mark2(nn.Module):
             f"d_hidden={d_hidden} layers={n_layers} adj_depth={adj_depth} "
             f"nonadj_depth={nonadj_depth} update_depth={update_depth} "
             f"update_hidden={update_hidden} skip={skip} "
-            f"use_upwind_gate={use_upwind_gate}"
+            f"use_upwind_gate={use_upwind_gate} "
+            f"aggregation_mode={aggregation_mode} edge_chunk_size={edge_chunk_size}"
         )
 
         self.lifting = _ArzLiftingM2(
@@ -477,6 +596,7 @@ class HypNO_ARZ_Mark2(nn.Module):
             adj_depth=adj_depth, nonadj_depth=nonadj_depth,
             use_upwind_gate=use_upwind_gate,
             double_batch=double_batch, neighborhood_spacing=neighborhood_spacing,
+            aggregation_mode=aggregation_mode, edge_chunk_size=edge_chunk_size,
         )
 
         # Decoder outputs (d_rho, d_v) -- primitive frame.
@@ -494,6 +614,7 @@ class HypNO_ARZ_Mark2(nn.Module):
                 update_depth=update_depth, update_hidden=update_hidden,
                 use_upwind_gate=use_upwind_gate,
                 double_batch=double_batch, neighborhood_spacing=neighborhood_spacing,
+                aggregation_mode=aggregation_mode, edge_chunk_size=edge_chunk_size,
             )
             for _ in range(n_layers)
         ])
@@ -567,6 +688,8 @@ def cfg_to_kwargs_m2(model_cfg: dict) -> dict:
         normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),
         double_batch=bool(model_cfg.get("double_batch", False)),
         neighborhood_spacing=int(model_cfg.get("neighborhood_spacing", 1)),
+        aggregation_mode=str(model_cfg.get("aggregation_mode", "materialized")),
+        edge_chunk_size=int(model_cfg.get("edge_chunk_size", 16)),
     )
 
 
