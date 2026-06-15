@@ -226,7 +226,7 @@ def main():
         plot_dir = Path(args.figures)
         plot_dir.mkdir(parents=True, exist_ok=True)
         for m in methods_in_order:
-            per_t_errors[m] = {"rho": [], "w": []}
+            per_t_errors[m] = {"rho": [], "w": [], "v": []}
         print(f"[eval_vs_numerical_arz] writing figures to {plot_dir}")
 
     # Iterate samples, compute MAE per (family, segments, method, channel).
@@ -246,20 +246,32 @@ def main():
         w0     = bundle.w0[i].astype(np.float64)
 
         # Model.
+        rho0_t = torch.tensor(rho0[None], dtype=torch.float32, device=args.device)
+        w0_t   = torch.tensor(w0[None],   dtype=torch.float32, device=args.device)
         with torch.no_grad():
-            rho_p, w_p, _ = model(
-                torch.tensor(rho0[None], dtype=torch.float32, device=args.device),
-                torch.tensor(w0[None],   dtype=torch.float32, device=args.device),
-                x, t,
-            )
-        rho_p = rho_p[0].cpu().numpy(); w_p = w_p[0].cpu().numpy()
-        v_p = w_p - P.pressure(rho_p)
+            if variant == "mark2":
+                # Get v DIRECTLY from the decoder (the model's actual output),
+                # NOT v = w - p(rho). The latter just inverts the w = v + p(rho)
+                # recovery, so it would hide any inconsistency in the decoded
+                # (rho, v) pair -- exactly what we want to see (e.g. a spurious
+                # w-band means v and p(rho) don't cancel across the 1-wave).
+                rho_pt, v_pt, w_pt, _ = model.forward_primitive(rho0_t, w0_t, x, t)
+                rho_p = rho_pt[0].cpu().numpy()
+                v_p   = v_pt[0].cpu().numpy()
+                w_p   = w_pt[0].cpu().numpy()
+            else:
+                rho_pt, w_pt, _ = model(rho0_t, w0_t, x, t)
+                rho_p = rho_pt[0].cpu().numpy(); w_p = w_pt[0].cpu().numpy()
+                v_p = w_p - P.pressure(rho_p)   # mark1 has no direct v output
         buckets[key]["model"]["rho"].append(float(np.mean(np.abs(rho_p - rho_gt))))
         buckets[key]["model"]["w"  ].append(float(np.mean(np.abs(w_p   - w_gt  ))))
         buckets[key]["model"]["v"  ].append(float(np.mean(np.abs(v_p   - v_gt  ))))
 
         # Stash predictions for plotting (only kept when --figures is set).
-        sample_preds = {"model": (rho_p, w_p)} if plot_dir is not None else None
+        # Each entry is (rho, w, v). For the model, v is the DIRECT decoder
+        # output; for baselines it is the recovery w - p(rho) (a numerical
+        # solver has no separate v field).
+        sample_preds = {"model": (rho_p, w_p, v_p)} if plot_dir is not None else None
 
         # For exact-Riemann datasets (tau=inf) run baselines as homogeneous ARZ.
         baseline_tau = tau if np.isfinite(tau) else 1e6
@@ -274,19 +286,21 @@ def main():
             buckets[key][m]["w"  ].append(float(np.mean(np.abs(w_b   - w_gt  ))))
             buckets[key][m]["v"  ].append(float(np.mean(np.abs(v_b   - v_gt  ))))
             if sample_preds is not None:
-                sample_preds[m] = (rho_b, w_b)
+                sample_preds[m] = (rho_b, w_b, v_b)
 
         # Per-sample plot + per-t error accumulation.
         if plot_dir is not None:
             x_np = bundle.x.astype(np.float64)
             t_np = bundle.t.astype(np.float64)
             # Per-t error (mean over x) for the global error-vs-t plot.
-            for m, (rho_m, w_m) in sample_preds.items():
+            for m, (rho_m, w_m, v_m) in sample_preds.items():
                 per_t_errors[m]["rho"].append(np.mean(np.abs(rho_m - rho_gt), axis=1))
                 per_t_errors[m]["w"  ].append(np.mean(np.abs(w_m   - w_gt  ), axis=1))
+                per_t_errors[m]["v"  ].append(np.mean(np.abs(v_m   - v_gt  ), axis=1))
             if i < args.n_plots:
                 for ch_name, gt_arr, pred_dict in (
                     ("rho", rho_gt, {m: sample_preds[m][0] for m in sample_preds}),
+                    ("v",   v_gt,   {m: sample_preds[m][2] for m in sample_preds}),
                     ("w",   w_gt,   {m: sample_preds[m][1] for m in sample_preds}),
                 ):
                     methods_present = ["GT"] + [m for m in methods_in_order if m in pred_dict]
@@ -383,9 +397,9 @@ def main():
     # Global error-vs-time plot (one panel per channel).
     if plot_dir is not None and per_t_errors:
         t_np = bundle.t.astype(np.float64)
-        fig, axes = plt.subplots(1, 2, figsize=(14, 4.5), constrained_layout=True)
+        fig, axes = plt.subplots(1, 3, figsize=(20, 4.5), constrained_layout=True)
         colors = {"model": "tab:blue", "weno5": "tab:orange", "godunov": "tab:green"}
-        for ci, ch_name in enumerate(("rho", "w")):
+        for ci, ch_name in enumerate(("rho", "v", "w")):
             for m in methods_in_order:
                 arrs = per_t_errors[m][ch_name]
                 if not arrs:
@@ -401,7 +415,7 @@ def main():
         fig.savefig(plot_dir / "error_vs_time.png", dpi=150)
         plt.close(fig)
         print(f"[eval_vs_numerical_arz] saved error_vs_time.png and "
-              f"{min(take, args.n_plots) * 2} per-sample plots in {plot_dir}")
+              f"{min(take, args.n_plots) * 3} per-sample plots in {plot_dir}")
 
     # Pretty print to stdout.
     print(f"\n[eval_vs_numerical_arz] wrote {args.out}  (N={take} samples)")
