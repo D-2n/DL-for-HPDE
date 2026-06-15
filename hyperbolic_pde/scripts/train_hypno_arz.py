@@ -633,9 +633,16 @@ def main() -> None:
                     val_loss += vL.item() * B
                     val_mse  += v_mae * B
                     val_count += B
-                    # Per-channel and eq/off MAE.
-                    vvp = vwp - (vrp + vrp * vrp)
-                    vvgt = v_w - (v_rho + v_rho * v_rho)
+                    # Per-channel and eq/off MAE. Use the active pressure closure
+                    # (_p_gt), not a hardcoded quadratic p(rho) -- prho runs use
+                    # p=rho, so the old `rho + rho*rho` made mae_v / eq-off wrong.
+                    # For the mark2 family vvp_ is the directly-decoded v; only the
+                    # legacy (rho,w) path needs to recover v = w - p(rho).
+                    if is_m2_family:
+                        vvp = vvp_
+                    else:
+                        vvp = vwp - _p_gt(vrp)
+                    vvgt = v_w - _p_gt(v_rho)
                     mae_rho_b = (vrp - v_rho).abs().mean(dim=(1, 2))
                     mae_w_b   = (vwp - v_w).abs().mean(dim=(1, 2))
                     mae_v_b   = (vvp - vvgt).abs().mean(dim=(1, 2))
