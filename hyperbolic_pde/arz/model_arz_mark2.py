@@ -16,8 +16,10 @@ Design (see writeup/hypno_arz_mark2.tex and the design memo):
   family messages per adjacent edge, re-decided every layer from the current
   decoded state. theta~0 -> GNL, theta~1 -> contact.
 
-* Decoder outputs PRIMITIVE (rho, v); sigmoid on rho (in (0,1)), v linear;
-  recover w = v + p(rho) by exact algebra. Global output skip default OFF.
+* Decoder outputs PRIMITIVE (rho, v), BOTH LINEAR (unconstrained, matching the
+  best LWR-ST3 readout); recover w = v + p(rho) by exact algebra. The sigmoid on
+  rho was removed -- it smeared shocks (squashing softens interior jumps into
+  ramps). Global output skip default OFF.
 
 * Upwind gate is a TOGGLE, default OFF (FVM upwinding is flux-splitting, not
   edge-pruning; the causal stencil already encodes the domain of dependence).
@@ -316,10 +318,14 @@ class _ArzMPLayerM2(nn.Module):
         return torch.exp(-cfl_scale * F.relu(cfl - 1.0) ** 2)
 
     def _decode_primitive(self, h):
-        """Shared decoder -> (rho, v, w). rho sigmoid-squashed, v linear,
-        w = v + p(rho)."""
+        """Shared decoder -> (rho, v, w). rho and v both LINEAR (matching the
+        best LWR-ST3 readout: GELU hidden activations, unconstrained output);
+        w = v + p(rho). The sigmoid on rho was removed -- it squashed interior
+        jumps into ramps (slope sigma*(1-sigma) is small away from 0.5), smearing
+        shocks. The forward pass is division-safe for any rho (no 1/rho, no
+        sqrt/log), so an unconstrained rho cannot blow up the physics features."""
         out = self._shared_decoder(h)            # [..., 2] = (d_rho, d_v)
-        rho = torch.sigmoid(out[..., 0:1])
+        rho = out[..., 0:1]
         v = out[..., 1:2]
         w = v + _p(rho)
         return rho, v, w
@@ -494,7 +500,7 @@ class HypNO_ARZ_Mark2(nn.Module):
 
     def _decode(self, h, rho0, w0):
         out = self.decoder(h)                    # (d_rho, d_v)
-        rho = torch.sigmoid(out[..., 0:1])
+        rho = out[..., 0:1]                      # LINEAR (sigmoid removed -- see _decode_primitive)
         v = out[..., 1:2]
         if self.skip:
             B, nt, nx, _ = out.shape
