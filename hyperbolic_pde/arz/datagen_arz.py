@@ -153,13 +153,11 @@ def _solve_one(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return rho_hist, w_hist of shape (nt, nx)."""
     nx = rho0.size
-    if use_exact_riemann and ic_name == "riemann_stratified":
-        pass  # exact path below; tau is unused (homogeneous)
-    elif not np.isfinite(tau):
-        raise ValueError(
-            f"tau={tau} (non-finite) requires use_exact_riemann=True and "
-            f"families=[riemann_stratified] only; got ic_name={ic_name!r}."
-        )
+    # tau=inf is fine for the FV path too: _source_step uses exp(-dt/tau) -> 1,
+    # so the relaxation step is a no-op and the solver evolves the pure
+    # homogeneous (tau=inf) ARZ system. This lets stratified MULTI-segment ICs
+    # (piecewise_constant / sine, not just single Riemann) be generated at
+    # tau=inf via FV -- the exact Riemann solver only handles single jumps.
 
     if use_exact_riemann and ic_name == "riemann_stratified":
         # Detect the single jump location: pick the cell with the largest

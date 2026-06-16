@@ -31,6 +31,9 @@ from hyperbolic_pde.arz.losses_arz import (
     mark2_total_loss,
 )
 from hyperbolic_pde.arz.model_arz import HypNO_ARZ
+from hyperbolic_pde.arz.model_arz_orig import (
+    HypNO_ARZ_Orig, _cfg_to_kwargs_orig,
+)
 from hyperbolic_pde.arz.model_arz_mark1_router import (
     HypNO_ARZ_Mark1Router, cfg_to_kwargs_m1r,
 )
@@ -237,11 +240,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--model-variant", type=str, default="auto",
-        choices=["auto", "mark1", "mark1_router", "mark2", "mark2_1"],
+        choices=["auto", "mark1", "mark1_router", "orig", "mark2", "mark2_1"],
         help="Which model class. 'auto' picks mark2_1 when the section name "
              "contains 'mark2_1', else mark2 when it contains 'mark2', else "
-             "mark1_router when it contains 'mark1_router', else mark1 "
-             "(HypNO_ARZ).",
+             "mark1_router when it contains 'mark1_router', else orig when it "
+             "contains 'orig', else mark1 (HypNO_ARZ). 'orig' = the frozen "
+             "pre-pure-pairwise 2d+12 HypNO_ARZ_Orig.",
     )
     parser.add_argument(
         "--resume_run", type=str, default=None,
@@ -385,6 +389,8 @@ def main() -> None:
             variant = "mark2"
         elif "mark1_router" in args.model_section:
             variant = "mark1_router"
+        elif "orig" in args.model_section:
+            variant = "orig"
         else:
             variant = "mark1"
     log.info(f"Model variant: {variant}")
@@ -406,6 +412,12 @@ def main() -> None:
         m1r_kwargs = cfg_to_kwargs_m1r(model_cfg)
         m1r_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
         model = HypNO_ARZ_Mark1Router(**m1r_kwargs).to(device)
+    elif variant == "orig":
+        # The ORIGINAL pre-pure-pairwise 2d+12 HypNO_ARZ (frozen at 11ae6bc).
+        # Mark1 frame (rho,w decoder, arz_total_loss) -- NOT the m2 family.
+        orig_kwargs = _cfg_to_kwargs_orig(model_cfg)
+        orig_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
+        model = HypNO_ARZ_Orig(**orig_kwargs).to(device)
     else:
         model = HypNO_ARZ(
             stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
