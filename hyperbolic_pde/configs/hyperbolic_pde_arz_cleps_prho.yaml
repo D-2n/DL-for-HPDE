@@ -278,6 +278,61 @@ hypno_arz_mark1_router:
   save_path: /home/dzdrale/scratch/runs/hypno_arz_mark1_router.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark1_router
 
+# Same architecture as hypno_arz_mark1_router, on the big 5400-sample exact-Riemann
+# set (arz_riemann_mark2_prho_5400). 4320 train / batch 32 ~= 135 batches/epoch, so
+# warmup + cadence are sized for that. compile OFF (torch.compile fails on the
+# cluster's Python 3.9 -- see project memory).
+hypno_arz_mark1_router_5400:
+  stencil_k_x: 6
+  stencil_k_t: 4
+  d_latent: 64
+  d_hidden: 64
+  d_hidden_nonadj: null
+  n_layers: 12
+  activation: gelu
+  causal_temporal: true
+  decoder_depth: 5
+  adj_depth: 3
+  nonadj_depth: 3
+  update_depth: 4
+  update_hidden: 64
+  lift_node_depth: 4
+  lift_adj_depth: 2
+  lift_nonadj_depth: 2
+  lift_combine_depth: 2
+  skip: false
+  use_relaxation_features: false
+  normalize_edge_offsets: true
+  use_checkpoint: true
+  compile: false
+
+  optimizer: adamw
+  epochs: 220
+  lr: 6.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 3.0
+  lr_schedule: cosine
+  lr_min: 5.0e-6
+  lr_warmup_steps: 270   # ~2 epochs at batch 32 (~135 batches/epoch)
+
+  batch_size: 32
+  amp_dtype: bf16
+
+  loss_type: mae
+  w_weight: 1.0
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_balance: 0.0     # tau=inf (exact-Riemann) -> relaxation balance OFF
+  lambda_probe: 0.005
+
+  checkpoint_every: 10
+  val_every: 10
+  log_batch_every: 50
+  diseq_threshold: 0.1
+
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_mark1_router_5400.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark1_router_5400
+
 # Same architecture as hypno_arz_mark1_router, retuned for the small 500-sample
 # initial train (pair with data section arz_riemann_mark2_prho_500). 400 train
 # samples -> ~25 batches/epoch at batch 16, so warmup/cadence are scaled down so
