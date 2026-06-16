@@ -252,6 +252,15 @@ def main() -> None:
         help="Path to a previous run directory. Resumes from its latest checkpoint.",
     )
     parser.add_argument(
+        "--finetune_from", type=str, default=None,
+        help="Path to a checkpoint (.pt) to WARM-START from: loads only the model "
+             "weights, then trains under the CURRENT config/section in a NEW run "
+             "dir with a FRESH optimizer/scheduler and epoch counter starting at 1. "
+             "Unlike --resume_run (which re-reads the old run's config and writes "
+             "back into it), this is for finetuning a pretrained checkpoint on new "
+             "data with a new (e.g. lower-lr) schedule.",
+    )
+    parser.add_argument(
         "--auto_resume", action="store_true",
         help="If set and --resume_run is not provided, look at "
              "hyperbolic_pde/runs/hypno_arz/latest_run.txt and resume from "
@@ -450,6 +459,24 @@ def main() -> None:
             log.info(f"Resumed from {ckpt_path} (epoch {resumed_epoch}), continuing from epoch {start_epoch}")
         else:
             log.warning(f"No checkpoints found in {resume_run_dir}, starting from scratch")
+    elif args.finetune_from:
+        # Warm-start: load ONLY the weights from a specific checkpoint, then train
+        # under the current config/section in this (new) run dir with a fresh
+        # optimizer/scheduler and start_epoch=1. Does NOT touch the source run.
+        ft_path = Path(args.finetune_from)
+        ckpt = torch.load(ft_path, map_location=device, weights_only=True)
+        if any(k.startswith("_orig_mod.") for k in ckpt):
+            ckpt = {k.removeprefix("_orig_mod."): v for k, v in ckpt.items()}
+        missing, unexpected = model.load_state_dict(ckpt, strict=False)
+        if missing or unexpected:
+            log.warning(
+                f"[finetune_from] non-strict load: {len(missing)} missing, "
+                f"{len(unexpected)} unexpected keys (arch mismatch?). "
+                f"missing[:4]={missing[:4]} unexpected[:4]={unexpected[:4]}"
+            )
+        log.info(f"[finetune_from] warm-started weights from {ft_path}; "
+                 f"fresh optimizer, training from epoch {start_epoch} under section "
+                 f"'{args.model_section}'.")
 
     torch.set_float32_matmul_precision("high")
     use_compile = bool(model_cfg.get("compile", False)) and hasattr(torch, "compile")
