@@ -457,12 +457,12 @@ hypno_arz_mark1_normal:
 # 12 layers, d96, batch 16, mae) so it is comparable to the other variants.
 # --model-section contains 'orig' -> --model-variant auto -> HypNO_ARZ_Orig.
 hypno_arz_orig:
-  stencil_k_x: 7
-  stencil_k_t: 5
+  stencil_k_x: 6
+  stencil_k_t: 4
   d_latent: 96
   d_hidden: 96
   d_hidden_nonadj: null
-  n_layers: 12
+  n_layers: 11
   activation: gelu
   causal_temporal: true
   decoder_depth: 5

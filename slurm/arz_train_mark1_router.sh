@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --requeue
 #SBATCH --open-mode=append
 #SBATCH --output=/home/dzdrale/scratch/logs/hypno_arz_mark1_router_%j.log
