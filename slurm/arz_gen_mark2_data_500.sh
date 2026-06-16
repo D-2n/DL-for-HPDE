@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=arz_gen_mark2_data_500
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 #SBATCH --time=00:30:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_gen_mark2_data_500_%j.log
 
 # CPU-only data generation (no GPU needed -- pure NumPy exact Riemann solver).
-# Set the partition with: sbatch --partition=<cpu_partition> slurm/arz_gen_mark2_data_500.sh
-# (find it via: sinfo -o "%P %a %l %D %t" | grep -iv gpu)
+# No --partition/--gres: CLEPS routes partition-less jobs to a CPU-capable
+# default (matches slurm/arz_datagen.sh).
 #
 # Small 500-sample exact homogeneous (tau=inf) Riemann ARZ dataset for an INITIAL
 # train of HypNO-ARZ Mark 1 (router-aware). Identical recipe + seed to the full
