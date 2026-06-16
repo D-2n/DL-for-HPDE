@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=arz_eval_mark2
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
-#SBATCH --mem=64G
-#SBATCH --time=06:00:00
+#SBATCH --mem=32G
+#SBATCH --time=01:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_eval_mark2_%j.log
 
 # Evaluate a HypNO-ARZ Mark 2 checkpoint vs numerical baselines on exact-Riemann

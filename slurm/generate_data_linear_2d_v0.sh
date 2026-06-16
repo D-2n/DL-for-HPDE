@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=gen_lin2d_v0
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
 #SBATCH --time=0:30:00
 #SBATCH --output=/home/dzdrale/scratch/logs/gen_lin2d_v0_%j.log
 
