@@ -147,6 +147,10 @@ class _ArzLifting(nn.Module):
         use_relaxation_features: bool = True,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        node_depth: int = 2,
+        adj_depth: int = 2,
+        nonadj_depth: int = 2,
+        combine_depth: int = 2,
     ) -> None:
         super().__init__()
         if double_batch and stencil_k_x % 2 != 0:
@@ -163,16 +167,16 @@ class _ArzLifting(nn.Module):
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
         n_node_in = 9 if use_relaxation_features else 7
-        self.node_mlp = _make_mlp(n_node_in, d_hidden, d_latent, 2, activation)
-        self.adj_edge_mlp    = _make_mlp(8, d_hidden, d_latent, 2, activation)
-        self.nonadj_edge_mlp = _make_mlp(3, dh_na,    d_latent, 2, activation)
+        self.node_mlp = _make_mlp(n_node_in, d_hidden, d_latent, node_depth, activation)
+        self.adj_edge_mlp    = _make_mlp(8, d_hidden, d_latent, adj_depth, activation)
+        self.nonadj_edge_mlp = _make_mlp(3, dh_na,    d_latent, nonadj_depth, activation)
 
         # Per-field gate temperatures.
         self.phys_temp1 = nn.Parameter(torch.tensor(0.0))   # softplus -> tau1
         self.phys_temp2 = nn.Parameter(torch.tensor(0.0))   # softplus -> tau2
         self.phys_gamma = nn.Parameter(torch.tensor(-2.0))  # sigmoid  -> gamma
 
-        self.combine = _make_mlp(2 * d_latent, d_hidden, d_latent, 2, activation)
+        self.combine = _make_mlp(2 * d_latent, d_hidden, d_latent, combine_depth, activation)
 
     def _gate_adj(
         self,

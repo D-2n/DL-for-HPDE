@@ -73,6 +73,10 @@ class _ArzMPLayerM1R(nn.Module):
         normalize_edge_offsets: bool = True,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        adj_depth: int = 3,
+        nonadj_depth: int = 3,
+        update_depth: int = 3,
+        update_hidden: Optional[int] = None,
     ) -> None:
         super().__init__()
         if double_batch and k_x % 2 != 0:
@@ -85,6 +89,7 @@ class _ArzMPLayerM1R(nn.Module):
         self.neighborhood_spacing = neighborhood_spacing
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
+        upd_h = d_hidden if update_hidden is None else update_hidden
 
         if shared_decoder is None:
             raise ValueError("_ArzMPLayerM1R requires a shared_decoder")
@@ -96,10 +101,10 @@ class _ArzMPLayerM1R(nn.Module):
         self.phys_cfl_scale = nn.Parameter(torch.tensor(0.0))
 
         # Router-aware adjacent message: 2d+4 (the +1 is theta).
-        self.adj_msg = _make_mlp(2 * d_latent + 4, d_hidden, d_latent, 3, activation)
-        self.nonadj_msg = _make_mlp(2 * d_latent + 3, dh_na, d_latent, 3, activation)
+        self.adj_msg = _make_mlp(2 * d_latent + 4, d_hidden, d_latent, adj_depth, activation)
+        self.nonadj_msg = _make_mlp(2 * d_latent + 3, dh_na, d_latent, nonadj_depth, activation)
 
-        self.update_net = _make_mlp(2 * d_latent, d_hidden, d_latent, 3, activation)
+        self.update_net = _make_mlp(2 * d_latent, upd_h, d_latent, update_depth, activation)
         self.W = nn.Linear(d_latent, d_latent)
 
     def _gate_adj(
@@ -284,6 +289,14 @@ class HypNO_ARZ_Mark1Router(nn.Module):
         causal_temporal: bool = True,
         d_hidden_nonadj: Optional[int] = None,
         decoder_depth: int = 3,
+        adj_depth: int = 3,
+        nonadj_depth: int = 3,
+        update_depth: int = 3,
+        update_hidden: Optional[int] = None,
+        lift_node_depth: int = 2,
+        lift_adj_depth: int = 2,
+        lift_nonadj_depth: int = 2,
+        lift_combine_depth: int = 2,
         skip: bool = True,
         use_checkpoint: bool = False,
         normalize_edge_offsets: bool = True,
@@ -306,6 +319,11 @@ class HypNO_ARZ_Mark1Router(nn.Module):
             f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
             f"skip={skip} normalize_edge_offsets={normalize_edge_offsets} "
             f"use_relaxation_features={use_relaxation_features} "
+            f"decoder_depth={decoder_depth} adj_depth={adj_depth} "
+            f"nonadj_depth={nonadj_depth} update_depth={update_depth} "
+            f"update_hidden={update_hidden} "
+            f"lift_depths=(node {lift_node_depth}, adj {lift_adj_depth}, "
+            f"nonadj {lift_nonadj_depth}, combine {lift_combine_depth}) "
             f"double_batch={double_batch}"
             + (f" neighborhood_spacing={neighborhood_spacing}" if double_batch else "")
         )
@@ -319,6 +337,8 @@ class HypNO_ARZ_Mark1Router(nn.Module):
             use_relaxation_features=use_relaxation_features,
             double_batch=double_batch,
             neighborhood_spacing=neighborhood_spacing,
+            node_depth=lift_node_depth, adj_depth=lift_adj_depth,
+            nonadj_depth=lift_nonadj_depth, combine_depth=lift_combine_depth,
         )
 
         # Decoder outputs (rho, w) -- 2 channels.
@@ -334,6 +354,8 @@ class HypNO_ARZ_Mark1Router(nn.Module):
                 normalize_edge_offsets=normalize_edge_offsets,
                 double_batch=double_batch,
                 neighborhood_spacing=neighborhood_spacing,
+                adj_depth=adj_depth, nonadj_depth=nonadj_depth,
+                update_depth=update_depth, update_hidden=update_hidden,
             )
             for _ in range(n_layers)
         ])
@@ -377,6 +399,7 @@ class HypNO_ARZ_Mark1Router(nn.Module):
 def cfg_to_kwargs_m1r(model_cfg: dict) -> dict:
     """Translate a config block into HypNO_ARZ_Mark1Router constructor kwargs."""
     _dhn = model_cfg.get("d_hidden_nonadj", None)
+    _uh = model_cfg.get("update_hidden", None)
     return dict(
         stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
         stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
@@ -387,6 +410,14 @@ def cfg_to_kwargs_m1r(model_cfg: dict) -> dict:
         causal_temporal=bool(model_cfg.get("causal_temporal", True)),
         d_hidden_nonadj=int(_dhn) if _dhn is not None else None,
         decoder_depth=int(model_cfg.get("decoder_depth", 3)),
+        adj_depth=int(model_cfg.get("adj_depth", 3)),
+        nonadj_depth=int(model_cfg.get("nonadj_depth", 3)),
+        update_depth=int(model_cfg.get("update_depth", 3)),
+        update_hidden=int(_uh) if _uh is not None else None,
+        lift_node_depth=int(model_cfg.get("lift_node_depth", 2)),
+        lift_adj_depth=int(model_cfg.get("lift_adj_depth", 2)),
+        lift_nonadj_depth=int(model_cfg.get("lift_nonadj_depth", 2)),
+        lift_combine_depth=int(model_cfg.get("lift_combine_depth", 2)),
         skip=bool(model_cfg.get("skip", True)),
         use_checkpoint=False,
         normalize_edge_offsets=bool(model_cfg.get("normalize_edge_offsets", True)),

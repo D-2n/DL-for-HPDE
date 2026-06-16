@@ -211,7 +211,17 @@ hypno_arz_mark1_router:
   n_layers: 12
   activation: gelu
   causal_temporal: true
+  # MLP depths (all tunable). Processor message/update + decoder match mark2;
+  # lift_* control the lifting layer's node/edge/combine MLPs (default 2).
   decoder_depth: 5
+  adj_depth: 3
+  nonadj_depth: 3
+  update_depth: 3
+  update_hidden: 96
+  lift_node_depth: 2
+  lift_adj_depth: 2
+  lift_nonadj_depth: 2
+  lift_combine_depth: 2
   skip: false
   use_relaxation_features: false
   normalize_edge_offsets: true
