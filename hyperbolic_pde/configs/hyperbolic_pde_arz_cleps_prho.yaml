@@ -182,6 +182,59 @@ hypno_arz_mark2:
   save_path: /home/dzdrale/scratch/runs/hypno_arz_mark2.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark2
 
+# HypNO-ARZ Mark 2 FINETUNE: identical architecture to hypno_arz_mark2 (so an
+# existing mark2 checkpoint loads), but a GENTLE finetune schedule -- low lr, no
+# warmup, light clip -- to adapt a Riemann-pretrained mark2 to the stratified
+# multi-discontinuity HOMOGENEOUS set (arz_stratified_homog_prho) WITHOUT a
+# disruptive cosine restart at full lr. Use with --resume_run <mark2 run dir>;
+# training continues from the checkpoint's epoch to `epochs` here.
+# NOTE: pretrain GT was exact-Riemann (sharp); this set is FV (~1-cell smear at
+# fronts), so the model adapts toward the smoother target -- expected, not a bug.
+hypno_arz_mark2_finetune:
+  stencil_k_x: 7
+  stencil_k_t: 5
+  d_latent: 96
+  d_hidden: 96
+  d_hidden_nonadj: null
+  n_layers: 12
+  activation: gelu
+  causal_temporal: true
+  decoder_depth: 5
+  adj_depth: 3
+  nonadj_depth: 3
+  update_depth: 3
+  update_hidden: 96
+  skip: false
+  use_upwind_gate: false
+  normalize_edge_offsets: true
+  use_checkpoint: true
+  compile: false
+
+  optimizer: adamw
+  epochs: 200            # resume from ckpt epoch (~90) -> ~110 finetune epochs
+  lr: 5.0e-5             # LOW: ~1/6 of the 3e-4 from-scratch lr (gentle finetune)
+  weight_decay: 1.0e-4
+  grad_clip: 1.0         # back to gentle clipping for finetune stability
+  lr_schedule: cosine
+  lr_min: 1.0e-6
+  lr_warmup_steps: 0     # weights already good -> no warmup
+  batch_size: 8
+  amp_dtype: bf16
+
+  loss_type: mae
+  w_weight: 1.0
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_probe: 0.01
+
+  checkpoint_every: 10
+  val_every: 5
+  log_batch_every: 50
+  diseq_threshold: 0.1
+
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_mark2_finetune.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark2_finetune
+
 # HypNO-ARZ Mark 2.1: mark2 with ALL THREE jumps (drho, dv, dw) + both speeds
 # (s_1, s_2) in BOTH family branches (2d+6, vs mark2's 2d+3). Everything else
 # IDENTICAL to hypno_arz_mark2 -- trains in parallel as the A/B probe for the
