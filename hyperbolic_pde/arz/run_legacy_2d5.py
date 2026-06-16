@@ -46,12 +46,11 @@ def infer_kwargs(sd: dict, kx: int, kt: int) -> dict:
     n_layers = 1 + max(
         int(k.split(".")[1]) for k in sd if k.startswith("mp_layers.")
     )
-    # decoder output dim: decoder.<last>.weight rows
-    dec_keys = sorted(
-        (k for k in sd if k.startswith("decoder.") and k.endswith(".weight")),
-        key=lambda k: int(k.split(".")[1]),
-    )
-    decoder_depth = len(dec_keys) - 1  # _make_mlp: depth hidden layers + 1 output
+    # _make_mlp(layers=L) emits L Linear layers (indices 0,2,..,2(L-1)); the
+    # number of decoder .weight keys IS the depth. (Earlier off-by-one used
+    # len-1, which built a depth-3 decoder whose output landed one layer early.)
+    dec_keys = [k for k in sd if k.startswith("decoder.") and k.endswith(".weight")]
+    decoder_depth = len(dec_keys)
     return dict(
         stencil_k_x=kx, stencil_k_t=kt,
         d_latent=int(d_latent), d_hidden=int(d_hidden),
