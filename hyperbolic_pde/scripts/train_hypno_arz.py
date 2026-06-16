@@ -529,6 +529,9 @@ def main() -> None:
     for epoch in range(start_epoch, epochs + 1):
         epoch_loss_sum = 0.0
         epoch_mse_sum = 0.0
+        epoch_mae_rho_sum = 0.0
+        epoch_mae_w_sum = 0.0
+        epoch_mae_v_sum = 0.0
         epoch_count = 0
         for rho0, w0, rho_gt, w_gt in loader:
             step += 1
@@ -576,10 +579,25 @@ def main() -> None:
                 # Monitoring metric: (rho, w)-frame MAE, matching the (mae)
                 # objective. Independent of loss_type so it stays a stable
                 # yardstick, but reported as MAE to align with the objective.
-                batch_mae = float(((rho_p - rho_gt).abs() + (w_p - w_gt).abs()).mean().item())
-            epoch_loss_sum += loss.item() * rho0.size(0)
-            epoch_mse_sum  += batch_mae   * rho0.size(0)
-            epoch_count += rho0.size(0)
+                # Also split per channel (rho / w / v) so the train log mirrors
+                # the val log's per-channel breakdown. v is the directly-decoded
+                # output for the mark2 family, else recovered as w - p(rho).
+                mae_rho_b = (rho_p - rho_gt).abs().mean().item()
+                mae_w_b   = (w_p - w_gt).abs().mean().item()
+                if is_m2_family:
+                    v_p_mon = v_p
+                else:
+                    v_p_mon = w_p - _p_gt(rho_p)
+                v_gt_mon = w_gt - _p_gt(rho_gt)
+                mae_v_b = (v_p_mon - v_gt_mon).abs().mean().item()
+                batch_mae = mae_rho_b + mae_w_b
+            bs = rho0.size(0)
+            epoch_loss_sum += loss.item() * bs
+            epoch_mse_sum  += batch_mae   * bs
+            epoch_mae_rho_sum += mae_rho_b * bs
+            epoch_mae_w_sum   += mae_w_b   * bs
+            epoch_mae_v_sum   += mae_v_b   * bs
+            epoch_count += bs
 
             if log_batch_every > 0 and step % log_batch_every == 0:
                 n_batches = len(loader)
@@ -590,16 +608,20 @@ def main() -> None:
                     f"loss={loss.item():.3e} | state={info['state']:.3e} "
                     f"cons={info['cons']:.3e} bal={info['bal']:.3e} "
                     f"probe={info['probe']:.3e} | mae={batch_mae:.3e} "
+                    f"(rho/w/v={mae_rho_b:.3e}/{mae_w_b:.3e}/{mae_v_b:.3e}) "
                     f"| gnorm={gnorm:.2e}{clip_flag}"
                 )
                 for h in log.handlers: h.flush()
 
         train_losses.append(epoch_loss_sum / max(1, epoch_count))
         train_mses.append(epoch_mse_sum / max(1, epoch_count))
+        _ec = max(1, epoch_count)
         lr_now = opt.param_groups[0]["lr"]
         log.info(
             f"epoch {epoch:3d}/{epochs} | optim_loss={train_losses[-1]:.3e} | "
-            f"mae={train_mses[-1]:.3e} | lr={lr_now:.2e} | {gpu_status()}"
+            f"mae={train_mses[-1]:.3e} "
+            f"(rho/w/v={epoch_mae_rho_sum/_ec:.3e}/{epoch_mae_w_sum/_ec:.3e}/"
+            f"{epoch_mae_v_sum/_ec:.3e}) | lr={lr_now:.2e} | {gpu_status()}"
         )
         for h in log.handlers: h.flush()
 
