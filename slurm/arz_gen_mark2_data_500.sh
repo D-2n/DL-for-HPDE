@@ -24,6 +24,13 @@ mkdir -p /home/dzdrale/scratch/arz_1d /home/dzdrale/scratch/logs
 OUT=${1:-/home/dzdrale/scratch/arz_1d/arz_riemann_mark2_prho_500.npz}
 N=${2:-500}
 
+# v-min is NEGATIVE on purpose: v_* (= v_R = the 2-contact speed) is drawn in
+# [v-min, v-max], so a negative floor adds LEFT-GOING and near-STATIONARY
+# contacts -- previously absent (v_*>0 always) and a real coverage hole for a
+# family-routing model. Vacuum-free still holds for any sign of v_*: rho_* is
+# pinned by the directly-drawn rho_star (w_L - v_R = p(rho_*) >= p(rho_min) > 0
+# by construction, independent of v_*'s sign). Kept v-max=0.9 so strong
+# right-going contacts remain well represented.
 /home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.arz.datagen_arz \
   --out "$OUT" \
   --N "$N" \
@@ -33,6 +40,6 @@ N=${2:-500}
   --pressure-form rho \
   --seed 42 \
   --rho-min 0.1 --rho-max 0.95 \
-  --v-min 0.1 --v-max 0.9
+  --v-min -0.5 --v-max 0.9
 
 echo "Done: $OUT"
