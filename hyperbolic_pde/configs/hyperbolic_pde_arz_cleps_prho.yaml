@@ -263,3 +263,57 @@ hypno_arz_mark1_router:
 
   save_path: /home/dzdrale/scratch/runs/hypno_arz_mark1_router.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark1_router
+
+# Same architecture as hypno_arz_mark1_router, retuned for the small 500-sample
+# initial train (pair with data section arz_riemann_mark2_prho_500). 400 train
+# samples -> ~25 batches/epoch at batch 16, so warmup/cadence are scaled down so
+# warmup doesn't eat the whole run. Quick sanity/initial fit, not the final run.
+hypno_arz_mark1_router_500:
+  stencil_k_x: 7
+  stencil_k_t: 5
+  d_latent: 96
+  d_hidden: 96
+  d_hidden_nonadj: null
+  n_layers: 12
+  activation: gelu
+  causal_temporal: true
+  decoder_depth: 5
+  adj_depth: 3
+  nonadj_depth: 3
+  update_depth: 3
+  update_hidden: 96
+  lift_node_depth: 2
+  lift_adj_depth: 2
+  lift_nonadj_depth: 2
+  lift_combine_depth: 2
+  skip: false
+  use_relaxation_features: false
+  normalize_edge_offsets: true
+  use_checkpoint: true
+  compile: false
+
+  optimizer: adamw
+  epochs: 200
+  lr: 4.2e-4              # batch 16 = 2x batch-8 base (3e-4); sqrt-rule bump (x~1.41)
+  weight_decay: 1.0e-4
+  grad_clip: 3.0
+  lr_schedule: cosine
+  lr_min: 5.0e-6
+  lr_warmup_steps: 50     # ~2 epochs at batch 16 (~25 batches/epoch)
+  batch_size: 16
+  amp_dtype: bf16
+
+  loss_type: mae
+  w_weight: 1.0
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_balance: 0.0     # tau=inf (exact-Riemann) -> relaxation balance OFF
+  lambda_probe: 0.01
+
+  checkpoint_every: 5
+  val_every: 5
+  log_batch_every: 20
+  diseq_threshold: 0.1
+
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_mark1_router_500.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark1_router_500
