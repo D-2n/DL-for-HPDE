@@ -213,10 +213,10 @@ hypno_arz_mark2_1:
 # (kx7/kt5, 12 layers, d96, batch 8, mae) so it is a clean A/B against them on the
 # 2000-sample exact-Riemann set. Homogeneous stage -> use_relaxation_features=false.
 hypno_arz_mark1_router:
-  stencil_k_x: 7
-  stencil_k_t: 5
-  d_latent: 96
-  d_hidden: 96
+  stencil_k_x: 6
+  stencil_k_t: 4
+  d_latent: 64
+  d_hidden: 64
   d_hidden_nonadj: null
   n_layers: 12
   activation: gelu
@@ -226,9 +226,9 @@ hypno_arz_mark1_router:
   decoder_depth: 5
   adj_depth: 3
   nonadj_depth: 3
-  update_depth: 3
-  update_hidden: 96
-  lift_node_depth: 2
+  update_depth: 4
+  update_hidden: 64
+  lift_node_depth: 4
   lift_adj_depth: 2
   lift_nonadj_depth: 2
   lift_combine_depth: 2
@@ -236,16 +236,18 @@ hypno_arz_mark1_router:
   use_relaxation_features: false
   normalize_edge_offsets: true
   use_checkpoint: true
-  compile: false
+  compile: true
 
   optimizer: adamw
-  epochs: 220
-  lr: 6.0e-4              # batch 32 = 4x batch-8 base (3e-4); sqrt-rule bump (x2)
+
+  epochs: 150
+  lr: 6.0e-4
   weight_decay: 1.0e-4
-  grad_clip: 3.0          # raised from 1.0: clip@1 fired every batch (lr governor)
+  grad_clip: 3.0
   lr_schedule: cosine
   lr_min: 5.0e-6
-  lr_warmup_steps: 360    # ~8 epochs at batch 32 (~45 batches/epoch); longer warmup de-risks higher lr
+  lr_warmup_steps: 0
+
   batch_size: 32
   amp_dtype: bf16
 
@@ -254,7 +256,7 @@ hypno_arz_mark1_router:
   lambda_state: 1.0
   lambda_conservation: 1.0
   lambda_balance: 0.0     # tau=inf (exact-Riemann) -> relaxation balance OFF
-  lambda_probe: 0.01
+  lambda_probe: 0.005
 
   checkpoint_every: 10
   val_every: 10

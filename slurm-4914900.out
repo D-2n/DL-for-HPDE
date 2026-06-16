@@ -1,0 +1,12 @@
+[HypNO_ARZ] kx=2 kt=2 d_latent=96 d_hidden=96 layers=7 skip=True normalize_edge_offsets=True
+[eval_vs_numerical_arz] loaded /home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260526_235925/checkpoint_epoch130.pt  tau_eval=0.10000000149011612
+
+[eval_vs_numerical_arz] wrote /home/dzdrale/scratch/results/arz_trial_epoch130.csv  (N=20 samples)
+  piecewise_constant_stratified seg=2:
+    model     rho 1.351e-02+/-9.9e-03  w 1.336e-02+/-8.2e-03  v 1.550e-02+/-1.1e-02
+    weno5     rho 7.440e-04+/-3.6e-04  w 7.211e-04+/-4.0e-04  v 9.121e-04+/-5.7e-04
+    godunov   rho 2.347e-03+/-1.8e-03  w 2.491e-03+/-2.0e-03  v 2.361e-03+/-1.8e-03
+  piecewise_sine seg=2:
+    model     rho 1.693e-02+/-2.9e-03  w 1.593e-02+/-2.5e-03  v 2.135e-02+/-3.2e-03
+    weno5     rho 4.382e-03+/-1.1e-03  w 5.264e-03+/-1.7e-03  v 4.557e-03+/-1.4e-03
+    godunov   rho 7.972e-03+/-2.4e-03  w 9.123e-03+/-3.3e-03  v 8.392e-03+/-2.2e-03
