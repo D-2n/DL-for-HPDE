@@ -68,7 +68,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", type=Path, required=True)
     ap.add_argument("--data", type=Path, required=True)
-    ap.add_argument("--pressure-form", default="rho", choices=["rho", "rho+rho2"])
+    ap.add_argument("--pressure-form", default="auto",
+                    choices=["auto", "rho", "rho+rho2"],
+                    help="auto (default) reads it from the dataset bundle's p_form "
+                         "so model-forward, GT, and plots are all consistent.")
     ap.add_argument("--samples", type=int, default=8)
     ap.add_argument("--kx", type=int, default=2, help="stencil_k_x (not in weights; 4ec18fb default 2)")
     ap.add_argument("--kt", type=int, default=2, help="stencil_k_t (not in weights; 4ec18fb default 2)")
@@ -79,7 +82,18 @@ def main() -> None:
     ap.add_argument("--n-plots", type=int, default=5)
     args = ap.parse_args()
 
-    P.set_pressure_form(args.pressure_form)
+    # Load the dataset FIRST so we can pin the pressure form to its p_form
+    # (model-forward + GT + plots then all use the same closure).
+    bundle = load_arz_dataset(args.data)
+    if args.pressure_form == "auto":
+        pform = bundle.p_form
+        print(f"[run_legacy_2d5] pressure_form=auto -> dataset p_form={pform!r}")
+    else:
+        pform = args.pressure_form
+        if pform != bundle.p_form:
+            print(f"[run_legacy_2d5] WARNING: --pressure-form {pform!r} != dataset "
+                  f"p_form {bundle.p_form!r}; GT/forward will be INCONSISTENT.")
+    P.set_pressure_form(pform)
     print(f"[run_legacy_2d5] pressure_form={P.get_pressure_form()}")
 
     raw = torch.load(args.ckpt, map_location=args.device, weights_only=False)
@@ -98,7 +112,6 @@ def main() -> None:
         print("[run_legacy_2d5] state_dict loaded CLEANLY (all keys matched).")
     model.eval()
 
-    bundle = load_arz_dataset(args.data)
     x = torch.tensor(bundle.x, dtype=torch.float32, device=args.device)
     t = torch.tensor(bundle.t, dtype=torch.float32, device=args.device)
     take = min(args.samples, bundle.rho.shape[0])
