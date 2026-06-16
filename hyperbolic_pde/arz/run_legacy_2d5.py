@@ -74,6 +74,9 @@ def main() -> None:
     ap.add_argument("--kt", type=int, default=2, help="stencil_k_t (not in weights; 4ec18fb default 2)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", type=Path, default=None, help="optional .npz to save predicted fields")
+    ap.add_argument("--figures", type=Path, default=None,
+                    help="dir for per-sample space-time PNGs (pred|GT|err for rho,v,w)")
+    ap.add_argument("--n-plots", type=int, default=5)
     args = ap.parse_args()
 
     P.set_pressure_form(args.pressure_form)
@@ -103,6 +106,7 @@ def main() -> None:
           f"nt={bundle.t.shape[0]} p_form={bundle.p_form}  evaluating {take} samples")
 
     rho_out, v_out, w_out = [], [], []
+    rho_g, v_g, w_g = [], [], []
     mae_rho = mae_w = mae_v = 0.0
     for i in range(take):
         rho0 = torch.tensor(bundle.rho0[i][None], dtype=torch.float32, device=args.device)
@@ -116,6 +120,7 @@ def main() -> None:
 
         rho_gt = bundle.rho[i]; w_gt = bundle.w[i]
         v_gt = w_gt - P.pressure(rho_gt)
+        rho_g.append(rho_gt); v_g.append(v_gt); w_g.append(w_gt)
         mae_rho += np.mean(np.abs(rho_p - rho_gt))
         mae_w += np.mean(np.abs(w_p - w_gt))
         mae_v += np.mean(np.abs(v_p - v_gt))
@@ -126,6 +131,42 @@ def main() -> None:
     r = np.stack(rho_out)
     print(f"[run_legacy_2d5] pred rho range [{r.min():.3f}, {r.max():.3f}]  "
           f"mean {r.mean():.3f}")
+
+    # ----- visuals: per-sample space-time panels (pred | GT | error) ------- #
+    if args.figures is not None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig_dir = Path(args.figures)
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        x_np = bundle.x.astype(np.float64)
+        t_np = bundle.t.astype(np.float64)
+        channels = [("rho", rho_out, rho_g), ("v", v_out, v_g), ("w", w_out, w_g)]
+        n_fig = min(args.n_plots, take)
+        for i in range(n_fig):
+            fig, axes = plt.subplots(3, 3, figsize=(13, 11), constrained_layout=True)
+            for row, (name, preds, gts) in enumerate(channels):
+                pred = preds[i]; gt = gts[i]; err = pred - gt
+                vmin = min(pred.min(), gt.min()); vmax = max(pred.max(), gt.max())
+                im0 = axes[row, 0].pcolormesh(x_np, t_np, pred, shading="auto",
+                                              vmin=vmin, vmax=vmax, cmap="viridis")
+                axes[row, 0].set_title(f"{name} pred")
+                fig.colorbar(im0, ax=axes[row, 0])
+                im1 = axes[row, 1].pcolormesh(x_np, t_np, gt, shading="auto",
+                                              vmin=vmin, vmax=vmax, cmap="viridis")
+                axes[row, 1].set_title(f"{name} GT")
+                fig.colorbar(im1, ax=axes[row, 1])
+                amax = float(np.abs(err).max()) or 1.0
+                im2 = axes[row, 2].pcolormesh(x_np, t_np, err, shading="auto",
+                                              vmin=-amax, vmax=amax, cmap="RdBu_r")
+                axes[row, 2].set_title(f"{name} err (MAE {np.mean(np.abs(err)):.3e})")
+                fig.colorbar(im2, ax=axes[row, 2])
+                for c in range(3):
+                    axes[row, c].set_xlabel("x"); axes[row, c].set_ylabel("t")
+            fig.suptitle(f"legacy2d5  sample {i}  (p_form={bundle.p_form})")
+            fig.savefig(fig_dir / f"legacy2d5_sample_{i}.png", dpi=130)
+            plt.close(fig)
+        print(f"[run_legacy_2d5] wrote {n_fig} figures -> {fig_dir}")
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
