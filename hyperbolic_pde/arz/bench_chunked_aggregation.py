@@ -177,11 +177,19 @@ def benchmark(model_cls_name, kwargs, chunk_sizes, device, B, nx, nt, iters, war
     rho0, w0, x, t = make_inputs(B, nx, nt, device, dtype)
 
     rows = []
-    # materialized
+    # materialized -- this is the baseline chunking exists to rescue, so it is
+    # *expected* to OOM at the production shape. Record it as OOM and keep going
+    # instead of letting the whole benchmark crash.
     torch.manual_seed(0)
     mat = model_cls(aggregation_mode="materialized", **kwargs).to(device=device, dtype=dtype)
-    f, b, s, p = time_model(mat, rho0, w0, x, t, device, iters, warmup)
-    rows.append(("materialized", "-", f, b, s, p))
+    try:
+        f, b, s, p = time_model(mat, rho0, w0, x, t, device, iters, warmup)
+        rows.append(("materialized", "-", f, b, s, p))
+    except torch.cuda.OutOfMemoryError:
+        print("  (materialized OOM at this shape -- chunked rows below show the rescue)")
+        rows.append(("materialized", "-", float("nan"), float("nan"),
+                     float("nan"), float("nan")))
+        torch.cuda.empty_cache()
     del mat
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -208,21 +216,31 @@ def benchmark(model_cls_name, kwargs, chunk_sizes, device, B, nx, nt, iters, war
               f"{s*1e3:>9.2f} {p:>10.1f}")
 
     # best tradeoff: among chunked rows that ran, the one minimizing
-    # peak_mem * step_time (normalized to materialized).
+    # peak_mem * step_time (normalized to materialized). If the materialized
+    # baseline itself OOMed there is nothing to normalize against, so fall back
+    # to absolute step time and just report the cheapest-memory survivor.
     base = rows[0]
     base_mem, base_step = base[5], base[4]
+    have_base = base_mem == base_mem and base_step == base_step  # not NaN
     best = None
     for mode, cs, f, b, s, p in rows[1:]:
         if p != p:  # nan
             continue
-        score = (p / base_mem) * (s / base_step) if device.type == "cuda" else s
+        if have_base and device.type == "cuda":
+            score = (p / base_mem) * (s / base_step)
+        else:
+            score = s
         if best is None or score < best[0]:
             best = (score, cs, p, s)
     if best is not None and device.type == "cuda":
         _, cs, p, s = best
-        print(f"\nbest mem*time tradeoff: chunk={cs}  "
-              f"peak {p:.0f}MB ({p/base_mem:.2f}x materialized), "
-              f"step {s*1e3:.2f}ms ({s/base_step:.2f}x materialized)")
+        if have_base:
+            print(f"\nbest mem*time tradeoff: chunk={cs}  "
+                  f"peak {p:.0f}MB ({p/base_mem:.2f}x materialized), "
+                  f"step {s*1e3:.2f}ms ({s/base_step:.2f}x materialized)")
+        else:
+            print(f"\nmaterialized OOMed; cheapest surviving chunk={cs}  "
+                  f"peak {p:.0f}MB, step {s*1e3:.2f}ms")
     return rows
 
 
