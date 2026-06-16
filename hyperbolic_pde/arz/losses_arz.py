@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import List
 
 import torch
-import torch.nn.functional as F
 
 
 # Closures keyed off the global pressure_form switch (see physics_arz).
@@ -53,10 +52,12 @@ def state_loss(
     rho_pred: torch.Tensor, w_pred: torch.Tensor,
     rho_gt: torch.Tensor,   w_gt:   torch.Tensor,
     w_weight: float = 1.0,
+    loss_type: str = "mse",
 ) -> torch.Tensor:
-    """MSE on (rho, w). w_weight reweights the w channel."""
-    l_rho = F.mse_loss(rho_pred, rho_gt)
-    l_w   = F.mse_loss(w_pred,   w_gt)
+    """Distance on (rho, w). w_weight reweights the w channel; loss_type selects
+    the elementwise distance (mae/mse/huber)."""
+    l_rho = _dist(rho_pred - rho_gt, loss_type).mean()
+    l_w   = _dist(w_pred   - w_gt,   loss_type).mean()
     return l_rho + w_weight * l_w
 
 
@@ -76,7 +77,7 @@ def rho_mass_loss(
 
 def balance_residual_loss(
     rho_pred: torch.Tensor, w_pred: torch.Tensor, t: torch.Tensor,
-    tau: float,
+    tau: float, loss_type: str = "mse",
 ) -> torch.Tensor:
     """Discrete check of d/dt integral(y) ~ integral((y_eq - y)/tau).
 
@@ -94,23 +95,23 @@ def balance_residual_loss(
     # Source mean over x.
     src_mean = (_y_eq(rho_pred) - y).mean(dim=-1)   # [B, nt], note: no /tau
     # Multiply LHS by tau to cancel the 1/tau scale on the RHS.
-    return F.mse_loss(tau * dIdt, src_mean[:, :-1] * 0.5 + src_mean[:, 1:] * 0.5)
+    src_avg = src_mean[:, :-1] * 0.5 + src_mean[:, 1:] * 0.5
+    return _dist(tau * dIdt - src_avg, loss_type).mean()
 
 
 def probe_loss(
     u_hats: List[torch.Tensor],
     rho_gt: torch.Tensor, w_gt: torch.Tensor,
     w_weight: float = 1.0,
+    loss_type: str = "mse",
 ) -> torch.Tensor:
-    """Mean MSE across all per-layer decoder readouts."""
-    target = torch.stack([rho_gt, w_weight * w_gt], dim=-1)
-    target_rho = rho_gt
-    target_w   = w_gt * w_weight
+    """Mean (rho, w) distance across all per-layer decoder readouts. w_weight
+    reweights w; loss_type selects the elementwise distance (mae/mse/huber)."""
     losses = []
     for uh in u_hats:
-        # uh has shape [B, nt, nx, 2]
-        l_rho = F.mse_loss(uh[..., 0], target_rho)
-        l_w   = F.mse_loss(uh[..., 1], target_w / max(w_weight, 1e-8) * w_weight)
+        # uh has shape [B, nt, nx, 2] = (rho, w).
+        l_rho = _dist(uh[..., 0] - rho_gt, loss_type).mean()
+        l_w   = _dist(uh[..., 1] - w_gt,   loss_type).mean()
         losses.append(l_rho + w_weight * l_w)
     if not losses:
         return torch.tensor(0.0, device=rho_gt.device)
@@ -189,12 +190,14 @@ def total_loss(
     lam_bal:   float = 0.1,
     lam_probe: float = 0.1,
     w_weight:  float = 1.0,
+    loss_type: str = "mse",
 ) -> dict:
-    """Compose the four components; return both the scalar and a per-term dict."""
-    L_state = state_loss(rho_pred, w_pred, rho_gt, w_gt, w_weight=w_weight)
-    L_cons  = rho_mass_loss(rho_pred, rho_gt)
-    L_bal   = balance_residual_loss(rho_pred, w_pred, t, tau)
-    L_probe = probe_loss(u_hats, rho_gt, w_gt, w_weight=w_weight)
+    """Compose the four components; return both the scalar and a per-term dict.
+    loss_type selects the elementwise distance (mae/mse/huber) for all terms."""
+    L_state = state_loss(rho_pred, w_pred, rho_gt, w_gt, w_weight=w_weight, loss_type=loss_type)
+    L_cons  = rho_mass_loss(rho_pred, rho_gt, loss_type=loss_type)
+    L_bal   = balance_residual_loss(rho_pred, w_pred, t, tau, loss_type=loss_type)
+    L_probe = probe_loss(u_hats, rho_gt, w_gt, w_weight=w_weight, loss_type=loss_type)
     L = lam_state * L_state + lam_cons * L_cons + lam_bal * L_bal + lam_probe * L_probe
     return {
         "loss": L,

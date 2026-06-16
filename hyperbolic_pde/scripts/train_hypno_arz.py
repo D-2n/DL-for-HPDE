@@ -199,16 +199,16 @@ def arz_total_loss(
     *, lambda_state, lambda_conservation, lambda_balance, lambda_probe,
     w_weight, loss_type,
 ):
-    L_state = state_loss(rho_pred, w_pred, rho_gt, w_gt, w_weight=w_weight)
-    L_cons  = rho_mass_loss(rho_pred, rho_gt)
+    L_state = state_loss(rho_pred, w_pred, rho_gt, w_gt, w_weight=w_weight, loss_type=loss_type)
+    L_cons  = rho_mass_loss(rho_pred, rho_gt, loss_type=loss_type)
     # Skip balance term when disabled or when tau is non-finite (homogeneous
     # / exact-Riemann setting): tau*dIdt would otherwise blow up to inf.
     bal_active = (lambda_balance > 0.0) and np.isfinite(tau)
     if bal_active:
-        L_bal = balance_residual_loss(rho_pred, w_pred, t, tau)
+        L_bal = balance_residual_loss(rho_pred, w_pred, t, tau, loss_type=loss_type)
     else:
         L_bal = torch.zeros((), device=rho_pred.device, dtype=rho_pred.dtype)
-    L_probe = probe_loss(u_hats, rho_gt, w_gt, w_weight=w_weight)
+    L_probe = probe_loss(u_hats, rho_gt, w_gt, w_weight=w_weight, loss_type=loss_type)
     L = (lambda_state * L_state + lambda_conservation * L_cons
          + lambda_balance * L_bal + lambda_probe * L_probe)
     info = {
@@ -529,9 +529,9 @@ def main() -> None:
     if loss_type not in ("mae", "mse", "huber"):
         raise ValueError(
             f"loss_type must be 'mae', 'mse', or 'huber', got {loss_type!r}")
-    # The mark2 loss honors loss_type for every term; the mark1 arz_total_loss
-    # path is hardcoded MSE -- flag that in the banner so the log isn't lying.
-    obj_str = loss_type.upper() if is_m2_family else f"MSE (mark1 ignores loss_type={loss_type!r})"
+    # Both the mark2 loss and the mark1/orig arz_total_loss now honor loss_type
+    # for every term, so the banner reports the active objective for all variants.
+    obj_str = loss_type.upper()
     bal_disabled = (lambda_balance <= 0.0) or (not np.isfinite(tau))
     bal_str = "OFF" if bal_disabled else f"{lambda_balance}"
     log.info(f"Training objective: {obj_str}  tau={tau}  "
