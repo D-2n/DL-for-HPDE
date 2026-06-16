@@ -195,3 +195,51 @@ hypno_arz_mark2_1:
 
   save_path: /home/dzdrale/scratch/runs/hypno_arz_mark2_1.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark2_1
+
+# HypNO-ARZ Mark 1 (router-aware): the EXACT pre-split single-MLP pure-pairwise
+# model (HypNO_ARZ), with one change -- the adjacent edge message now carries the
+# family-router theta (2d+4 vs 2d+3). NO GNL/LD two-family split, NO msg_gnl/msg_ld.
+# Mark1 frame: (rho,w) decoder, arz_total_loss. Same train recipe as mark2/mark2_1
+# (kx7/kt5, 12 layers, d96, batch 8, mae) so it is a clean A/B against them on the
+# 2000-sample exact-Riemann set. Homogeneous stage -> use_relaxation_features=false.
+hypno_arz_mark1_router:
+  stencil_k_x: 7
+  stencil_k_t: 5
+  d_latent: 96
+  d_hidden: 96
+  d_hidden_nonadj: null
+  n_layers: 12
+  activation: gelu
+  causal_temporal: true
+  decoder_depth: 5
+  skip: false
+  use_relaxation_features: false
+  normalize_edge_offsets: true
+  use_checkpoint: true
+  compile: false
+
+  optimizer: adamw
+  epochs: 220
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 5.0e-6
+  lr_warmup_steps: 360
+  batch_size: 8
+  amp_dtype: bf16
+
+  loss_type: mae
+  w_weight: 1.0
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_balance: 0.0     # tau=inf (exact-Riemann) -> relaxation balance OFF
+  lambda_probe: 0.01
+
+  checkpoint_every: 10
+  val_every: 10
+  log_batch_every: 50
+  diseq_threshold: 0.1
+
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_mark1_router.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_mark1_router

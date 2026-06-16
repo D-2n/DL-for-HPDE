@@ -178,9 +178,9 @@ def main():
     ap.add_argument("--n-plots", type=int, default=5,
                     help="Number of per-sample plots to save (default 5).")
     ap.add_argument("--model-variant", type=str, default="auto",
-                    choices=["auto", "mark1", "mark2", "mark2_1"],
-                    help="Model class. 'auto' uses mark2 when --model-section says "
-                         "so, else mark1.")
+                    choices=["auto", "mark1", "mark1_router", "mark2", "mark2_1"],
+                    help="Model class. 'auto' reads it off --model-section "
+                         "(mark2_1 > mark2 > mark1_router > mark1).")
     ap.add_argument("--model-section", type=str, default="hypno_arz_mark2",
                     help="Config section for mark2 reconstruction.")
     args = ap.parse_args()
@@ -203,6 +203,8 @@ def main():
             variant = "mark2_1"
         elif "mark2" in args.model_section:
             variant = "mark2"
+        elif "mark1_router" in args.model_section:
+            variant = "mark1_router"
         else:
             variant = "mark1"
 
@@ -217,6 +219,16 @@ def main():
     elif variant == "mark2":
         from hyperbolic_pde.arz.model_arz_mark2 import load_hypno_arz_mark2_from_checkpoint
         model, _ck_tau = load_hypno_arz_mark2_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    elif variant == "mark1_router":
+        # Mark1 frame: forward returns (rho, w, u_hats), so the eval path below
+        # is identical to plain mark1 -- only the loader/class differ.
+        from hyperbolic_pde.arz.model_arz_mark1_router import (
+            load_hypno_arz_mark1_router_from_checkpoint,
+        )
+        model, _ck_tau = load_hypno_arz_mark1_router_from_checkpoint(
             args.ckpt, device=args.device, config_path=args.config,
             model_section=args.model_section,
         )

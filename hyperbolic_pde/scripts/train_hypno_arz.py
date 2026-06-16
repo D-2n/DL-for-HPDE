@@ -31,6 +31,9 @@ from hyperbolic_pde.arz.losses_arz import (
     mark2_total_loss,
 )
 from hyperbolic_pde.arz.model_arz import HypNO_ARZ
+from hyperbolic_pde.arz.model_arz_mark1_router import (
+    HypNO_ARZ_Mark1Router, cfg_to_kwargs_m1r,
+)
 from hyperbolic_pde.arz.model_arz_mark2 import HypNO_ARZ_Mark2, cfg_to_kwargs_m2
 from hyperbolic_pde.arz.model_arz_mark2_1 import HypNO_ARZ_Mark2_1, cfg_to_kwargs_m2_1
 
@@ -234,10 +237,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--model-variant", type=str, default="auto",
-        choices=["auto", "mark1", "mark2", "mark2_1"],
+        choices=["auto", "mark1", "mark1_router", "mark2", "mark2_1"],
         help="Which model class. 'auto' picks mark2_1 when the section name "
              "contains 'mark2_1', else mark2 when it contains 'mark2', else "
-             "mark1 (HypNO_ARZ).",
+             "mark1_router when it contains 'mark1_router', else mark1 "
+             "(HypNO_ARZ).",
     )
     parser.add_argument(
         "--resume_run", type=str, default=None,
@@ -379,6 +383,8 @@ def main() -> None:
             variant = "mark2_1"
         elif "mark2" in args.model_section:
             variant = "mark2"
+        elif "mark1_router" in args.model_section:
+            variant = "mark1_router"
         else:
             variant = "mark1"
     log.info(f"Model variant: {variant}")
@@ -394,6 +400,12 @@ def main() -> None:
         m2_kwargs = cfg_to_kwargs_m2(model_cfg)
         m2_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
         model = HypNO_ARZ_Mark2(**m2_kwargs).to(device)
+    elif variant == "mark1_router":
+        # Mark1 frame (rho,w decoder, arz_total_loss) -- NOT the m2 family.
+        # Single shared adj/nonadj MLPs; adj message carries the router theta.
+        m1r_kwargs = cfg_to_kwargs_m1r(model_cfg)
+        m1r_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
+        model = HypNO_ARZ_Mark1Router(**m1r_kwargs).to(device)
     else:
         model = HypNO_ARZ(
             stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
