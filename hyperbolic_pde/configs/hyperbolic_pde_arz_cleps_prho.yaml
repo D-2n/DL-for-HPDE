@@ -539,6 +539,7 @@ hypno_arz_orig:
   normalize_edge_offsets: true
   use_checkpoint: true
   compile: false
+  new_entropy: true       # corrected Lax entropy gate (rarefactions pass freely)
 
   optimizer: adamw
   epochs: 220
