@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=arz_gen_riemann_exact
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
-#SBATCH --cpus-per-gpu=4
-#SBATCH --mem=32G
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
 #SBATCH --time=02:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_gen_riemann_exact_%j.log
 
+# CPU-only data generation (no GPU needed -- pure NumPy exact Riemann solver).
+# Set the partition with: sbatch --partition=<cpu_partition> slurm/arz_gen_riemann_exact.sh
+# (find it via: sinfo -o "%P %a %l %D %t" | grep -iv gpu)
 set -euo pipefail
 cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
