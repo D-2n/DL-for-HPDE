@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --nodelist=gpu012,gpu013,gpu015,gpu016,gpu017,gpu018
 #SBATCH --cpus-per-gpu=4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=48:00:00
 #SBATCH --requeue
 #SBATCH --open-mode=append

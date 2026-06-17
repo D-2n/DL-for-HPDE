@@ -174,13 +174,13 @@ hypno_arz_mark2:
 
   optimizer: adamw
   epochs: 220
-  lr: 3.0e-4          # batch 8 base (no sqrt(2) bump -- that was for batch 16)
+  lr: 4.2e-4          # batch 16 = 2x batch-8 base (3e-4); sqrt-rule bump (~1.41)
   weight_decay: 1.0e-4
-  grad_clip: 1.0
+  grad_clip: 3.0         # raised from 1.0: clip@1 was the de-facto lr governor (gnorm 1.5-3.0)
   lr_schedule: cosine
   lr_min: 5.0e-6
-  lr_warmup_steps: 360   # 2 epochs at batch 8 (~180 batches/epoch)
-  batch_size: 8
+  lr_warmup_steps: 540   # ~2 epochs at batch 16 (4000 train / 16 ~= 250 batches/epoch)
+  batch_size: 16
   amp_dtype: bf16
 
   loss_type: mae        # mae|mse|huber; now wired into mark2_total_loss
@@ -276,13 +276,13 @@ hypno_arz_mark2_1:
 
   optimizer: adamw
   epochs: 220
-  lr: 3.0e-4
+  lr: 4.2e-4          # batch 16 = 2x batch-8 base (3e-4); sqrt-rule bump (~1.41)
   weight_decay: 1.0e-4
-  grad_clip: 1.0
+  grad_clip: 3.0         # raised from 1.0: clip@1 was the de-facto lr governor (gnorm 1.5-3.0)
   lr_schedule: cosine
   lr_min: 5.0e-6
-  lr_warmup_steps: 360
-  batch_size: 8
+  lr_warmup_steps: 540   # ~2 epochs at batch 16 (4000 train / 16 ~= 250 batches/epoch)
+  batch_size: 16
   amp_dtype: bf16
 
   loss_type: mae
