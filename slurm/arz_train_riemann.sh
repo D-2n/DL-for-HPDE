@@ -14,7 +14,7 @@ export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/runs /home/dzdrale/scratch/logs
 
 CONFIG=${1:-hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho.yaml}
-DATA_SECTION=${2:-arz_riemann_exact_prho}
+DATA_SECTION=${2:-arz_riemann_strat_prho}
 MODEL_SECTION=${3:-hypno_arz_riemann}
 RESUME=${4:-}
 

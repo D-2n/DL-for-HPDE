@@ -72,6 +72,9 @@ from hyperbolic_pde.models.hypno_st3 import (
 # pressure_form switch ineffective for already-instantiated models.
 from hyperbolic_pde.arz import physics_arz as _P_MOD
 
+_SECANT_EPS = 1e-6   # |drho| guard for the RH secant denominator
+_ENTROPY_EPS = 1e-6  # tolerance for Lax entropy-bracket checks (new_entropy)
+
 
 def _p(rho):
     if _P_MOD._P_FORM == "rho":
@@ -125,6 +128,7 @@ class _ArzLiftingOrig(nn.Module):
         use_relaxation_features: bool = True,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        new_entropy: bool = False,
     ) -> None:
         super().__init__()
         if double_batch and stencil_k_x % 2 != 0:
@@ -135,6 +139,7 @@ class _ArzLiftingOrig(nn.Module):
         self.k_t = stencil_k_t
         self.causal = causal_temporal
         self.normalize_edge_offsets = normalize_edge_offsets
+        self.new_entropy = new_entropy
         self.use_relaxation_features = use_relaxation_features
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
@@ -265,7 +270,26 @@ class _ArzLiftingOrig(nn.Module):
                 lam1_jn = v_j - rho_j * _dp(rho_j)
                 lam1_L = torch.where(rel_x > 0, lam1_i, lam1_jn)
                 lam1_R = torch.where(rel_x > 0, lam1_jn, lam1_i)
-                chi_1bad = (lam1_L < lam1_R).float()
+                if self.new_entropy:
+                    # Corrected Lax entropy flag: penalize ONLY compressive
+                    # 1-waves whose RH secant speed s_1 falls outside the Lax
+                    # bracket lam1_R <= s_1 <= lam1_L. Rarefactions (lam1_L <
+                    # lam1_R) pass freely. See ARZ entropy-gate fix note.
+                    num = rho_j * v_j - rho0_bc * v0_bc
+                    drho_safe = torch.where(
+                        drho.abs() < _SECANT_EPS, torch.ones_like(drho), drho)
+                    s_1 = torch.where(
+                        drho.abs() < _SECANT_EPS, lam1_ij, num / drho_safe)
+                    is_compressive_1wave = lam1_L > lam1_R + _ENTROPY_EPS
+                    outside_lax_bracket = (
+                        (s_1 > lam1_L + _ENTROPY_EPS)
+                        | (s_1 < lam1_R - _ENTROPY_EPS)
+                    )
+                    chi_1bad = (is_compressive_1wave & outside_lax_bracket).float()
+                else:
+                    # Legacy (buggy) flag kept for checkpoints trained with it:
+                    # mislabels every rarefaction (lam1_L < lam1_R) as bad.
+                    chi_1bad = (lam1_L < lam1_R).float()
 
                 edge_in = torch.cat([
                     r, rel_t_feat,
@@ -323,6 +347,7 @@ class _ArzMPLayerOrig(nn.Module):
         normalize_edge_offsets: bool = True,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        new_entropy: bool = False,
     ) -> None:
         super().__init__()
         if double_batch and k_x % 2 != 0:
@@ -333,6 +358,7 @@ class _ArzMPLayerOrig(nn.Module):
         self.k_t = k_t
         self.causal = causal_temporal
         self.normalize_edge_offsets = normalize_edge_offsets
+        self.new_entropy = new_entropy
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
@@ -482,7 +508,26 @@ class _ArzMPLayerOrig(nn.Module):
                 chi_up2 = (lam2_ij * r < 0).float()
                 lam1_L = torch.where(rel_x > 0, lam1_i, lam1_j)
                 lam1_R = torch.where(rel_x > 0, lam1_j, lam1_i)
-                chi_1bad = (lam1_L < lam1_R).float()
+                if self.new_entropy:
+                    # Corrected Lax entropy flag: penalize ONLY compressive
+                    # 1-waves whose RH secant speed s_1 falls outside the Lax
+                    # bracket lam1_R <= s_1 <= lam1_L. Rarefactions (lam1_L <
+                    # lam1_R) pass freely. See ARZ entropy-gate fix note.
+                    num = rho_j * v_j - rho_hat * v_hat
+                    drho_safe = torch.where(
+                        drho.abs() < _SECANT_EPS, torch.ones_like(drho), drho)
+                    s_1 = torch.where(
+                        drho.abs() < _SECANT_EPS, lam1_ij, num / drho_safe)
+                    is_compressive_1wave = lam1_L > lam1_R + _ENTROPY_EPS
+                    outside_lax_bracket = (
+                        (s_1 > lam1_L + _ENTROPY_EPS)
+                        | (s_1 < lam1_R - _ENTROPY_EPS)
+                    )
+                    chi_1bad = (is_compressive_1wave & outside_lax_bracket).float()
+                else:
+                    # Legacy (buggy) flag kept for checkpoints trained with it:
+                    # mislabels every rarefaction (lam1_L < lam1_R) as bad.
+                    chi_1bad = (lam1_L < lam1_R).float()
 
                 msg_in = torch.cat([
                     h, h_j,
@@ -548,12 +593,14 @@ class HypNO_ARZ_Orig(nn.Module):
         use_relaxation_features: bool = True,
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
+        new_entropy: bool = False,
         **_ignored,
     ) -> None:
         super().__init__()
         self.skip = skip
         self.use_checkpoint = use_checkpoint
         self.normalize_edge_offsets = normalize_edge_offsets
+        self.new_entropy = new_entropy
         self.use_relaxation_features = use_relaxation_features
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
@@ -564,7 +611,7 @@ class HypNO_ARZ_Orig(nn.Module):
             f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
             f"skip={skip} normalize_edge_offsets={normalize_edge_offsets} "
             f"use_relaxation_features={use_relaxation_features} "
-            f"double_batch={double_batch}"
+            f"double_batch={double_batch} new_entropy={new_entropy}"
             + (f" neighborhood_spacing={neighborhood_spacing}" if double_batch else "")
         )
 
@@ -577,6 +624,7 @@ class HypNO_ARZ_Orig(nn.Module):
             use_relaxation_features=use_relaxation_features,
             double_batch=double_batch,
             neighborhood_spacing=neighborhood_spacing,
+            new_entropy=new_entropy,
         )
 
         # Decoder outputs (rho, w) -- 2 channels.
@@ -592,6 +640,7 @@ class HypNO_ARZ_Orig(nn.Module):
                 normalize_edge_offsets=normalize_edge_offsets,
                 double_batch=double_batch,
                 neighborhood_spacing=neighborhood_spacing,
+                new_entropy=new_entropy,
             )
             for _ in range(n_layers)
         ])
@@ -651,6 +700,7 @@ def _cfg_to_kwargs_orig(model_cfg: dict) -> dict:
         use_relaxation_features=bool(model_cfg.get("use_relaxation_features", True)),
         double_batch=bool(model_cfg.get("double_batch", False)),
         neighborhood_spacing=int(model_cfg.get("neighborhood_spacing", 1)),
+        new_entropy=bool(model_cfg.get("new_entropy", False)),
     )
 
 

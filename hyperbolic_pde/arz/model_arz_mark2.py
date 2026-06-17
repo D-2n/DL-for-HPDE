@@ -52,6 +52,7 @@ from hyperbolic_pde.arz import physics_arz as _P_MOD
 
 _SECANT_EPS = 1e-6   # |drho| guard for the RH secant denominator
 _THETA_EPS = 1e-8    # router denominator guard
+_ENTROPY_EPS = 1e-6  # tolerance for Lax entropy-bracket checks
 
 
 def _p(rho):
@@ -98,7 +99,12 @@ def _adj_interface_physics(rho_i, v_i, w_i, rho_j, v_j, w_j, rel_x):
     lam1_j = v_j - rho_j * _dp(rho_j)
     lam1_L = torch.where(rel_x > 0, lam1_i, lam1_j)
     lam1_R = torch.where(rel_x > 0, lam1_j, lam1_i)
-    chi_1bad = ((s_1 > lam1_L) | (s_1 < lam1_R)).float()
+    is_compressive_1wave = lam1_L > lam1_R + _ENTROPY_EPS
+    outside_lax_bracket = (
+        (s_1 > lam1_L + _ENTROPY_EPS)
+        | (s_1 < lam1_R - _ENTROPY_EPS)
+    )
+    chi_1bad = (is_compressive_1wave & outside_lax_bracket).float()
     return {
         "s_1": s_1, "s_2": s_2, "drho": drho, "dw": dw,
         "theta": theta, "chi_1bad": chi_1bad,

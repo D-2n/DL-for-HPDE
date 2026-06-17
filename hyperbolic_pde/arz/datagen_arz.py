@@ -34,11 +34,11 @@ from hyperbolic_pde.data.fvm import (
 )
 
 
-# Default value ranges (mirror LWR config: u in [0.1, 0.9]).
+# Default value ranges: rho in [0.1, 0.9] (vacuum-free), v in [0, 1].
 _RHO_MIN_DEFAULT = 0.1
 _RHO_MAX_DEFAULT = 0.9
-_V_MIN_DEFAULT = 0.1
-_V_MAX_DEFAULT = 0.9
+_V_MIN_DEFAULT = 0.0
+_V_MAX_DEFAULT = 1.0
 
 
 IC_FUNCS = {
@@ -120,6 +120,86 @@ def _sample_riemann_vacuum_free(
     return rho_L, v_L, rho_R, v_R, x0
 
 
+def _sample_riemann_stratified_cell(
+    x: np.ndarray, rng: np.random.Generator,
+    rho_min: float, rho_max: float, v_min: float, v_max: float,
+    one_wave_is_shock: bool,
+    one_wave_jump_range: Tuple[float, float],
+    contact_jump_range: Tuple[float, float],
+    max_tries: int = 64,
+) -> Tuple[float, float, float, float, float]:
+    """Sample a vacuum-free Riemann problem inside a STRATIFICATION CELL.
+
+    Unlike `_sample_riemann_vacuum_free` (pure uniform i.i.d. endpoints), this
+    constrains the WAVE STRUCTURE so a grid of cells covers the
+    (1-wave type) x (1-wave strength) x (contact strength) space uniformly.
+
+    Wave structure (see riemann_arz):
+      * 1-wave connects (rho_L, v_L) -> (rho_*, v_*); it is a SHOCK if
+        rho_L < rho_* and a RAREFACTION if rho_L > rho_*. w is preserved
+        across it, so v_L = v_* + p(rho_*) - p(rho_L).
+      * 2-contact connects (rho_*, v_*) -> (rho_R, v_R); v is preserved
+        (v_R = v_*), rho jumps rho_* -> rho_R.
+
+    We sample the three densities so that:
+      * |rho_* - rho_L| lies in `one_wave_jump_range`, with the sign fixed by
+        `one_wave_is_shock` (rho_L < rho_* for a shock, rho_L > rho_* for a
+        rarefaction),
+      * |rho_R - rho_*| lies in `contact_jump_range`, sign drawn at random.
+    rho_* is drawn first (uniform in range), then rho_L and rho_R are placed at
+    a jump magnitude inside the cell range; we reject-and-retry the rare draw
+    that would push an endpoint outside [rho_min, rho_max], finally clamping.
+
+    All three velocities are kept in [v_min, v_max] (intended subset of [0, 1]):
+      v_R = v_* and v_L = v_* + p(rho_*) - p(rho_L). For fixed rho_L, rho_* the
+      admissible v_* is [v_min, v_max] intersected with [-dp, 1_v - dp] where
+      dp = p(rho_*) - p(rho_L); we draw v_* from that interval directly (so v_L
+      lands in range by construction) and treat an empty interval as a failed
+      try. This keeps the w_L = w_* invariant EXACT (no post-hoc clipping of v)
+      while bounding v -- unlike the legacy sampler which left v_L unbounded.
+
+    Returns (rho_L, v_L, rho_R, v_R, x0), same contract as the vacuum-free
+    sampler. Vacuum-free is automatic: rho_* in [rho_min, rho_max] > 0.
+    """
+    j_lo, j_hi = one_wave_jump_range
+    c_lo, c_hi = contact_jump_range
+    rho_L = rho_star = rho_R = None
+    v_star = v_L = None
+    for _ in range(max_tries):
+        rho_star = float(rng.uniform(rho_min, rho_max))
+        jmag = float(rng.uniform(j_lo, j_hi))
+        # shock: rho_L < rho_*  => rho_L = rho_* - jmag ; rarefaction: rho_L > rho_*
+        rho_L_try = rho_star - jmag if one_wave_is_shock else rho_star + jmag
+        cmag = float(rng.uniform(c_lo, c_hi))
+        csign = 1.0 if rng.random() < 0.5 else -1.0
+        rho_R_try = rho_star + csign * cmag
+        if not (rho_min <= rho_L_try <= rho_max and rho_min <= rho_R_try <= rho_max):
+            continue
+        # Admissible v_* so that BOTH v_* and v_L = v_* + dp stay in [v_min,v_max].
+        dp = float(P.pressure(np.array(rho_star)) - P.pressure(np.array(rho_L_try)))
+        lo = max(v_min, v_min - dp)
+        hi = min(v_max, v_max - dp)
+        if lo > hi:
+            continue  # no v_* keeps both velocities in range for this rho draw
+        rho_L, rho_star_ok, rho_R = rho_L_try, rho_star, rho_R_try
+        v_star = float(rng.uniform(lo, hi))
+        v_L = v_star + dp
+        break
+    if v_L is None:
+        # Fallback (every try failed): clamp rho into range, place v_* mid-range
+        # and clip v_L. Rare; only for pathological cell/range combinations.
+        rho_L = float(np.clip(rho_L_try, rho_min, rho_max))
+        rho_R = float(np.clip(rho_R_try, rho_min, rho_max))
+        dp = float(P.pressure(np.array(rho_star)) - P.pressure(np.array(rho_L)))
+        v_star = float(np.clip(0.5 * (v_min + v_max), v_min, v_max))
+        v_L = float(np.clip(v_star + dp, v_min, v_max))
+
+    v_R = v_star
+    x0 = float(rng.uniform(x[0] + 0.2 * (x[-1] - x[0]),
+                           x[0] + 0.8 * (x[-1] - x[0])))
+    return rho_L, v_L, rho_R, v_R, x0
+
+
 def _sample_rho_v_pair(
     ic_name: str, x: np.ndarray, num_segments: int, rng: np.random.Generator,
     rho_min: float, rho_max: float, v_min: float, v_max: float,
@@ -183,6 +263,51 @@ def _solve_one(
     return rho_hist, w_hist
 
 
+def _build_stratified_riemann_plan(
+    x: np.ndarray, rng: np.random.Generator, num_samples: int,
+    rho_min: float, rho_max: float, v_min: float, v_max: float,
+    n_strength_bins: int,
+) -> list:
+    """Build a list of `num_samples` vacuum-free Riemann states that uniformly
+    covers the (1-wave type) x (1-wave strength) x (contact strength) grid.
+
+    Grid: 2 wave types (1-shock, 1-rarefaction) x n_strength_bins (1-wave) x
+    n_strength_bins (contact) = 2 * n_strength_bins**2 cells. Samples are
+    distributed as evenly as possible across cells (remainder spread over the
+    first cells), then the full list is shuffled so adjacent samples aren't
+    correlated. Jump magnitudes span (0, rho_max - rho_min] split into equal
+    bins; sign/wave-type is fixed per cell.
+
+    Returns a list of (rho_L, v_L, rho_R, v_R, x0) tuples.
+    """
+    jump_span = rho_max - rho_min
+    edges = np.linspace(0.0, jump_span, n_strength_bins + 1)
+    # Avoid a degenerate 0-width 1-wave (rho_L == rho_*): floor the first bin.
+    edges[0] = min(0.02 * jump_span, 0.5 * edges[1])
+    bins = [(float(edges[b]), float(edges[b + 1])) for b in range(n_strength_bins)]
+
+    cells = []  # (is_shock, one_wave_range, contact_range)
+    for is_shock in (True, False):
+        for jb in bins:
+            for cb in bins:
+                cells.append((is_shock, jb, cb))
+
+    n_cells = len(cells)
+    base = num_samples // n_cells
+    rem = num_samples % n_cells
+    plan = []
+    for ci, (is_shock, jb, cb) in enumerate(cells):
+        count = base + (1 if ci < rem else 0)
+        for _ in range(count):
+            plan.append(_sample_riemann_stratified_cell(
+                x, rng, rho_min, rho_max, v_min, v_max,
+                one_wave_is_shock=is_shock,
+                one_wave_jump_range=jb, contact_jump_range=cb,
+            ))
+    rng.shuffle(plan)
+    return plan
+
+
 def generate_arz_riemann_exact_dataset(
     num_samples: int,
     nx: int, nt: int,
@@ -192,12 +317,21 @@ def generate_arz_riemann_exact_dataset(
     rho_max: float = _RHO_MAX_DEFAULT,
     v_min: float = _V_MIN_DEFAULT,
     v_max: float = _V_MAX_DEFAULT,
+    stratified: bool = False,
+    n_strength_bins: int = 4,
 ) -> ArzDatasetBundle:
     """Generate an exact-Riemann ARZ dataset evaluated at cell midpoints.
 
     Ground truth is the exact homogeneous (tau=inf) solver sampled at
     x_mid = x_min + (i + 0.5)*dx  for i=0..nx-1, for each output time t_k.
     No FVM discretisation is used.
+
+    If `stratified=True`, IC states are drawn to uniformly cover the
+    (1-wave type) x (1-wave strength) x (contact strength) grid
+    (`_build_stratified_riemann_plan`) instead of pure uniform i.i.d.
+    endpoints. This guarantees the shock/rarefaction corners and the
+    weak/strong-jump tails are represented, which uniform sampling
+    under-covers. `stratified=False` reproduces the legacy sampler exactly.
     """
     rng = np.random.default_rng(seed)
     dx = (x_max - x_min) / nx
@@ -212,20 +346,37 @@ def generate_arz_riemann_exact_dataset(
     w0_all   = np.zeros((num_samples, nx), dtype=np.float32)
     v0_all   = np.zeros((num_samples, nx), dtype=np.float32)
 
+    xm = x_mid.astype(np.float64)
+    if stratified:
+        plan = _build_stratified_riemann_plan(
+            xm, rng, num_samples, rho_min, rho_max, v_min, v_max,
+            n_strength_bins,
+        )
+        n_cells = 2 * n_strength_bins ** 2
+        sampling_desc = (
+            f"STRATIFIED ({n_cells} cells = 2 wave-types x "
+            f"{n_strength_bins} 1-wave bins x {n_strength_bins} contact bins)"
+        )
+    else:
+        plan = None
+        sampling_desc = "uniform i.i.d. (vacuum-free intermediate-state sampling)"
+
     print(
         f"[arz riemann exact datagen] N={num_samples}  nx={nx}  nt={nt}  "
         f"x=[{x_min},{x_max}]  t_max={t_max}  "
         f"rho in [{rho_min},{rho_max}]  v* in [{v_min},{v_max}]  "
-        f"(vacuum-free intermediate-state sampling)"
+        f"sampling={sampling_desc}"
     )
 
-    xm = x_mid.astype(np.float64)
     for i in range(num_samples):
-        # Vacuum-free: sample rho_L, rho_*, rho_R, v_* directly so rho_* is in
-        # range by construction and (w_L - v_R) >= p(rho_min) > 0 always.
-        rho_L, v_L, rho_R, v_R, x0 = _sample_riemann_vacuum_free(
-            xm, rng, rho_min, rho_max, v_min, v_max
-        )
+        if plan is not None:
+            rho_L, v_L, rho_R, v_R, x0 = plan[i]
+        else:
+            # Vacuum-free: sample rho_L, rho_*, rho_R, v_* directly so rho_* is
+            # in range by construction and (w_L - v_R) >= p(rho_min) > 0 always.
+            rho_L, v_L, rho_R, v_R, x0 = _sample_riemann_vacuum_free(
+                xm, rng, rho_min, rho_max, v_min, v_max
+            )
         w_L = v_L + float(P.pressure(np.array(rho_L)))
         w_R = v_R + float(P.pressure(np.array(rho_R)))
 
@@ -407,6 +558,14 @@ if __name__ == "__main__":
     parser.add_argument("--exact-riemann-only", action="store_true",
                         help="Generate a pure exact-Riemann dataset evaluated at cell midpoints "
                              "(no FVM; overrides --families/--segments/--tau).")
+    parser.add_argument("--stratified-riemann", action="store_true",
+                        help="With --exact-riemann-only: stratify IC sampling across "
+                             "(1-wave type) x (1-wave strength) x (contact strength) so "
+                             "shock/rarefaction corners and weak/strong-jump tails are "
+                             "evenly covered (vs uniform i.i.d.).")
+    parser.add_argument("--n-strength-bins", type=int, default=4,
+                        help="Number of jump-strength bins per axis for "
+                             "--stratified-riemann (grid = 2 x bins^2 cells).")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rho-min", type=float, default=_RHO_MIN_DEFAULT)
     parser.add_argument("--rho-max", type=float, default=_RHO_MAX_DEFAULT)
@@ -427,6 +586,8 @@ if __name__ == "__main__":
             seed=args.seed,
             rho_min=args.rho_min, rho_max=args.rho_max,
             v_min=args.v_min,     v_max=args.v_max,
+            stratified=args.stratified_riemann,
+            n_strength_bins=args.n_strength_bins,
         )
     else:
         families = [s.strip() for s in args.families.split(",") if s.strip()]
