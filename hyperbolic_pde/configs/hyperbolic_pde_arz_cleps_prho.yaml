@@ -156,15 +156,15 @@ hypno_arz_mark2:
   stencil_k_x: 7
   stencil_k_t: 5
   d_latent: 96
-  d_hidden: 96
+  d_hidden: 64
   d_hidden_nonadj: null
-  n_layers: 12
+  n_layers: 11
   activation: gelu
   causal_temporal: true
   decoder_depth: 5
   adj_depth: 3
   nonadj_depth: 3
-  update_depth: 3
+  update_depth: 5
   update_hidden: 96
   skip: false
   use_upwind_gate: false
@@ -174,13 +174,13 @@ hypno_arz_mark2:
 
   optimizer: adamw
   epochs: 220
-  lr: 3.0e-4          # batch 8 base (no sqrt(2) bump -- that was for batch 16)
+  lr: 4.2e-4          # batch 8 base (no sqrt(2) bump -- that was for batch 16)
   weight_decay: 1.0e-4
-  grad_clip: 1.0
+  grad_clip: 3.0
   lr_schedule: cosine
   lr_min: 5.0e-6
-  lr_warmup_steps: 360   # 2 epochs at batch 8 (~180 batches/epoch)
-  batch_size: 8
+  lr_warmup_steps: 540   # 2 epochs at batch 8 (~180 batches/epoch)
+  batch_size: 16
   amp_dtype: bf16
 
   loss_type: mae        # mae|mse|huber; now wired into mark2_total_loss
@@ -209,15 +209,15 @@ hypno_arz_mark2_finetune:
   stencil_k_x: 7
   stencil_k_t: 5
   d_latent: 96
-  d_hidden: 96
+  d_hidden: 64
   d_hidden_nonadj: null
-  n_layers: 12
+  n_layers: 11
   activation: gelu
   causal_temporal: true
   decoder_depth: 5
   adj_depth: 3
   nonadj_depth: 3
-  update_depth: 3
+  update_depth: 5
   update_hidden: 96
   skip: false
   use_upwind_gate: false
@@ -226,14 +226,14 @@ hypno_arz_mark2_finetune:
   compile: false
 
   optimizer: adamw
-  epochs: 200            # resume from ckpt epoch (~90) -> ~110 finetune epochs
-  lr: 5.0e-5             # LOW: ~1/6 of the 3e-4 from-scratch lr (gentle finetune)
+  epochs: 220
+  lr: 4.2e-4
   weight_decay: 1.0e-4
-  grad_clip: 1.0         # back to gentle clipping for finetune stability
+  grad_clip: 3.0
   lr_schedule: cosine
-  lr_min: 1.0e-6
-  lr_warmup_steps: 0     # weights already good -> no warmup
-  batch_size: 8
+  lr_min: 5.0e-6
+  lr_warmup_steps: 180
+  batch_size: 16
   amp_dtype: bf16
 
   loss_type: mae
@@ -258,15 +258,15 @@ hypno_arz_mark2_1:
   stencil_k_x: 7
   stencil_k_t: 5
   d_latent: 96
-  d_hidden: 96
+  d_hidden: 64
   d_hidden_nonadj: null
-  n_layers: 12
+  n_layers: 11
   activation: gelu
   causal_temporal: true
   decoder_depth: 5
   adj_depth: 3
   nonadj_depth: 3
-  update_depth: 3
+  update_depth: 5
   update_hidden: 96
   skip: false
   use_upwind_gate: false
@@ -278,10 +278,10 @@ hypno_arz_mark2_1:
   epochs: 220
   lr: 3.0e-4
   weight_decay: 1.0e-4
-  grad_clip: 1.0
+  grad_clip: 3.0
   lr_schedule: cosine
   lr_min: 5.0e-6
-  lr_warmup_steps: 360
+  lr_warmup_steps: 540
   batch_size: 8
   amp_dtype: bf16
 
