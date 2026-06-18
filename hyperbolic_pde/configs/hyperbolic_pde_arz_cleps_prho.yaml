@@ -139,6 +139,30 @@ arz_stratified_homog_prho:
   train_fraction: 0.8
   val_fraction: 0.1
 
+# 2-channel FNO baseline on the ARZ dataset. Input (X, T, rho0, w0) -> output
+# (rho, w), the SAME frame model_arz_orig / arz_total_loss optimize, so it is an
+# apples-to-apples baseline against "arz hypno orig". Pair with the same data
+# section orig trains on (arz_stratified_homog_prho). Recipe mirrors the LWR FNO
+# (width 128, modes 24, 8 layers, cosine) but MAE loss + 220 epochs to match the
+# orig run. Trained by hyperbolic_pde/arz/train_fno_arz.py (slurm/arz_train_fno.sh).
+fno_arz:
+  width: 128
+  modes_x: 24
+  modes_t: 24
+  layers: 8
+  optimizer: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 16
+  epochs: 220
+  loss_type: mae
+  checkpoint_every: 20
+  save_path: /home/dzdrale/scratch/runs/fno_arz_prho.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/fno_arz_prho
+
 hypno_arz:
   compile: false
   save_path: /home/dzdrale/scratch/runs/hypno_arz_prho.pt
