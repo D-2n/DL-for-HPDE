@@ -59,7 +59,11 @@ def main():
     ap.add_argument("--out-dir", type=Path, default=OUT_DIR)
     ap.add_argument("--n_per_cell", type=int, default=None,
                     help="Cap on samples per (ic_type, num_segments) cell.")
-    ap.add_argument("--baselines", type=str, default="godunov,weno5")
+    # WENO5 is unstable on ARZ (overshoots -> NaN -> native access violation that
+    # crashes the whole process, not a catchable Python exception), especially on
+    # high-segment-count / OOD ICs. Default to godunov only; pass
+    # --baselines godunov,weno5 to re-enable WENO5 at your own risk.
+    ap.add_argument("--baselines", type=str, default="godunov")
     ap.add_argument("--no-fno", action="store_true",
                     help="Skip FNO even if weights exist.")
     args = ap.parse_args()
