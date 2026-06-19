@@ -1,0 +1,4 @@
+family,num_segments,method,channel,mean,std,n
+riemann_stratified,1,model,rho,0.014466237724567085,0.003956575456939928,6
+riemann_stratified,1,model,w,0.01629151858226881,0.006324274005366767,6
+riemann_stratified,1,model,v,0.016216023470046064,0.008015256655620577,6
