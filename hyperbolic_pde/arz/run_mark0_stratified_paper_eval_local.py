@@ -22,7 +22,9 @@ REPO = Path(__file__).resolve().parents[2]
 
 # -- edit these paths -------------------------------------------------------- #
 CKPT = REPO / "hyperbolic_pde/runs/checkpoint_epoch180.pt"
-DATA = REPO / "hyperbolic_pde/arz/data/arz_general_local.npz"
+# Held-out OOD eval set (different seed from the training arz_general_local.npz).
+# Generate it first:  python -m hyperbolic_pde.arz.gen_ood_eval_local
+DATA = REPO / "hyperbolic_pde/arz/data/arz_ood_eval_local.npz"
 FNO_WEIGHTS = REPO / "hyperbolic_pde/arz/runs/fno_arz_local/fno_arz_bigger.pt"
 # CONFIG = the model's run config (must have a hypno_arz_orig section). The
 # checkpoint was scp'd as a bare state_dict, so we point at the run config that
