@@ -27,6 +27,7 @@ from typing import Tuple
 import numpy as np
 
 from hyperbolic_pde.arz import physics_arz as P
+from hyperbolic_pde.data.fvm import _apply_ghost_bc, _weno5_reconstruct_left
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +159,100 @@ def _source_step(
 
 
 # --------------------------------------------------------------------------- #
-# Driver
+# WENO5 + SSP-RK3 solver
+# --------------------------------------------------------------------------- #
+def _weno5_arz_rhs(rho, y, dx, boundary):
+    """Component-wise WENO5 + global LF flux on (rho, y)."""
+    rho_safe = np.maximum(rho, P.RHO_MIN)
+    w = y / rho_safe
+    v = w - P.pressure(rho)
+    lam1 = v - rho * P.dpressure(rho)
+    lam2 = v
+    alpha = max(float(np.max(np.maximum(np.abs(lam1), np.abs(lam2)))), 1e-8)
+
+    F1 = rho * v
+    F2 = y * v
+
+    def _component_rhs(u, f):
+        ng = 3
+        u_ext = _apply_ghost_bc(u, boundary, ng)
+        f_ext = _apply_ghost_bc(f, boundary, ng)
+        fp = 0.5 * (f_ext + alpha * u_ext)
+        fm = 0.5 * (f_ext - alpha * u_ext)
+        fhat_p = _weno5_reconstruct_left(fp[0:-1])
+        fhat_m = _weno5_reconstruct_left(fm[1:][::-1])[::-1]
+        fhat = fhat_p + fhat_m
+        return -(fhat[1:] - fhat[:-1]) / dx
+
+    return _component_rhs(rho, F1), _component_rhs(y, F2)
+
+
+def _weno5_arz_step(rho, y, dx, dt, boundary):
+    """Single SSP-RK3 step on (rho, y)."""
+    def L(rho_, y_):
+        return _weno5_arz_rhs(rho_, y_, dx, boundary)
+
+    Lr1, Ly1 = L(rho, y)
+    rho1 = np.maximum(rho + dt * Lr1, P.RHO_MIN)
+    y1   = y + dt * Ly1
+
+    Lr2, Ly2 = L(rho1, y1)
+    rho2 = np.maximum(0.75 * rho + 0.25 * (rho1 + dt * Lr2), P.RHO_MIN)
+    y2   = 0.75 * y + 0.25 * (y1 + dt * Ly2)
+
+    Lr3, Ly3 = L(rho2, y2)
+    rho_n = np.maximum((1.0/3.0) * rho + (2.0/3.0) * (rho2 + dt * Lr3), P.RHO_MIN)
+    y_n   = (1.0/3.0) * y + (2.0/3.0) * (y2 + dt * Ly3)
+    return rho_n, y_n
+
+
+def solve_arz_weno5(
+    rho0, w0, x_min: float, x_max: float, t_max: float,
+    nt_out: int, tau: float, cfl: float = 0.2, boundary: str = "ghost",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Strang-split WENO5 + SSP-RK3 on (rho, y) with exact relaxation.
+
+    Operates on the training grid directly (no refinement — that's the point
+    of WENO5 vs the HLL reference which needs refine>1 for accuracy).
+    Returns (rho_hist, w_hist) each of shape (nt_out, nx), float32.
+    """
+    rho0 = np.asarray(rho0, dtype=np.float64)
+    w0   = np.asarray(w0,   dtype=np.float64)
+    nx   = rho0.size
+    dx   = (x_max - x_min) / nx
+    t_out = np.linspace(0.0, t_max, nt_out, dtype=np.float64)
+
+    rho = np.maximum(rho0.copy(), P.RHO_MIN)
+    y   = rho * w0
+    rho_hist = np.empty((nt_out, nx), dtype=np.float32)
+    w_hist   = np.empty((nt_out, nx), dtype=np.float32)
+    rho_hist[0] = rho.astype(np.float32)
+    w_hist[0]   = (y / np.maximum(rho, P.RHO_MIN)).astype(np.float32)
+
+    t = 0.0
+    k = 1
+    while k < nt_out:
+        w_now   = y / np.maximum(rho, P.RHO_MIN)
+        lam_max = max(float(P.spectral_radius(rho, w_now).max()), 1e-6)
+        dt = min(cfl * dx / lam_max, t_out[k] - t)
+        if dt <= 0:
+            break
+        # Strang: half-step source -> WENO hyperbolic -> half-step source.
+        y_eq = P.y_eq(rho)
+        y  = y_eq + (y - y_eq) * np.exp(-0.5 * dt / tau)
+        rho, y = _weno5_arz_step(rho, y, dx, dt, boundary)
+        y_eq = P.y_eq(rho)
+        y  = y_eq + (y - y_eq) * np.exp(-0.5 * dt / tau)
+        t += dt
+        while k < nt_out and t >= t_out[k] - 1e-12:
+            rho_hist[k] = rho.astype(np.float32)
+            w_hist[k]   = (y / np.maximum(rho, P.RHO_MIN)).astype(np.float32)
+            k += 1
+    return rho_hist, w_hist
+
+
+# --------------------------------------------------------------------------- #
+# HLL/Godunov driver
 # --------------------------------------------------------------------------- #
 def solve_arz_reference(
     rho0: np.ndarray, w0: np.ndarray,

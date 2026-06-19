@@ -25,6 +25,7 @@ import numpy as np
 
 from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import reference_arz as Ref
+from hyperbolic_pde.arz.reference_arz import solve_arz_weno5
 from hyperbolic_pde.arz import riemann_arz as Rie
 from hyperbolic_pde.data.fvm import (
     _stratified_pair,
@@ -67,21 +68,58 @@ class ArzDatasetBundle:
 def _sample_riemann_colocated(
     x: np.ndarray, rng: np.random.Generator,
     rho_min: float, rho_max: float, v_min: float, v_max: float,
+    n_jump_bins: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Riemann IC with rho and v jumps SHARING a single interface x0.
+    """Riemann IC with rho and v jumps sharing a single interface x0.
 
-    The previous implementation called riemann_stratified_ic twice with
-    independent x0 draws, so half the samples ended up with v_L == v_R at the
-    chosen Riemann interface (degenerate 1-wave, contact-only structure). Co-
-    locating both jumps guarantees every sample is a real two-channel Riemann
-    problem.
+    If n_jump_bins > 0, jump magnitudes for both rho and v are drawn from a
+    uniformly chosen bin of [0, span], giving equal coverage of weak and
+    strong jumps. Without binning, _stratified_pair draws magnitude from
+    U(0.03, 0.95)*span, which under-samples the small-jump tail (e.g. a
+    rho jump of 0.05 on span 0.8 falls in the bottom 4% of that distribution).
     """
     x0 = rng.uniform(x[0] + 0.2 * (x[-1] - x[0]), x[0] + 0.8 * (x[-1] - x[0]))
-    rho_left, rho_right = _stratified_pair(rho_min, rho_max, rng)
-    v_left,   v_right   = _stratified_pair(v_min,   v_max,   rng)
+    if n_jump_bins > 0:
+        rho_left, rho_right = _stratified_pair_binned(rho_min, rho_max, rng, n_jump_bins)
+        v_left,   v_right   = _stratified_pair_binned(v_min,   v_max,   rng, n_jump_bins)
+    else:
+        rho_left, rho_right = _stratified_pair(rho_min, rho_max, rng)
+        v_left,   v_right   = _stratified_pair(v_min,   v_max,   rng)
     rho0 = np.where(x <= x0, rho_left, rho_right).astype(np.float64)
     v0   = np.where(x <= x0, v_left,   v_right  ).astype(np.float64)
     return rho0, v0
+
+
+def _stratified_pair_binned(
+    u_min: float, u_max: float, rng: np.random.Generator, n_bins: int,
+) -> Tuple[float, float]:
+    """Like _stratified_pair but with jump magnitude drawn from a uniformly
+    chosen bin of [0, span], so weak and strong jumps are equally represented.
+
+    The bin is chosen uniformly at random, then the magnitude is drawn
+    uniformly within that bin. This prevents the U(0.03, 0.95)*span draw
+    from concentrating mass on moderate jumps and starving the weak-jump tail.
+    A minimum jump floor of 0.01*span is kept so degenerate zero-jump samples
+    don't appear (they would be constant ICs, not Riemann problems).
+    """
+    span = u_max - u_min
+    min_jump = max(0.01 * span, 1e-4)
+    edges = np.linspace(min_jump, span, n_bins + 1)
+    b = int(rng.integers(0, n_bins))
+    du = float(rng.uniform(edges[b], edges[b + 1]))
+    u_bar = rng.uniform(u_min, u_max)
+    sign = 1.0 if rng.random() < 0.5 else -1.0
+    lo = u_bar - 0.5 * du
+    hi = u_bar + 0.5 * du
+    if lo < u_min:
+        lo, hi = u_min, u_min + du
+    if hi > u_max:
+        lo, hi = u_max - du, u_max
+    lo = max(u_min, lo)
+    hi = min(u_max, hi)
+    if sign > 0:
+        return float(lo), float(hi)
+    return float(hi), float(lo)
 
 
 def _sample_riemann_vacuum_free(
@@ -203,6 +241,7 @@ def _sample_riemann_stratified_cell(
 def _sample_rho_v_pair(
     ic_name: str, x: np.ndarray, num_segments: int, rng: np.random.Generator,
     rho_min: float, rho_max: float, v_min: float, v_max: float,
+    n_jump_bins: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Sample rho and v fields with the chosen IC family.
 
@@ -213,9 +252,13 @@ def _sample_rho_v_pair(
     For other families (piecewise_constant_stratified, piecewise_sine), the
     two fields are still drawn independently — they aren't single-jump
     problems, so co-location isn't a meaningful constraint.
+
+    n_jump_bins: if > 0, passed to _sample_riemann_colocated to stratify
+    jump magnitudes across bins (ensures weak jumps are equally represented).
     """
     if ic_name == "riemann_stratified":
-        return _sample_riemann_colocated(x, rng, rho_min, rho_max, v_min, v_max)
+        return _sample_riemann_colocated(x, rng, rho_min, rho_max, v_min, v_max,
+                                         n_jump_bins=n_jump_bins)
     if ic_name not in IC_FUNCS:
         raise ValueError(f"Unknown IC family {ic_name!r}; available: {list(IC_FUNCS)}")
     ic_fn = IC_FUNCS[ic_name]
@@ -230,14 +273,18 @@ def _solve_one(
     x_min: float, x_max: float, t_max: float, nt: int,
     tau: float, cfl: float, boundary: str, refine: int,
     use_exact_riemann: bool,
+    fv_solver: str = "hll",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Return rho_hist, w_hist of shape (nt, nx)."""
+    """Return rho_hist, w_hist of shape (nt, nx).
+
+    fv_solver controls which FV scheme is used for non-exact-Riemann samples:
+      "hll"   -- Strang-split HLL reference solver (default, legacy behaviour)
+      "weno5" -- component-wise WENO5 + SSP-RK3 + Strang-split exact relaxation
+
+    When use_exact_riemann=True and ic_name=="riemann_stratified", the exact
+    analytic solver is used regardless of fv_solver.
+    """
     nx = rho0.size
-    # tau=inf is fine for the FV path too: _source_step uses exp(-dt/tau) -> 1,
-    # so the relaxation step is a no-op and the solver evolves the pure
-    # homogeneous (tau=inf) ARZ system. This lets stratified MULTI-segment ICs
-    # (piecewise_constant / sine, not just single Riemann) be generated at
-    # tau=inf via FV -- the exact Riemann solver only handles single jumps.
 
     if use_exact_riemann and ic_name == "riemann_stratified":
         # Detect the single jump location: pick the cell with the largest
@@ -255,7 +302,18 @@ def _solve_one(
             rho_L, w_L, rho_R, w_R, x_mid, t, x0=x0,
         )
         return rho_hist.astype(np.float32), w_hist.astype(np.float32)
-    # Default: Strang-split FV with the configured tau.
+
+    if fv_solver == "weno5":
+        # WENO5 + SSP-RK3 + Strang-split exact relaxation.
+        # tau=inf -> baseline_tau clamped to a large finite value so exp(-dt/tau)~1.
+        baseline_tau = tau if np.isfinite(tau) else 1e12
+        rho_hist, w_hist = solve_arz_weno5(
+            rho0, w0, x_min, x_max, t_max, nt_out=nt,
+            tau=baseline_tau, cfl=cfl, boundary=boundary,
+        )
+        return rho_hist, w_hist
+
+    # Default: Strang-split HLL FV reference solver.
     _, _, rho_hist, w_hist = Ref.solve_arz_reference(
         rho0, w0, x_min, x_max, t_max, nt_out=nt,
         tau=tau, cfl=cfl, boundary=boundary, refine=refine,
@@ -422,6 +480,8 @@ def generate_arz_dataset(
     boundary: str = "ghost",
     refine: int = 4,
     use_exact_riemann: bool = False,
+    fv_solver: str = "hll",
+    n_jump_bins: int = 0,
     seed: int = 0,
     rho_min: float = _RHO_MIN_DEFAULT,
     rho_max: float = _RHO_MAX_DEFAULT,
@@ -456,6 +516,8 @@ def generate_arz_dataset(
     print(
         f"[arz datagen] N={num_samples}  cells={n_cells}  per_cell={per_cell}  "
         f"families={families}  segments={segments}  tau={tau}  refine={refine}  "
+        f"fv_solver={fv_solver}  use_exact_riemann={use_exact_riemann}  "
+        f"n_jump_bins={n_jump_bins}  "
         f"rho in [{rho_min}, {rho_max}]  v in [{v_min}, {v_max}]"
     )
 
@@ -467,6 +529,7 @@ def generate_arz_dataset(
                 rho0, v0 = _sample_rho_v_pair(
                     fam, x.astype(np.float64), seg, rng,
                     rho_min, rho_max, v_min, v_max,
+                    n_jump_bins=n_jump_bins,
                 )
                 rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
                 w0 = v0 + P.pressure(rho0)
@@ -475,6 +538,7 @@ def generate_arz_dataset(
                     x_min=x_min, x_max=x_max, t_max=t_max, nt=nt,
                     tau=tau, cfl=cfl, boundary=boundary, refine=refine,
                     use_exact_riemann=use_exact_riemann,
+                    fv_solver=fv_solver,
                 )
                 rho_all[i] = rho_hist
                 w_all[i] = w_hist
@@ -553,6 +617,19 @@ if __name__ == "__main__":
     parser.add_argument("--cfl", type=float, default=0.4)
     parser.add_argument("--boundary", type=str, default="ghost")
     parser.add_argument("--refine", type=int, default=4)
+    parser.add_argument("--n-jump-bins", type=int, default=0,
+                        help="Number of jump-magnitude bins for riemann_stratified ICs "
+                             "in the multi-disc path. 0 = legacy U(0.03,0.95)*span draw "
+                             "(under-samples weak jumps). >0 = bins of equal width over "
+                             "[0, span] chosen uniformly, guaranteeing weak and strong "
+                             "jumps are equally represented. Recommended: 8.")
+    parser.add_argument("--fv-solver", type=str, default="hll",
+                        choices=["hll", "weno5"],
+                        help="FV scheme for non-exact-Riemann samples: "
+                             "'hll' (default, Strang-split HLL) or "
+                             "'weno5' (WENO5+SSP-RK3+Strang-split relaxation). "
+                             "Riemann ICs with --use-exact-riemann still use the "
+                             "exact solver regardless of this flag.")
     parser.add_argument("--use-exact-riemann", action="store_true",
                         help="Use exact homogeneous (tau=inf) solver for Riemann ICs.")
     parser.add_argument("--exact-riemann-only", action="store_true",
@@ -597,7 +674,10 @@ if __name__ == "__main__":
             x_min=args.x_min, x_max=args.x_max, t_max=args.t_max,
             tau=args.tau, families=families, segments=segments,
             cfl=args.cfl, boundary=args.boundary, refine=args.refine,
-            use_exact_riemann=args.use_exact_riemann, seed=args.seed,
+            use_exact_riemann=args.use_exact_riemann,
+            fv_solver=args.fv_solver,
+            n_jump_bins=args.n_jump_bins,
+            seed=args.seed,
             rho_min=args.rho_min, rho_max=args.rho_max,
             v_min=args.v_min,     v_max=args.v_max,
         )

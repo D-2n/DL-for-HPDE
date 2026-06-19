@@ -150,7 +150,15 @@ def _load_fno(weights: Path, cfg_section: dict, device: str) -> FNO2d:
         modes_t=int(cfg_section["modes_t"]),
         layers=int(cfg_section["layers"]),
     ).to(device)
-    state = torch.load(weights, map_location=device, weights_only=True)
+    # Accept either a bare state_dict or a wrapped training checkpoint
+    # ({"model"|"state_dict"|"model_state_dict": ...}, possibly with optimizer
+    # state -> needs weights_only=False).
+    state = torch.load(weights, map_location=device, weights_only=False)
+    if isinstance(state, dict):
+        for key in ("model", "state_dict", "model_state_dict"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
     if any(k.startswith("_orig_mod.") for k in state):
         state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
     model.load_state_dict(state)

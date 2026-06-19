@@ -590,3 +590,17 @@ hypno_arz_orig:
 
   save_path: /home/dzdrale/scratch/runs/hypno_arz_orig.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_orig
+
+# Mixed general dataset: 3 IC families x 6 num_segments x N/cell samples.
+# Riemann ICs -> exact analytic GT (use_exact_riemann=True).
+# piecewise_constant + piecewise_sine -> WENO5+SSP-RK3+Strang-split (fv_solver=weno5).
+# tau=inf (homogeneous), p=rho, rho in [0.1,0.9], v in [0,1].
+# 5400 samples = 3 families x 6 segments x 300/cell (divisible by 18).
+arz_mixed_weno_prho:
+  path: /home/dzdrale/scratch/arz_1d/arz_mixed_weno_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_mixed_weno_prho.npz
+  pressure_form: rho
+  num_samples: 5400
+  tau: .inf
+  train_fraction: 0.8
+  val_fraction: 0.1
