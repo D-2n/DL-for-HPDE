@@ -37,8 +37,13 @@ def _strip(sd):
     return sd
 
 
-def infer_kwargs(sd: dict, kx: int, kt: int) -> dict:
-    """Recover constructor kwargs from the checkpoint tensor shapes."""
+def infer_kwargs(sd: dict, kx: int, kt: int, skip: bool) -> dict:
+    """Recover constructor kwargs from the checkpoint tensor shapes.
+
+    `skip` is NOT encoded in the weights (it is a forward-pass flag), so it must
+    be supplied to match how the model was trained -- a wrong value adds/removes
+    the u0 residual and roughly doubles (or halves) the output.
+    """
     node_in = sd["lifting.node_mlp.0.weight"].shape[1]          # 7 or 9
     d_latent = sd["decoder.0.weight"].shape[1]                  # decoder in = d_latent
     d_hidden = sd["lifting.node_mlp.0.weight"].shape[0]         # node MLP hidden width
@@ -57,7 +62,7 @@ def infer_kwargs(sd: dict, kx: int, kt: int) -> dict:
         n_layers=int(n_layers),
         d_hidden_nonadj=int(nonadj_out) if nonadj_out != d_hidden else None,
         decoder_depth=int(decoder_depth),
-        skip=True,
+        skip=skip,
         use_checkpoint=False,
         normalize_edge_offsets=True,
         use_relaxation_features=(node_in == 9),
@@ -75,6 +80,11 @@ def main() -> None:
     ap.add_argument("--samples", type=int, default=8)
     ap.add_argument("--kx", type=int, default=2, help="stencil_k_x (not in weights; 4ec18fb default 2)")
     ap.add_argument("--kt", type=int, default=2, help="stencil_k_t (not in weights; 4ec18fb default 2)")
+    ap.add_argument("--skip", dest="skip", action="store_true", default=True,
+                    help="decoder skip residual u_pred = u0 + decoder(h) (default; "
+                         "must match training -- check the run's config.yaml).")
+    ap.add_argument("--no-skip", dest="skip", action="store_false",
+                    help="u_pred = decoder(h) directly (skip=false).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", type=Path, default=None, help="optional .npz to save predicted fields")
     ap.add_argument("--figures", type=Path, default=None,
@@ -99,7 +109,7 @@ def main() -> None:
     raw = torch.load(args.ckpt, map_location=args.device, weights_only=False)
     sd = _strip(raw["model"] if isinstance(raw, dict) and "model" in raw else raw)
 
-    kwargs = infer_kwargs(sd, args.kx, args.kt)
+    kwargs = infer_kwargs(sd, args.kx, args.kt, args.skip)
     print(f"[run_legacy_2d5] inferred kwargs: {kwargs}")
 
     model = HypNO_ARZ_Legacy2d5(**kwargs).to(args.device)

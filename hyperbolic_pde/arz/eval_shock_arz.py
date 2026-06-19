@@ -156,6 +156,11 @@ def main():
                     help="If set, write per-sample band-overlay plots into "
                          "this directory.")
     ap.add_argument("--n-plots", type=int, default=5)
+    ap.add_argument("--model-variant", type=str, default="auto",
+                    choices=["auto", "mark1", "mark1_router", "orig", "mark2", "mark2_1"],
+                    help="Model class. 'auto' reads it off --model-section.")
+    ap.add_argument("--model-section", type=str, default="hypno_arz",
+                    help="Config section name (used for variant auto-detection).")
     args = ap.parse_args()
 
     bundle = load_arz_dataset(args.data)
@@ -163,10 +168,49 @@ def main():
     N = bundle.rho.shape[0]
     take = min(args.samples, N)
 
-    model, _ck_tau = load_hypno_arz_from_checkpoint(
-        args.ckpt, device=args.device, config_path=args.config,
-    )
-    print(f"[eval_shock_arz] loaded {args.ckpt}  tau_eval={tau}")
+    variant = args.model_variant
+    if variant == "auto":
+        sec = args.model_section
+        if "mark2_1" in sec:
+            variant = "mark2_1"
+        elif "mark2" in sec:
+            variant = "mark2"
+        elif "mark1_router" in sec:
+            variant = "mark1_router"
+        elif "orig" in sec:
+            variant = "orig"
+        else:
+            variant = "mark1"
+
+    if variant == "mark2_1":
+        from hyperbolic_pde.arz.model_arz_mark2_1 import load_hypno_arz_mark2_1_from_checkpoint
+        model, _ck_tau = load_hypno_arz_mark2_1_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    elif variant == "mark2":
+        from hyperbolic_pde.arz.model_arz_mark2 import load_hypno_arz_mark2_from_checkpoint
+        model, _ck_tau = load_hypno_arz_mark2_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    elif variant == "mark1_router":
+        from hyperbolic_pde.arz.model_arz_mark1_router import load_hypno_arz_mark1_router_from_checkpoint
+        model, _ck_tau = load_hypno_arz_mark1_router_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    elif variant == "orig":
+        from hyperbolic_pde.arz.model_arz_orig import load_hypno_arz_orig_from_checkpoint
+        model, _ck_tau = load_hypno_arz_orig_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+            model_section=args.model_section,
+        )
+    else:
+        model, _ck_tau = load_hypno_arz_from_checkpoint(
+            args.ckpt, device=args.device, config_path=args.config,
+        )
+    print(f"[eval_shock_arz] loaded {args.ckpt}  variant={variant}  tau_eval={tau}")
 
     x = torch.tensor(bundle.x, dtype=torch.float32, device=args.device)
     t = torch.tensor(bundle.t, dtype=torch.float32, device=args.device)
