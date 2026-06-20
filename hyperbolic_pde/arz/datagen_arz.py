@@ -303,6 +303,7 @@ def _solve_one(
     tau: float, cfl: float, boundary: str, refine: int,
     use_exact_riemann: bool,
     fv_solver: str = "hll",
+    wft_rare_delta: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return rho_hist, w_hist of shape (nt, nx).
 
@@ -357,13 +358,18 @@ def _solve_one(
         x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
         t = np.linspace(0.0, t_max, nt, dtype=np.float64)
         states, boundaries = _segments_from_cells(rho0, w0, x_min, x_max)
-        # Fan resolution scales with the GRID: sub-cell fans are invisible on the
-        # nx-cell output and only inflate the front count (each interface spawns
-        # ~|drho|/rare_delta fronts). A busy multi-segment IC at rare_delta<<dx
-        # makes simulate() O(n^2) explode (the 2026-06-20 datagen hang). Tie it to
-        # ~half a cell so a single Riemann jump still gets a smooth fan but a
-        # 25-segment field stays cheap.
-        rare_delta = max(0.5 * dx, 1e-3)
+        # Fan resolution. Default (wft_rare_delta<=0) scales with the GRID:
+        # sub-cell fans are invisible on the nx-cell output and only inflate the
+        # front count (each interface spawns ~|drho|/rare_delta fronts). A busy
+        # multi-segment IC at rare_delta<<dx makes simulate() O(n^2) explode (the
+        # 2026-06-20 datagen hang), so the auto value is tied to a tenth of a cell
+        # -- finer than the output grid but still cheap. Pass wft_rare_delta>0 to
+        # override with an explicit absolute fan resolution (smaller = sharper
+        # rarefactions, more fronts, slower on busy ICs).
+        if wft_rare_delta and wft_rare_delta > 0.0:
+            rare_delta = float(wft_rare_delta)
+        else:
+            rare_delta = max(0.1 * dx, 1e-4)
         rho_hist, w_hist, _ = solve_arz_wft_xt(
             states, boundaries, x_mid, t, rare_delta=rare_delta,
         )
@@ -544,7 +550,7 @@ def _worker_generate_sample(args: tuple) -> tuple:
      x, x_min, x_max, t_max, nt,
      tau, cfl, boundary, refine,
      use_exact_riemann, fv_solver, n_jump_bins,
-     rho_min, rho_max, v_min, v_max) = args
+     rho_min, rho_max, v_min, v_max, wft_rare_delta) = args
 
     rng = np.random.default_rng(seed_i)
     rho0, v0 = _sample_rho_v_pair(
@@ -560,6 +566,7 @@ def _worker_generate_sample(args: tuple) -> tuple:
         tau=tau, cfl=cfl, boundary=boundary, refine=refine,
         use_exact_riemann=use_exact_riemann,
         fv_solver=fv_solver,
+        wft_rare_delta=wft_rare_delta,
     )
     return i, rho0.astype(np.float32), w0.astype(np.float32), v0.astype(np.float32), rho_hist, w_hist, seg, fam
 
@@ -583,6 +590,7 @@ def generate_arz_dataset(
     rho_max: float = _RHO_MAX_DEFAULT,
     v_min: float = _V_MIN_DEFAULT,
     v_max: float = _V_MAX_DEFAULT,
+    wft_rare_delta: float = 0.0,
 ) -> ArzDatasetBundle:
     """Generate a stratified ARZ dataset.
 
@@ -636,7 +644,7 @@ def generate_arz_dataset(
                     x, x_min, x_max, t_max, nt,
                     tau, cfl, boundary, refine,
                     use_exact_riemann, fv_solver, n_jump_bins,
-                    rho_min, rho_max, v_min, v_max,
+                    rho_min, rho_max, v_min, v_max, wft_rare_delta,
                 ))
                 idx += 1
 
@@ -751,6 +759,13 @@ if __name__ == "__main__":
                              "piecewise_sine falls back to HLL). "
                              "Riemann ICs with --use-exact-riemann still use the "
                              "exact solver regardless of this flag.")
+    parser.add_argument("--wft-rare-delta", type=float, default=0.0,
+                        help="WFT rarefaction-fan resolution (absolute, in rho units) "
+                             "for --fv-solver wft. 0 (default) = auto = 0.1*dx (a tenth "
+                             "of a cell; finer than the output grid, still cheap). "
+                             "Smaller = sharper rarefactions but more fronts and slower "
+                             "on busy multi-segment ICs (rare_delta << dx can make the "
+                             "front tracker O(n^2)-explode -- watch the per-sample time).")
     parser.add_argument("--use-exact-riemann", action="store_true",
                         help="Use exact homogeneous (tau=inf) solver for Riemann ICs.")
     parser.add_argument("--exact-riemann-only", action="store_true",
@@ -802,6 +817,7 @@ if __name__ == "__main__":
             seed=args.seed,
             rho_min=args.rho_min, rho_max=args.rho_max,
             v_min=args.v_min,     v_max=args.v_max,
+            wft_rare_delta=args.wft_rare_delta,
         )
     save_arz_dataset(bundle, args.out)
     print(f"[arz datagen] saved {args.out}  shapes: rho={bundle.rho.shape}")
