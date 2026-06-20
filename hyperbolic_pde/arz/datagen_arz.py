@@ -27,6 +27,7 @@ import numpy as np
 from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz.reference_arz import solve_arz_weno5
+from hyperbolic_pde.arz.wft_arz import solve_arz_wft_xt
 from hyperbolic_pde.arz import riemann_arz as Rie
 from hyperbolic_pde.data.fvm import (
     _stratified_pair,
@@ -268,6 +269,33 @@ def _sample_rho_v_pair(
     return rho0.astype(np.float64), v0.astype(np.float64)
 
 
+def _segments_from_cells(
+    rho0: np.ndarray, w0: np.ndarray,
+    x_min: float, x_max: float, jump_tol: float = 1e-9,
+) -> Tuple[list, list]:
+    """Recover piecewise-constant (states, boundaries) from cell arrays.
+
+    For a piecewise-constant IC sampled at cell midpoints (datagen convention:
+    nx cells, dx = (x_max-x_min)/nx, centres x_min + (i+0.5)*dx), detect the
+    interfaces (adjacent cells whose state differs) and return:
+      states     = [(rho, v), ...]   one per constant segment (primitive (rho,v))
+      boundaries = [...]              interface x-locations between segments
+
+    A boundary between cell i and i+1 is placed at the shared cell edge
+    x_min + (i+1)*dx. WFT then evolves the exact piecewise-constant data.
+    """
+    nx = rho0.size
+    dx = (x_max - x_min) / nx
+    v0 = w0 - P.pressure(rho0)
+    states = [(float(rho0[0]), float(v0[0]))]
+    boundaries: list = []
+    for i in range(nx - 1):
+        if abs(rho0[i + 1] - rho0[i]) > jump_tol or abs(w0[i + 1] - w0[i]) > jump_tol:
+            boundaries.append(float(x_min + (i + 1) * dx))
+            states.append((float(rho0[i + 1]), float(v0[i + 1])))
+    return states, boundaries
+
+
 def _solve_one(
     ic_name: str,
     rho0: np.ndarray, w0: np.ndarray,
@@ -278,9 +306,15 @@ def _solve_one(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return rho_hist, w_hist of shape (nt, nx).
 
-    fv_solver controls which FV scheme is used for non-exact-Riemann samples:
+    fv_solver controls which scheme is used for non-exact-Riemann samples:
       "hll"   -- Strang-split HLL reference solver (default, legacy behaviour)
       "weno5" -- component-wise WENO5 + SSP-RK3 + Strang-split exact relaxation
+      "wft"   -- wave-front tracking, MACHINE-PRECISION GT for piecewise-constant
+                 ICs (riemann_stratified, piecewise_constant_stratified). It is
+                 homogeneous (tau=inf) and exact on shocks/contacts; the ONLY
+                 error is the rarefaction-fan resolution. piecewise_sine is NOT
+                 piecewise-constant -> it falls back to the HLL FV reference (WFT
+                 cannot represent a smooth profile as finitely many fronts).
 
     When use_exact_riemann=True and ic_name=="riemann_stratified", the exact
     analytic solver is used regardless of fv_solver.
@@ -301,6 +335,30 @@ def _solve_one(
         t = np.linspace(0.0, t_max, nt, dtype=np.float64)
         rho_hist, w_hist, _ = Rie.solve_riemann_arz_xt(
             rho_L, w_L, rho_R, w_R, x_mid, t, x0=x0,
+        )
+        return rho_hist.astype(np.float32), w_hist.astype(np.float32)
+
+    if fv_solver == "wft":
+        # Wave-front tracking: machine-precision GT for piecewise-constant ICs.
+        # WFT is homogeneous (tau=inf); only valid when there is no relaxation
+        # source. piecewise_sine is smooth -> not representable as fronts -> HLL.
+        if ic_name == "piecewise_sine":
+            _, _, rho_hist, w_hist = Ref.solve_arz_reference(
+                rho0, w0, x_min, x_max, t_max, nt_out=nt,
+                tau=tau, cfl=cfl, boundary=boundary, refine=refine,
+            )
+            return rho_hist, w_hist
+        if np.isfinite(tau):
+            raise ValueError(
+                "fv_solver='wft' is homogeneous (tau=inf) only; got finite "
+                f"tau={tau}. Use 'hll'/'weno5' for relaxation datasets."
+            )
+        dx = (x_max - x_min) / nx
+        x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
+        t = np.linspace(0.0, t_max, nt, dtype=np.float64)
+        states, boundaries = _segments_from_cells(rho0, w0, x_min, x_max)
+        rho_hist, w_hist, _ = solve_arz_wft_xt(
+            states, boundaries, x_mid, t, rare_delta=0.002,
         )
         return rho_hist.astype(np.float32), w_hist.astype(np.float32)
 
@@ -677,10 +735,13 @@ if __name__ == "__main__":
                              "[0, span] chosen uniformly, guaranteeing weak and strong "
                              "jumps are equally represented. Recommended: 8.")
     parser.add_argument("--fv-solver", type=str, default="hll",
-                        choices=["hll", "weno5"],
-                        help="FV scheme for non-exact-Riemann samples: "
-                             "'hll' (default, Strang-split HLL) or "
-                             "'weno5' (WENO5+SSP-RK3+Strang-split relaxation). "
+                        choices=["hll", "weno5", "wft"],
+                        help="Solver for non-exact-Riemann samples: "
+                             "'hll' (default, Strang-split HLL), "
+                             "'weno5' (WENO5+SSP-RK3+Strang-split relaxation), or "
+                             "'wft' (wave-front tracking, MACHINE-PRECISION GT for "
+                             "piecewise-constant ICs; homogeneous tau=inf only; "
+                             "piecewise_sine falls back to HLL). "
                              "Riemann ICs with --use-exact-riemann still use the "
                              "exact solver regardless of this flag.")
     parser.add_argument("--use-exact-riemann", action="store_true",
