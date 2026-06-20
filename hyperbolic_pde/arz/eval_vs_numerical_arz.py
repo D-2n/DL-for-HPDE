@@ -26,6 +26,7 @@ from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.model_arz import HypNO_ARZ, load_hypno_arz_from_checkpoint
 from hyperbolic_pde.arz.reference_arz import solve_arz_weno5  # re-exported for callers
+from hyperbolic_pde.arz.reference_arz import solve_arz_muscl  # MUSCL-Hancock + HLLC
 
 
 # --------------------------------------------------------------------------- #
@@ -41,21 +42,30 @@ def _run_baseline(name, rho0, w0, bundle, tau, boundary):
     x_min = float(xb[0] - 0.5 * dx)
     x_max = float(xb[-1] + 0.5 * dx)
     t_max = float(bundle.t.max())
-    if name in ("godunov", "hll"):
+    if name in ("godunov", "hll", "hllc"):
         # 'godunov' = exact-Riemann flux (sharp contact, the LWR-equivalent).
         # 'hll'     = the old HLL flux (contact-smearing) -- kept selectable so
         #             the two can be compared. Previously 'godunov' silently ran
         #             HLL; that was the mislabel behind the over-smeared baseline.
+        # 'hllc'    = 1st-order HLLC flux (sharp contact, ~Godunov accuracy at HLL
+        #             cost). The 2nd-order version is 'muscl' below.
         _, _, rho_h, w_h = Ref.solve_arz_reference(
             rho0, w0, x_min, x_max, t_max, nt_out=nt,
             tau=tau, cfl=0.4, boundary=boundary, refine=1,
-            flux_scheme=("godunov" if name == "godunov" else "hll"),
+            flux_scheme=name,
         )
         return rho_h, w_h
     if name == "weno5":
         return solve_arz_weno5(
             rho0, w0, x_min, x_max, t_max, nt_out=nt,
             tau=tau, cfl=0.2, boundary=boundary,
+        )
+    if name == "muscl":
+        # 2nd-order MUSCL-Hancock + HLLC: contact-sharp, robust (the WENO5
+        # replacement). cfl 0.4 -- MUSCL-Hancock is stable to ~0.5.
+        return solve_arz_muscl(
+            rho0, w0, x_min, x_max, t_max, nt_out=nt,
+            tau=tau, cfl=0.4, boundary=boundary,
         )
     raise ValueError(name)
 

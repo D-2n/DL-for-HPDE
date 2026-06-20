@@ -3,7 +3,7 @@
 #SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=06:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_gen_mixed_weno_%j.log
 
 # Generate the mixed general ARZ dataset:
@@ -29,7 +29,9 @@ N=${2:-5400}
     --fv-solver weno5 \
     --use-exact-riemann \
     --n-jump-bins 8 \
+    --num-workers 8 \
     --cfl 0.4 \
+    --refine 1 \
     --boundary ghost \
     --pressure-form rho \
     --rho-min 0.1 --rho-max 0.9 \

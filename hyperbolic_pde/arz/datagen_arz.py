@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
+import multiprocessing as mp
 
 import numpy as np
 
@@ -469,6 +470,35 @@ def generate_arz_riemann_exact_dataset(
     )
 
 
+def _worker_generate_sample(args: tuple) -> tuple:
+    """Top-level (picklable) worker for parallel datagen.
+
+    Returns (i, rho0, w0, v0, rho_hist, w_hist, seg, fam).
+    """
+    (i, fam, seg, seed_i,
+     x, x_min, x_max, t_max, nt,
+     tau, cfl, boundary, refine,
+     use_exact_riemann, fv_solver, n_jump_bins,
+     rho_min, rho_max, v_min, v_max) = args
+
+    rng = np.random.default_rng(seed_i)
+    rho0, v0 = _sample_rho_v_pair(
+        fam, x.astype(np.float64), seg, rng,
+        rho_min, rho_max, v_min, v_max,
+        n_jump_bins=n_jump_bins,
+    )
+    rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
+    w0 = v0 + P.pressure(rho0)
+    rho_hist, w_hist = _solve_one(
+        fam, rho0, w0,
+        x_min=x_min, x_max=x_max, t_max=t_max, nt=nt,
+        tau=tau, cfl=cfl, boundary=boundary, refine=refine,
+        use_exact_riemann=use_exact_riemann,
+        fv_solver=fv_solver,
+    )
+    return i, rho0.astype(np.float32), w0.astype(np.float32), v0.astype(np.float32), rho_hist, w_hist, seg, fam
+
+
 def generate_arz_dataset(
     num_samples: int,
     nx: int, nt: int,
@@ -482,6 +512,7 @@ def generate_arz_dataset(
     use_exact_riemann: bool = False,
     fv_solver: str = "hll",
     n_jump_bins: int = 0,
+    num_workers: int = 1,
     seed: int = 0,
     rho_min: float = _RHO_MIN_DEFAULT,
     rho_max: float = _RHO_MAX_DEFAULT,
@@ -492,6 +523,10 @@ def generate_arz_dataset(
 
     num_samples must be divisible by len(families) * len(segments) (stratified
     quota per cell, matching the LWR datagen convention).
+
+    num_workers: number of parallel processes for solving (default 1). Set to
+    the number of CPUs allocated (e.g. 8) to get near-linear speedup on
+    WENO5 datagen, which is CPU-bound and embarrassingly parallel.
     """
     n_cells = len(families) * len(segments)
     if num_samples % n_cells != 0:
@@ -501,7 +536,11 @@ def generate_arz_dataset(
         )
     per_cell = num_samples // n_cells
 
-    rng = np.random.default_rng(seed)
+    # Use a single master RNG to generate per-sample seeds deterministically,
+    # so parallel execution produces the same dataset as serial.
+    master_rng = np.random.default_rng(seed)
+    sample_seeds = master_rng.integers(0, 2**31, size=num_samples)
+
     x = np.linspace(x_min, x_max, nx, dtype=np.float32)
     t = np.linspace(0.0, t_max, nt, dtype=np.float32)
 
@@ -517,39 +556,50 @@ def generate_arz_dataset(
         f"[arz datagen] N={num_samples}  cells={n_cells}  per_cell={per_cell}  "
         f"families={families}  segments={segments}  tau={tau}  refine={refine}  "
         f"fv_solver={fv_solver}  use_exact_riemann={use_exact_riemann}  "
-        f"n_jump_bins={n_jump_bins}  "
+        f"n_jump_bins={n_jump_bins}  num_workers={num_workers}  "
         f"rho in [{rho_min}, {rho_max}]  v in [{v_min}, {v_max}]"
     )
 
-    i = 0
+    # Build flat list of (global_index, family, segments) in deterministic order.
+    work_items = []
+    idx = 0
     for seg in segments:
         for fam in families:
             for _ in range(per_cell):
-                # Sample IC in (rho, v).
-                rho0, v0 = _sample_rho_v_pair(
-                    fam, x.astype(np.float64), seg, rng,
+                work_items.append((
+                    idx, fam, seg, int(sample_seeds[idx]),
+                    x, x_min, x_max, t_max, nt,
+                    tau, cfl, boundary, refine,
+                    use_exact_riemann, fv_solver, n_jump_bins,
                     rho_min, rho_max, v_min, v_max,
-                    n_jump_bins=n_jump_bins,
-                )
-                rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
-                w0 = v0 + P.pressure(rho0)
-                rho_hist, w_hist = _solve_one(
-                    fam, rho0, w0,
-                    x_min=x_min, x_max=x_max, t_max=t_max, nt=nt,
-                    tau=tau, cfl=cfl, boundary=boundary, refine=refine,
-                    use_exact_riemann=use_exact_riemann,
-                    fv_solver=fv_solver,
-                )
-                rho_all[i] = rho_hist
-                w_all[i] = w_hist
-                rho0_all[i] = rho0.astype(np.float32)
-                w0_all[i] = w0.astype(np.float32)
-                v0_all[i] = v0.astype(np.float32)
-                seg_meta[i] = seg
-                ic_meta[i] = fam
-                i += 1
-                if i % max(1, num_samples // 10) == 0:
-                    print(f"  {i}/{num_samples}", flush=True)
+                ))
+                idx += 1
+
+    def _collect(result):
+        i, rho0, w0, v0, rho_hist, w_hist, seg, fam = result
+        rho_all[i] = rho_hist
+        w_all[i] = w_hist
+        rho0_all[i] = rho0
+        w0_all[i] = w0
+        v0_all[i] = v0
+        seg_meta[i] = seg
+        ic_meta[i] = fam
+
+    if num_workers > 1:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=num_workers) as pool:
+            done = 0
+            log_every = max(1, num_samples // 10)
+            for result in pool.imap_unordered(_worker_generate_sample, work_items, chunksize=4):
+                _collect(result)
+                done += 1
+                if done % log_every == 0:
+                    print(f"  {done}/{num_samples}", flush=True)
+    else:
+        for k, item in enumerate(work_items):
+            _collect(_worker_generate_sample(item))
+            if (k + 1) % max(1, num_samples // 10) == 0:
+                print(f"  {k+1}/{num_samples}", flush=True)
 
     # v field from (rho, w).
     v_all = w_all - P.pressure(rho_all)
@@ -617,6 +667,9 @@ if __name__ == "__main__":
     parser.add_argument("--cfl", type=float, default=0.4)
     parser.add_argument("--boundary", type=str, default="ghost")
     parser.add_argument("--refine", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=1,
+                        help="Number of parallel worker processes for solving. "
+                             "Set to the number of CPUs allocated (e.g. 8).")
     parser.add_argument("--n-jump-bins", type=int, default=0,
                         help="Number of jump-magnitude bins for riemann_stratified ICs "
                              "in the multi-disc path. 0 = legacy U(0.03,0.95)*span draw "
@@ -677,6 +730,7 @@ if __name__ == "__main__":
             use_exact_riemann=args.use_exact_riemann,
             fv_solver=args.fv_solver,
             n_jump_bins=args.n_jump_bins,
+            num_workers=args.num_workers,
             seed=args.seed,
             rho_min=args.rho_min, rho_max=args.rho_max,
             v_min=args.v_min,     v_max=args.v_max,

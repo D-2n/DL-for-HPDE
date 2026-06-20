@@ -8,6 +8,8 @@ stratification grid:
 
 Schemes:
   * hll      : 1st-order FV, HLL flux            (reference_arz, flux_scheme='hll')
+  * hllc     : 1st-order FV, HLLC flux (sharp 2-contact)  (flux_scheme='hllc')
+  * muscl    : 2nd-order MUSCL-Hancock + HLLC     (reference_arz.solve_arz_muscl)
   * godunov  : 1st-order FV, exact-Riemann flux  (reference_arz, flux_scheme='godunov')
   * weno5    : 5th-order WENO + SSP-RK3 (global LF) (eval_vs_numerical_arz.solve_arz_weno5)
 
@@ -37,6 +39,7 @@ from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz.riemann_arz import solve_riemann_arz_xt
 from hyperbolic_pde.arz.datagen_arz import _sample_riemann_stratified_cell
 from hyperbolic_pde.arz.eval_vs_numerical_arz import solve_arz_weno5
+from hyperbolic_pde.arz.reference_arz import solve_arz_muscl
 
 
 def _strength_bins(rho_min, rho_max, n_bins):
@@ -55,7 +58,7 @@ def _analytic_gt(rL, vL, rR, vR, x0, xm, t):
 
 def _run_scheme(scheme, rho0, w0, x_min, x_max, t_max, nt, cfl):
     """Return (rho_hist, v_hist) for the requested scheme, or raise on failure."""
-    if scheme in ("hll", "godunov"):
+    if scheme in ("hll", "godunov", "hllc"):
         _, _, rH, wH = Ref.solve_arz_reference(
             rho0, w0, x_min, x_max, t_max, nt_out=nt,
             tau=1e9, cfl=cfl, boundary="ghost", refine=1, flux_scheme=scheme,
@@ -69,6 +72,13 @@ def _run_scheme(scheme, rho0, w0, x_min, x_max, t_max, nt, cfl):
         )
         vW = wW - P.pressure(rW)
         return rW, vW
+    if scheme == "muscl":
+        rM, wM = solve_arz_muscl(
+            rho0, w0, x_min, x_max, t_max, nt_out=nt,
+            tau=1e9, cfl=cfl, boundary="ghost",
+        )
+        vM = wM - P.pressure(rM)
+        return rM, vM
     raise ValueError(scheme)
 
 
@@ -196,7 +206,7 @@ def sweep(args):
 
 def main():
     ap = argparse.ArgumentParser(description="ARZ scheme x CFL sweep vs analytic GT.")
-    ap.add_argument("--schemes", type=str, default="hll,godunov,weno5")
+    ap.add_argument("--schemes", type=str, default="hll,hllc,muscl,weno5,godunov")
     ap.add_argument("--cfls", type=str, default="0.1,0.2,0.4,0.6,0.9")
     ap.add_argument("--n-strength-bins", type=int, default=4)
     ap.add_argument("--seeds", type=int, default=3, help="IC draws per bin")
