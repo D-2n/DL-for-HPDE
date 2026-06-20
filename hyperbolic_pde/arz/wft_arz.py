@@ -221,17 +221,25 @@ class ArzFrontTracking:
         self.fronts = self._sort_fronts(new_fronts)
 
     # ------------------------------------------------------------------ #
-    def simulate(self, T: float):
-        """Evolve to time T. Returns (segments, history) like the scalar version.
+    def simulate(self, T: float, keep_history: bool = True,
+                 keep_segments: bool = True, max_events: int = 50000):
+        """Evolve to time T. Returns (segments, history).
 
-        segments : list of (t0, x0, t1, x1) straight-line front trajectories.
+        segments : list of (t0, x0, t1, x1) straight-line front trajectories
+                   (for the space-time front diagram). Empty if keep_segments=False.
         history  : list of (t, deepcopy(fronts)) after each interaction event.
+                   Empty (only the final state retained in self.fronts) if
+                   keep_history=False -- the datagen path does NOT need the per-event
+                   history, and deep-copying every front at every event is itself an
+                   O(n*events) cost for busy ICs. Use keep_history=False there.
+
+        max_events bounds pathological interaction storms; if hit, the partially
+        evolved state is returned with a warning (rather than silently spinning).
         """
         T = float(T)
         t = 0.0
-        segments = []
-        history = [(t, deepcopy(self.fronts))]
-        max_events = 200000  # safety valve against pathological interaction storms
+        segments = [] if keep_segments else None
+        history = [(t, deepcopy(self.fronts))] if keep_history else []
         ev = 0
 
         while t < T and self.fronts and ev < max_events:
@@ -242,26 +250,39 @@ class ArzFrontTracking:
                 dt = T - t
                 if dt <= self.tol:
                     break
-                for fr in self.fronts:
-                    segments.append((t, fr.x, t + dt, fr.x + fr.s * dt))
+                if keep_segments:
+                    for fr in self.fronts:
+                        segments.append((t, fr.x, t + dt, fr.x + fr.s * dt))
                 self._advance(dt)
                 t = T
-                history.append((t, deepcopy(self.fronts)))
+                if keep_history:
+                    history.append((t, deepcopy(self.fronts)))
                 break
 
             if dt <= self.tol:
                 self._resolve_collisions_at_current_time()
-                history.append((t, deepcopy(self.fronts)))
+                if keep_history:
+                    history.append((t, deepcopy(self.fronts)))
                 continue
 
-            for fr in self.fronts:
-                segments.append((t, fr.x, t + dt, fr.x + fr.s * dt))
+            if keep_segments:
+                for fr in self.fronts:
+                    segments.append((t, fr.x, t + dt, fr.x + fr.s * dt))
             self._advance(dt)
             t += dt
             self._resolve_collisions_at_current_time()
-            history.append((t, deepcopy(self.fronts)))
+            if keep_history:
+                history.append((t, deepcopy(self.fronts)))
 
-        return segments, history
+        if ev >= max_events:
+            import warnings
+            warnings.warn(
+                f"WFT simulate() hit max_events={max_events} at t={t:.4f}<{T} "
+                f"with {len(self.fronts)} fronts -- interaction storm (rare_delta "
+                f"too fine for this IC?). Returning partially-evolved state.",
+                RuntimeWarning,
+            )
+        return segments or [], history
 
     # ------------------------------------------------------------------ #
     def profile_at(self, T: float, x: np.ndarray):
@@ -324,13 +345,22 @@ def solve_arz_wft_xt(
     nt, nx = t.size, x.size
     rho = np.empty((nt, nx)); w = np.empty((nt, nx)); v = np.empty((nt, nx))
 
+    # Single monotonic pass: build ONE solver and step it forward through the
+    # (assumed increasing) output times, sampling at each. The previous version
+    # rebuilt the solver and re-simulated from t=0 for EVERY output time -- with
+    # nt output snapshots that is nt full simulations, which is what made busy
+    # multi-segment datagen explode. simulate() advances self.fronts in place and
+    # profile_at() is read-only, so stepping incrementally is exact.
+    solver = ArzFrontTracking(boundaries, states, rare_delta=rare_delta)
+    t_prev = 0.0
     for k, tk in enumerate(t):
-        solver = ArzFrontTracking(boundaries, states, rare_delta=rare_delta)
-        if tk <= solver.tol:
-            r, ww, vv = solver.profile_at(0.0, x)
-        else:
-            solver.simulate(float(tk))
-            r, ww, vv = solver.profile_at(float(tk), x)
+        tk = float(tk)
+        if tk > t_prev + solver.tol:
+            # advance from t_prev to tk (relative time; simulate runs 0..(tk-t_prev)
+            # on the current front set), no history/segments needed for sampling.
+            solver.simulate(tk - t_prev, keep_history=False, keep_segments=False)
+            t_prev = tk
+        r, ww, vv = solver.profile_at(tk, x)
         rho[k], w[k], v[k] = r, ww, vv
     return rho, w, v
 

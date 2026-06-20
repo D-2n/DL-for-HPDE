@@ -357,8 +357,15 @@ def _solve_one(
         x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
         t = np.linspace(0.0, t_max, nt, dtype=np.float64)
         states, boundaries = _segments_from_cells(rho0, w0, x_min, x_max)
+        # Fan resolution scales with the GRID: sub-cell fans are invisible on the
+        # nx-cell output and only inflate the front count (each interface spawns
+        # ~|drho|/rare_delta fronts). A busy multi-segment IC at rare_delta<<dx
+        # makes simulate() O(n^2) explode (the 2026-06-20 datagen hang). Tie it to
+        # ~half a cell so a single Riemann jump still gets a smooth fan but a
+        # 25-segment field stays cheap.
+        rare_delta = max(0.5 * dx, 1e-3)
         rho_hist, w_hist, _ = solve_arz_wft_xt(
-            states, boundaries, x_mid, t, rare_delta=0.002,
+            states, boundaries, x_mid, t, rare_delta=rare_delta,
         )
         return rho_hist.astype(np.float32), w_hist.astype(np.float32)
 
