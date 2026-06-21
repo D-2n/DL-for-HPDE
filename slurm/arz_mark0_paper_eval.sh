@@ -16,21 +16,26 @@ mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 # per-cell figures + ID/OOD split + optional FNO column. The mark-0 analogue of
 # slurm/arz_paper_eval.sh (which targets the mark-1 model).
 #
-# Usage: sbatch slurm/arz_mark0_paper_eval.sh [ckpt] [data] [out_dir] [fno_weights] [fno_section] [train_section]
-#   [ckpt]          checkpoint (config.yaml auto-located beside it for the model)
+# Defaults target the WFT-trained mark0 (run_20260620_222959) vs Godunov on a
+# HELD-OUT / OOD WFT set (unseen segments -- generate with slurm/arz_gen_ood_wft.sh).
+# This is a homogeneous (tau=inf) set, so WENO5 is unstable/crashes -> Godunov
+# ONLY by default. FNO is off unless you pass a weights path.
+#
+# Usage: sbatch slurm/arz_mark0_paper_eval.sh [ckpt] [data] [baselines] [out_dir] [fno_weights] [fno_section] [train_section]
+#   [ckpt]          checkpoint (config.yaml auto-located beside it for the model arch)
 #   [data]          stratified eval .npz, must carry ic_type/num_segments
+#   [baselines]     comma list (default godunov; WENO5 crashes on tau=inf ARZ)
 #   [out_dir]       output dir (default: <ckpt_dir>/arz_mark0_paper_eval)
-#   [fno_weights]   FNO checkpoint; set to "" or a missing path to skip FNO
-#   [fno_section]   config section for the FNO architecture (default fno_arz_bigger,
-#                   matching the locally-trained weights scp'd to CLEPS)
+#   [fno_weights]   FNO checkpoint; "" (default) skips the FNO column
+#   [fno_section]   config section for the FNO architecture (must match the weights)
 #   [train_section] config section defining the ID set (default arz_data)
-# This is a finite-tau set, so WENO5+Godunov baselines are both valid.
-CKPT=${1:-/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260616_173152/checkpoint_epoch180.pt}
-DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_dataset_paper_eval_prho.npz}
-OUTDIR=${3:-}
-FNO_WEIGHTS=${4:-/home/dzdrale/scratch/runs/fno_arz_bigger_prho.pt}
-FNO_SECTION=${5:-fno_arz_bigger}
-TRAIN_SECTION=${6:-arz_data}
+CKPT=${1:-/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260620_222959/checkpoint_epoch40.pt}
+DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_ood_wft_prho.npz}
+BASELINES=${3:-godunov}
+OUTDIR=${4:-}
+FNO_WEIGHTS=${5:-}
+FNO_SECTION=${6:-fno_arz}
+TRAIN_SECTION=${7:-arz_data}
 
 CONFIG=hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho.yaml
 
@@ -41,11 +46,11 @@ fi
 
 # Add the FNO column only if a weights file actually exists. The architecture is
 # read from $FNO_SECTION of $CONFIG -- it MUST match the trained weights, or
-# load_state_dict will fail (the scp'd bigger weights -> fno_arz_bigger: 12 layers).
+# load_state_dict will fail.
 FNO_ARG=()
 if [ -n "$FNO_WEIGHTS" ] && [ -f "$FNO_WEIGHTS" ]; then
     FNO_ARG=(--fno-weights "$FNO_WEIGHTS" --fno-config "$CONFIG" --fno-section "$FNO_SECTION")
-else
+elif [ -n "$FNO_WEIGHTS" ]; then
     echo "[arz_mark0_paper_eval] FNO weights not found ('$FNO_WEIGHTS'); skipping FNO column."
 fi
 
@@ -54,7 +59,7 @@ fi
     --config "$CONFIG" \
     --model-section hypno_arz_orig \
     --data "$DATA" \
-    --baselines godunov,weno5 \
+    --baselines "$BASELINES" \
     --train-section "$TRAIN_SECTION" \
     "${FNO_ARG[@]}" \
     "${OUT_ARG[@]}"

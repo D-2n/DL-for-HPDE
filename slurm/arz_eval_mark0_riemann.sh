@@ -18,7 +18,7 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
-CKPT=${1:-/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260616_173152/checkpoint_epoch170.pt}
+CKPT=${1:-/home/dzdrale/scratch/runs/hypno_arz/run_20260617_195405/model_final.pt}
 DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho_strat.npz}
 OUTDIR=${3:-/home/dzdrale/scratch/results/mark0_riemann}
 N_PLOTS=${4:-10}
