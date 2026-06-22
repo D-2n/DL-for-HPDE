@@ -621,3 +621,14 @@ arz_mixed_wft_prho:
   tau: .inf
   train_fraction: 0.8
   val_fraction: 0.1
+
+# wft homog (5400) + exact Riemann (1000) = 6400 samples.
+# Generate with: sbatch slurm/arz_gen_riemann_1k.sh && sbatch slurm/arz_merge_wft_riemann.sh
+arz_mixed_wft_riemann_prho:
+  path: /home/dzdrale/scratch/arz_1d/arz_mixed_wft_riemann_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_mixed_wft_riemann_prho.npz
+  pressure_form: rho
+  num_samples: 6400
+  tau: .inf
+  train_fraction: 0.8
+  val_fraction: 0.1
