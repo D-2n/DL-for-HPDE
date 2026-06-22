@@ -550,7 +550,12 @@ def _worker_generate_sample(args: tuple) -> tuple:
      x, x_min, x_max, t_max, nt,
      tau, cfl, boundary, refine,
      use_exact_riemann, fv_solver, n_jump_bins,
-     rho_min, rho_max, v_min, v_max, wft_rare_delta) = args
+     rho_min, rho_max, v_min, v_max, wft_rare_delta,
+     pressure_form) = args
+
+    # Each spawned worker is a fresh process — set_pressure_form must be called
+    # here or it defaults to rho+rho2 regardless of the main process setting.
+    P.set_pressure_form(pressure_form)
 
     rng = np.random.default_rng(seed_i)
     rho0, v0 = _sample_rho_v_pair(
@@ -645,6 +650,7 @@ def generate_arz_dataset(
                     tau, cfl, boundary, refine,
                     use_exact_riemann, fv_solver, n_jump_bins,
                     rho_min, rho_max, v_min, v_max, wft_rare_delta,
+                    P.get_pressure_form(),
                 ))
                 idx += 1
 
