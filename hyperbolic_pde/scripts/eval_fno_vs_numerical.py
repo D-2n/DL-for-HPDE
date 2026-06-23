@@ -22,7 +22,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset, solve_conservation_fvm
 from hyperbolic_pde.data.lax_hopf import solve_lax_hopf
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 
 def _deep_update(base: dict, override: dict) -> dict:

@@ -1,0 +1,118 @@
+% ARZ mark-0 paper evaluation: MAE on rho (mean +/- std).
+% Headline channel = rho; see summary.csv for rho/w/v.
+
+% --- piecewise_constant_stratified ---
+\begin{table}[h]
+\centering
+\caption{ARZ mark-0 MAE on rho, mean $\pm$ std per cell. IC type: \texttt{piecewise_constant_stratified}.}
+\label{tab:arz_mark0_paper_eval_piecewise_constant_stratified}
+\begin{tabular}{lccc}
+\hline
+num\_segments & model & FNO & godunov \\
+\hline
+4 & $4.88e-03 \pm 1.97e-03$ & $1.16e-02 \pm 5.29e-03$ & $1.67e-02 \pm 6.69e-03$ \\
+6 & $6.39e-03 \pm 1.76e-03$ & $1.81e-02 \pm 7.29e-03$ & $2.57e-02 \pm 1.07e-02$ \\
+8 & $7.74e-03 \pm 2.02e-03$ & $1.98e-02 \pm 4.54e-03$ & $2.85e-02 \pm 9.45e-03$ \\
+15 & $1.02e-02 \pm 1.61e-03$ & $2.88e-02 \pm 6.25e-03$ & $5.01e-02 \pm 2.31e-02$ \\
+40 & $1.60e-02 \pm 1.95e-03$ & $4.48e-02 \pm 5.70e-03$ & $7.10e-02 \pm 1.30e-02$ \\
+\hline
+\end{tabular}
+\end{table}
+
+% --- piecewise_sine ---
+\begin{table}[h]
+\centering
+\caption{ARZ mark-0 MAE on rho, mean $\pm$ std per cell. IC type: \texttt{piecewise_sine}.}
+\label{tab:arz_mark0_paper_eval_piecewise_sine}
+\begin{tabular}{lccc}
+\hline
+num\_segments & model & FNO & godunov \\
+\hline
+4 & $8.43e-03 \pm 1.77e-03$ & $4.19e-02 \pm 1.08e-02$ & $1.46e-01 \pm 6.46e-02$ \\
+6 & $1.19e-02 \pm 2.74e-03$ & $5.13e-02 \pm 1.03e-02$ & $1.59e-01 \pm 4.20e-02$ \\
+8 & $1.61e-02 \pm 1.82e-03$ & $6.57e-02 \pm 1.03e-02$ & $1.55e-01 \pm 2.13e-02$ \\
+15 & $2.27e-02 \pm 2.26e-03$ & $7.21e-02 \pm 9.11e-03$ & $1.17e-01 \pm 1.91e-02$ \\
+40 & $2.56e-02 \pm 2.79e-03$ & $7.03e-02 \pm 1.22e-02$ & $7.76e-02 \pm 1.46e-02$ \\
+\hline
+\end{tabular}
+\end{table}
+
+% --- riemann_stratified ---
+\begin{table}[h]
+\centering
+\caption{ARZ mark-0 MAE on rho, mean $\pm$ std per cell. IC type: \texttt{riemann_stratified}.}
+\label{tab:arz_mark0_paper_eval_riemann_stratified}
+\begin{tabular}{lccc}
+\hline
+num\_segments & model & FNO & godunov \\
+\hline
+4 & $3.27e-03 \pm 1.82e-03$ & $5.25e-03 \pm 3.05e-03$ & $1.95e-02 \pm 2.56e-02$ \\
+6 & $2.69e-03 \pm 8.65e-04$ & $4.35e-03 \pm 1.53e-03$ & $8.87e-03 \pm 1.24e-02$ \\
+8 & $2.90e-03 \pm 8.58e-04$ & $4.19e-03 \pm 1.64e-03$ & $1.35e-02 \pm 1.64e-02$ \\
+15 & $2.73e-03 \pm 1.22e-03$ & $4.55e-03 \pm 1.66e-03$ & $1.22e-02 \pm 1.85e-02$ \\
+40 & $3.23e-03 \pm 3.23e-03$ & $5.08e-03 \pm 3.85e-03$ & $1.17e-02 \pm 1.70e-02$ \\
+\hline
+\end{tabular}
+\end{table}
+
+% --- headline (ID / OOD / all) ---
+\begin{table}[h]
+\centering
+\caption{ARZ mark-0 headline: MAE on rho (mean $\pm$ std). ID = cells whose ic\_type and num\_segments both appear in training.}
+\label{tab:arz_mark0_paper_eval_headline}
+\begin{tabular}{lccc}
+\hline
+Subset & model & FNO & godunov \\
+\hline
+ID & -- & -- & -- \\
+OOD & $9.65e-03 \pm 7.47e-03$ & $2.98e-02 \pm 2.59e-02$ & $6.08e-02 \pm 6.03e-02$ \\
+\textbf{all} & $\mathbf{9.65e-03 \pm 7.47e-03}$ & $\mathbf{2.98e-02 \pm 2.59e-02}$ & $\mathbf{6.08e-02 \pm 6.03e-02}$ \\
+\hline
+\end{tabular}
+\end{table}
+
+% --- appendix: per-num_segments (headline channel) ---
+\begin{table}[h]
+\centering
+\caption{ARZ mark-0 appendix: per-num\_segments MAE on rho, pooled across IC types. ID/OOD rows match Table~\ref{tab:arz_mark0_paper_eval_headline}.}
+\label{tab:arz_mark0_paper_eval_appendix_seg}
+\begin{tabular}{lccc}
+\hline
+num\_segments & model & FNO & godunov \\
+\hline
+4 & $5.53e-03 \pm 2.84e-03$ & $1.96e-02 \pm 1.75e-02$ & $6.07e-02 \pm 7.24e-02$ \\
+6 & $6.99e-03 \pm 4.25e-03$ & $2.46e-02 \pm 2.10e-02$ & $6.45e-02 \pm 7.20e-02$ \\
+8 & $8.93e-03 \pm 5.71e-03$ & $2.99e-02 \pm 2.69e-02$ & $6.55e-02 \pm 6.54e-02$ \\
+15 & $1.19e-02 \pm 8.42e-03$ & $3.51e-02 \pm 2.87e-02$ & $5.98e-02 \pm 4.80e-02$ \\
+40 & $1.49e-02 \pm 9.56e-03$ & $4.00e-02 \pm 2.80e-02$ & $5.34e-02 \pm 3.32e-02$ \\
+\hline
+ID & -- & -- & -- \\
+OOD & $9.65e-03 \pm 7.47e-03$ & $2.98e-02 \pm 2.59e-02$ & $6.08e-02 \pm 6.03e-02$ \\
+\textbf{all} & $\mathbf{9.65e-03 \pm 7.47e-03}$ & $\mathbf{2.98e-02 \pm 2.59e-02}$ & $\mathbf{6.08e-02 \pm 6.03e-02}$ \\
+\hline
+\end{tabular}
+\end{table}
+
+% --- appendix: per-channel pooled (rho/w/v) ---
+\begin{table}[h]
+\centering
+\caption{ARZ mark-0 appendix: per-channel MAE (mean $\pm$ std), pooled by ID/OOD and overall.}
+\label{tab:arz_mark0_paper_eval_appendix_channels}
+\begin{tabular}{llccc}
+\hline
+channel & subset & model & FNO & godunov \\
+\hline
+rho & ID & -- & -- & -- \\
+rho & OOD & $9.65e-03 \pm 7.47e-03$ & $2.98e-02 \pm 2.59e-02$ & $6.08e-02 \pm 6.03e-02$ \\
+rho & all & $9.65e-03 \pm 7.47e-03$ & $2.98e-02 \pm 2.59e-02$ & $6.08e-02 \pm 6.03e-02$ \\
+\hline
+w & ID & -- & -- & -- \\
+w & OOD & $6.88e-03 \pm 5.12e-03$ & $2.47e-02 \pm 2.26e-02$ & $5.77e-02 \pm 6.10e-02$ \\
+w & all & $6.88e-03 \pm 5.12e-03$ & $2.47e-02 \pm 2.26e-02$ & $5.77e-02 \pm 6.10e-02$ \\
+\hline
+v & ID & -- & -- & -- \\
+v & OOD & $8.72e-03 \pm 6.38e-03$ & $2.11e-02 \pm 1.74e-02$ & $4.42e-02 \pm 4.33e-02$ \\
+v & all & $8.72e-03 \pm 6.38e-03$ & $2.11e-02 \pm 1.74e-02$ & $4.42e-02 \pm 4.33e-02$ \\
+\hline
+\end{tabular}
+\end{table}

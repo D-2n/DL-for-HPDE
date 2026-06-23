@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
-from hyperbolic_pde.models.pinn import (
+from hyperbolic_pde.models.pinn_methods.pinn import (
     UniversalPINN,
     hyperbolic_residual,
     repeat_cond,

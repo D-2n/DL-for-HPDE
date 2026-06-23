@@ -17,10 +17,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 # ── edit these paths ──────────────────────────────────────────────────────────
-CKPT = REPO / "hyperbolic_pde/arz/runs/hypno_arz_orig/checkpoint_epoch170.pt"
+CKPT = REPO / "hyperbolic_pde/runs/checkpoint_epoch170.pt"
 DATA_HOMOG = REPO / "hyperbolic_pde/arz/data/arz_general_local.npz"
-FNO_WEIGHTS = REPO / "hyperbolic_pde/arz/runs/fno_arz_small/fno_arz.pt"
-CONFIG = REPO / "hyperbolic_pde/configs/hyperbolic_pde_arz_local.yaml"
+FNO_WEIGHTS = REPO / "hyperbolic_pde/arz/runs/fno_arz_local/fno_arz_bigger.pt"
+# HypNO architecture config (saved alongside the epoch-170 checkpoint).
+HYPNO_CONFIG = REPO / "hyperbolic_pde/runs/ckpt_170_cfg.yaml"
+# FNO architecture config: fno_arz_bigger.pt was trained with the `fno_arz`
+# section of this yaml (its save_path matches the weights file).
+FNO_CONFIG = REPO / "hyperbolic_pde/configs/hyperbolic_pde_arz.yaml"
 OUT_DIR = REPO / "hyperbolic_pde/arz/runs/mark0_paper_eval"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -37,15 +41,17 @@ def main():
                     help="Skip FNO even if weights exist.")
     args = ap.parse_args()
 
-    # The HypNO config is auto-located from the run dir's config.yaml (scp'd
-    # alongside the checkpoint). The FNO config comes from the local yaml.
+    # The HypNO config is passed explicitly (ckpt_170_cfg.yaml lives next to the
+    # checkpoint but isn't named config.yaml, so auto-location won't find it).
+    # The FNO config/section match the fno_arz_bigger.pt weights.
     cmd = [
         sys.executable, "-m", "hyperbolic_pde.arz.arz_orig_paper_eval",
         "--ckpt", str(args.ckpt),
+        "--config", str(HYPNO_CONFIG),
         "--model-section", "hypno_arz_orig",
         "--homog-data", str(args.data),
-        "--fno-config", str(CONFIG),
-        "--fno-section", "fno_arz_small",
+        "--fno-config", str(FNO_CONFIG),
+        "--fno-section", "fno_arz",
         "--baselines", args.baselines,
         "--n-samples", str(args.n_samples),
         "--n-plots", str(args.n_plots),

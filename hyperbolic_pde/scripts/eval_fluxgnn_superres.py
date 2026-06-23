@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
-from hyperbolic_pde.models.fluxgnn import FluxGNN1D
+from hyperbolic_pde.models.legacy.fluxgnn import FluxGNN1D
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 
 

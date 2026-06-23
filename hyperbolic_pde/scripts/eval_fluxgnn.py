@@ -17,7 +17,7 @@ sys.path.append(str(ROOT.parent))
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 from hyperbolic_pde.diagnostics import compare_one_step_update_sizes
-from hyperbolic_pde.models.fluxgnn import FluxGNN1D
+from hyperbolic_pde.models.legacy.fluxgnn import FluxGNN1D
 
 
 class FluxGNNDataset(Dataset):

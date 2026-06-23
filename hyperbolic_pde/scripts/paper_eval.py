@@ -31,7 +31,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import solve_conservation_fvm
 from hyperbolic_pde.models.hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 # Solver order. FNO is appended at runtime only if its checkpoint is found, so
 # that runs without a trained FNO still produce HypNO-ST3 / WENO5 / Godunov.

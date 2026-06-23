@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
-from hyperbolic_pde.models.shock_detector import ShockDetector
+from hyperbolic_pde.models.pinn_methods.shock_detector import ShockDetector
 
 
 # --------------------------------------------------------------------------- #

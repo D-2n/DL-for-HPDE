@@ -16,7 +16,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 
 class FNODataset(Dataset):

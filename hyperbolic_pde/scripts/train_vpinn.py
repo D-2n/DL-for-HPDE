@@ -14,13 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
-from hyperbolic_pde.models.pinn import (
+from hyperbolic_pde.models.pinn_methods.pinn import (
     repeat_cond,
     sample_boundary,
     sample_initial,
     sample_uniform,
 )
-from hyperbolic_pde.models.vpinn import VPINN
+from hyperbolic_pde.models.pinn_methods.vpinn import VPINN
 
 
 def _deep_update(base: dict, override: dict) -> dict:

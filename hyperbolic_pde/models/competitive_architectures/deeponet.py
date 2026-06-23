@@ -5,7 +5,7 @@ from typing import Union
 import torch
 import torch.nn as nn
 
-from .pinn import make_activation
+from ..pinn_methods.pinn import make_activation
 
 
 def _build_mlp(

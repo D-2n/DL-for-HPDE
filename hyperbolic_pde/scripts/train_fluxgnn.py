@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
-from hyperbolic_pde.models.fluxgnn import FluxGNN1D
+from hyperbolic_pde.models.legacy.fluxgnn import FluxGNN1D
 
 
 class FluxGNNDataset(Dataset):

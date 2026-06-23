@@ -13,7 +13,7 @@ to ARZ:
     train_hypno_arz.py, so the FNO sees the identical train/val partition of the
     identical dataset section that "arz hypno orig" trained on.
 
-Reuses the generic FNO2d from hyperbolic_pde.models.fno (it is already
+Reuses the generic FNO2d from hyperbolic_pde.models.competitive_architectures.fno (it is already
 parameterised by in_channels / out_channels).
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.utils.runtime import apply_runtime_overrides
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 
 # --------------------------------------------------------------------------- #

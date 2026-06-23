@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
 
 

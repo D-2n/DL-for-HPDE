@@ -15,7 +15,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
-from hyperbolic_pde.models.hypfluxno import HypFluxNO
+from hyperbolic_pde.models.legacy.hypfluxno import HypFluxNO
 
 
 def _deep_update(base: dict, override: dict) -> dict:
