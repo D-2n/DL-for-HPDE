@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import torch
-from hyperbolic_pde.models.hypno_st3_charcone import (
+from hyperbolic_pde.models.legacy.hypno_st3_charcone import (
     HypNO_ST3,
     HypNO_ST3_CharCone,
     _enumerate_hyperbolic_cone_offsets,

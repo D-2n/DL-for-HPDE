@@ -16,7 +16,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset, solve_conservation_fvm
 from hyperbolic_pde.data.lax_hopf import solve_lax_hopf
-from hyperbolic_pde.models.hypno_st3_charcone import HypNO_ST3, precompute_lwr_edge_features_v3
+from hyperbolic_pde.models.legacy.hypno_st3_charcone import HypNO_ST3, precompute_lwr_edge_features_v3
 
 
 def _deep_update(base: dict, override: dict) -> dict:

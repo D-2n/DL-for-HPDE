@@ -25,10 +25,13 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/runs /home/dzdrale/scratch/logs
 
-CONFIG=hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho.yaml
 FINETUNE_CKPT=${1:-/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260616_173152/model_final.pt}
 DATA_SECTION=${2:-arz_mixed_wft_prho}
 MODEL_SECTION=${3:-hypno_arz_orig}
+# Config override (arg 4). The HLL checkpoint was trained at stencil_k_t=5, so the
+# finetune MUST use a config whose hypno_arz_orig still has k_t=5 (the *_big.yaml),
+# else the loaded tensors mismatch the k_t=4 main config. Defaults to _big.yaml.
+CONFIG=${4:-hyperbolic_pde/configs/hyperbolic_pde_arz_cleps_prho_big.yaml}
 
 # On requeue, SLURM re-runs this script with the same args. --auto_resume
 # detects the existing run dir via the job-keyed pointer and resumes from

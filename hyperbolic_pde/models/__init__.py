@@ -5,13 +5,12 @@ from .deeponet import DeepONet
 from .vpinn import VPINN
 from .fluxgnn import FluxGNN1D
 from .hypgno import HypGNO
-from .hypno import HypNO
-#from .hypno_pinn import HypNO_PINN
-from .hypno_st import HypNO_ST
-from .hypno_st2 import HypNO_ST2
 from .hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3
 
-#from .gnn import GridGNN
+# Superseded LWR lineages live under .legacy; re-exported here for back-compat.
+from .legacy.hypno import HypNO
+from .legacy.hypno_st import HypNO_ST
+from .legacy.hypno_st2 import HypNO_ST2
 
 __all__ = [
     "UniversalPINN",
@@ -23,12 +22,9 @@ __all__ = [
     "VPINN",
     "FluxGNN1D",
     "HypGNO",
-    "HypNO",
-    #"HypNO_PINN",
-    "HypNO_ST",
-    "HypNO_ST2",
     "HypNO_ST3",
     "precompute_lwr_edge_features_v3",
-    "HypNO_ST4",
-    #"GridGNN",
+    "HypNO",
+    "HypNO_ST",
+    "HypNO_ST2",
 ]

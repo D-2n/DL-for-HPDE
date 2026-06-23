@@ -1,4 +1,3 @@
-"""Evaluate HypNO-ST v2 on test set."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +15,7 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
-from hyperbolic_pde.models.hypno_st2 import HypNO_ST2
+from hyperbolic_pde.models.legacy.hypno import HypNO
 
 
 def _deep_update(base: dict, override: dict) -> dict:
@@ -54,37 +53,19 @@ def total_variation_map(u: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate HypNO-ST2 on test set.")
+    parser = argparse.ArgumentParser(description="Evaluate HypNO on test set.")
     parser.add_argument(
-        "--config", type=str,
+        "--config",
+        type=str,
         default=str(resolve_config_path(ROOT / "configs")),
-    )
-    parser.add_argument(
-        "--run-dir", type=str, default=None,
-        help="Run directory to load model from and save plots to. "
-             "If not given, reads from latest_run.txt.",
+        help="Path to YAML config.",
     )
     args = parser.parse_args()
 
-    if args.run_dir:
-        run_dir = Path(args.run_dir)
-    else:
-        latest_path = Path("hyperbolic_pde/runs/hypno_st2/latest_run.txt")
-        if latest_path.exists():
-            run_dir = Path(latest_path.read_text(encoding="utf-8").strip())
-        else:
-            run_dir = None
-
-    if run_dir and (run_dir / "config.yaml").exists():
-        with (run_dir / "config.yaml").open("r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        print(f"[HypNO-ST2] Using config from {run_dir / 'config.yaml'}")
-    else:
-        cfg = load_config(Path(args.config))
+    cfg = load_config(Path(args.config))
     cfg = apply_runtime_overrides(cfg)
-
     data_cfg = cfg["data"]
-    model_cfg = cfg.get("hypno_st2", cfg.get("hypno_st"))
+    model_cfg = cfg["hypno"]
 
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     torch.manual_seed(int(cfg.get("seed", 42)))
@@ -99,90 +80,57 @@ def main() -> None:
     radius_x = float(_rx) if _rx is not None else None
     radius_t = float(_rt) if _rt is not None else None
 
-    model = HypNO_ST2(
+    model = HypNO(
         stencil_k_x=int(model_cfg.get("stencil_k_x", 3)),
         stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
         d_latent=int(model_cfg.get("d_latent", 128)),
         d_hidden=int(model_cfg.get("d_hidden", 128)),
+        d_time=int(model_cfg.get("d_time", 32)),
         n_layers=int(model_cfg.get("n_layers", 6)),
         activation=str(model_cfg.get("activation", "gelu")),
-        shock_delta=float(model_cfg.get("shock_delta", 0.01)),
-        shock_threshold=float(model_cfg.get("shock_threshold", 0.1)),
-        causal_temporal=bool(model_cfg.get("causal_temporal", True)),
         radius_x=radius_x,
         radius_t=radius_t,
-        shock_mode=str(model_cfg.get("shock_mode", "pinn")),
-        weno_eps=float(model_cfg.get("weno_eps", 1e-6)),
-        weno_p=float(model_cfg.get("weno_p", 2.0)),
-        unified_mp=bool(model_cfg.get("unified_mp", False)),
-        readout=str(model_cfg.get("readout", "gelu")),
-        encoder_scaling=str(model_cfg.get("encoder_scaling", "gate_net")),
-        encoder_type=str(model_cfg.get("encoder_type", "gnn")),
-        skip=bool(model_cfg.get("skip", True)),
-        use_char_cone=bool(model_cfg.get("use_char_cone", False)),
-        detector_path=model_cfg.get("detector_path", None),
-        detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)
-
-    if run_dir and (run_dir / "model_final.pt").exists():
-        weights_path = run_dir / "model_final.pt"
-    else:
-        weights_path = Path(model_cfg["save_path"])
-    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.load_state_dict(torch.load(Path(model_cfg["save_path"]), map_location=device))
     model.eval()
-    print(f"[HypNO-ST2] Loaded weights from {weights_path}")
 
     x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
     t_grid = torch.tensor(dataset.t, dtype=torch.float32, device=device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[HypNO-ST2] {n_params:,} trainable parameters")
+    print(f"[HypNO] {n_params:,} trainable parameters")
 
-    if run_dir:
-        plot_dir = run_dir / "plots"
-    else:
-        plot_dir = Path(model_cfg.get("plot_dir", "hyperbolic_pde/runs/plots/hypno_st2"))
+    plot_dir = Path(model_cfg.get("plot_dir", "hyperbolic_pde/runs/plots/hypno"))
     plot_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[HypNO-ST2] Saving plots to {plot_dir}")
 
+    nt = len(dataset.t)
+
+    # evaluate: predict full trajectory in one shot
     u0_test = torch.tensor(dataset.u0[test_idx], dtype=torch.float32, device=device)
     u_test = torch.tensor(dataset.u[test_idx], dtype=torch.float32, device=device)
     n_test = u0_test.shape[0]
 
+    # process in batches to avoid OOM
     batch_size = int(model_cfg.get("batch_size", 8))
     pred_chunks = []
-    shock_chunks = []
     with torch.no_grad():
         for i in range(0, n_test, batch_size):
             u0_batch = u0_test[i : i + batch_size]
-            u_pred, _, shock_ind, _ = model(u0_batch, x_grid, t_grid)
-            pred_chunks.append(u_pred)
-            shock_chunks.append(shock_ind)
-    pred_full = torch.cat(pred_chunks, dim=0)
-    shock_full = torch.cat(shock_chunks, dim=0)
+            pred_chunks.append(model(u0_batch, x_grid, t_grid))
+    pred_full = torch.cat(pred_chunks, dim=0)                            # [N_test, nt, nx]
 
+    # metrics
     mse = (pred_full - u_test).pow(2).mean().item()
     mae = (pred_full - u_test).abs().mean().item()
     rel_l2 = (
         (pred_full - u_test).pow(2).sum() / u_test.pow(2).sum().clamp(min=1e-12)
     ).sqrt().item()
 
-    print(f"[HypNO-ST2] Test MSE:  {mse:.6e}")
-    print(f"[HypNO-ST2] Test MAE:  {mae:.6e}")
-    print(f"[HypNO-ST2] Test rL2:  {rel_l2:.6e}")
+    print(f"[HypNO] Test MSE:  {mse:.6e}")
+    print(f"[HypNO] Test MAE:  {mae:.6e}")
+    print(f"[HypNO] Test rL2:  {rel_l2:.6e}")
 
-    u0_exp = u0_test.unsqueeze(1).expand_as(pred_full)
-    correction = pred_full - u0_exp
-    error = (pred_full - u_test).abs()
-    mask_pos = correction >= 0
-    mask_neg = correction < 0
-    if mask_pos.any() and mask_neg.any():
-        mae_pos = error[mask_pos].mean().item()
-        mae_neg = error[mask_neg].mean().item()
-        print(f"[HypNO-ST2] MAE (correction >= 0): {mae_pos:.6e}")
-        print(f"[HypNO-ST2] MAE (correction <  0): {mae_neg:.6e}")
-        print(f"[HypNO-ST2] Ratio neg/pos:         {mae_neg / mae_pos:.3f}")
-
+    # per-time-step error
     per_t_mse = (pred_full - u_test).pow(2).mean(dim=(0, 2))
     per_t_mae = (pred_full - u_test).abs().mean(dim=(0, 2))
 
@@ -199,9 +147,10 @@ def main() -> None:
     ax_err[1].set_title("MAE vs time")
     ax_err[1].set_yscale("log")
 
-    fig_err.savefig(plot_dir / "hypno_st2_error_vs_time.png", dpi=150)
+    fig_err.savefig(plot_dir / "hypno_error_vs_time.png", dpi=150)
     plt.close(fig_err)
 
+    # sample plots (4-panel layout)
     max_plots = int(model_cfg.get("eval_plots", 3))
     plots_made = 0
     for b in range(n_test):
@@ -211,17 +160,16 @@ def main() -> None:
         truth_np = u_test[b].cpu().numpy()
         err_np = np.abs(pred_np - truth_np)
         tv_np = total_variation_map(pred_np)
-        shock_np = shock_full[b].cpu().numpy()
         vmin = float(np.min(truth_np))
         vmax = float(np.max(truth_np))
 
-        fig, axes = plt.subplots(1, 5, figsize=(18, 4), constrained_layout=True)
+        fig, axes = plt.subplots(1, 4, figsize=(14, 4), constrained_layout=True)
         annotate_cfl(fig, cfl_metrics)
 
         im0 = axes[0].pcolormesh(
             dataset.x, dataset.t, pred_np, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
         )
-        axes[0].set_title("HypNO-ST2 prediction")
+        axes[0].set_title("HypNO prediction")
         axes[0].set_xlabel("x")
         axes[0].set_ylabel("t")
         fig.colorbar(im0, ax=axes[0])
@@ -246,28 +194,12 @@ def main() -> None:
         axes[3].set_ylabel("t")
         fig.colorbar(im3, ax=axes[3])
 
-        im4 = axes[4].pcolormesh(dataset.x, dataset.t, shock_np, shading="auto", cmap="hot")
-        axes[4].set_title("Shock indicator")
-        axes[4].set_xlabel("x")
-        axes[4].set_ylabel("t")
-        fig.colorbar(im4, ax=axes[4])
-
-        out_path = plot_dir / f"hypno_st2_sample_{plots_made}.png"
+        out_path = plot_dir / f"hypno_sample_{plots_made}.png"
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
         plots_made += 1
 
-    metrics_path = plot_dir.parent / "metrics.txt" if run_dir else plot_dir / "metrics.txt"
-    with metrics_path.open("w", encoding="utf-8") as f:
-        f.write(f"Test MSE:  {mse:.6e}\n")
-        f.write(f"Test MAE:  {mae:.6e}\n")
-        f.write(f"Test rL2:  {rel_l2:.6e}\n")
-        f.write(f"Weights:   {weights_path}\n")
-        f.write(f"N test:    {n_test}\n")
-        f.write(f"N params:  {n_params:,}\n")
-
-    print(f"[HypNO-ST2] Saved {plots_made} plots + error curve to {plot_dir}")
-    print(f"[HypNO-ST2] Metrics saved to {metrics_path}")
+    print(f"[HypNO] Saved {plots_made} plots + error curve to {plot_dir}")
 
 
 if __name__ == "__main__":

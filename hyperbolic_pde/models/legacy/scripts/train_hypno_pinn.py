@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
-from hyperbolic_pde.models.hypno import HypNO
+from hyperbolic_pde.models.legacy.hypno_pinn import HypNO_PINN
 
 
 # --------------------------------------------------------------------------- #
@@ -28,7 +31,7 @@ class HypNODataset(Dataset):
 
     def __init__(self, u0: np.ndarray, u: np.ndarray) -> None:
         self.u0 = torch.tensor(u0, dtype=torch.float32)
-        self.u = torch.tensor(u, dtype=torch.float32)                   # [N, nt, nx]
+        self.u = torch.tensor(u, dtype=torch.float32)
 
     def __len__(self) -> int:
         return self.u0.shape[0]
@@ -76,18 +79,44 @@ def split_train_val(train_idx: np.ndarray, val_fraction: float, seed: int) -> tu
     return perm[n_val:], perm[:n_val]
 
 
+def create_run_dir(base: str = "hyperbolic_pde/runs/hypno_pinn") -> Path:
+    """Create a timestamped run directory."""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(base) / f"run_{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def save_run_metadata(
+    run_dir: Path,
+    cfg: dict,
+    model: torch.nn.Module,
+    config_path: str,
+) -> None:
+    """Save config copy and model architecture summary to run directory."""
+    # save full config
+    with (run_dir / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+    # save model architecture
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    with (run_dir / "architecture.txt").open("w", encoding="utf-8") as f:
+        f.write(f"Model: HypNO-PINN\n")
+        f.write(f"Trainable parameters: {n_params:,}\n")
+        f.write(f"Config source: {config_path}\n")
+        f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+        f.write(f"\n{'='*60}\n\n")
+        f.write(str(model))
+        f.write(f"\n\n{'='*60}\n")
+        f.write(f"Parameter breakdown:\n")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                f.write(f"  {name}: {list(param.shape)} = {param.numel():,}\n")
+
+
 def make_optimizer(params, cfg: dict) -> tuple[torch.optim.Optimizer, bool]:
     name = str(cfg.get("optimizer", "adamw")).lower()
     lr = float(cfg.get("lr", 1.0e-3))
-    if name == "lbfgs":
-        opt = torch.optim.LBFGS(
-            params,
-            lr=lr,
-            max_iter=int(cfg.get("lbfgs_max_iter", 1)),
-            history_size=int(cfg.get("lbfgs_history_size", 100)),
-            line_search_fn=cfg.get("lbfgs_line_search"),
-        )
-        return opt, True
     if name == "adamw":
         return torch.optim.AdamW(params, lr=lr, weight_decay=float(cfg.get("weight_decay", 0.0))), False
     return torch.optim.Adam(params, lr=lr, weight_decay=float(cfg.get("weight_decay", 0.0))), False
@@ -101,70 +130,125 @@ def total_variation(u: torch.Tensor) -> torch.Tensor:
     return torch.abs(u[:, :, 1:] - u[:, :, :-1]).sum(dim=2)
 
 
-def hypno_loss(
+def hypno_pinn_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
+    u_coarse: torch.Tensor,
     lambda_state: float = 1.0,
     lambda_conservation: float = 1.0,
     lambda_tv: float = 0.0,
+    lambda_pinn: float = 0.1,
     shock_weighted: bool = False,
     shock_alpha: float = 5.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Combined loss over full trajectory: L1 state + mass conservation + TV bound."""
-    # L1 state loss (robust to discontinuities)
+    """Combined loss: L1 state + conservation + TV bound + PINN auxiliary."""
+    # L1 state loss
     if shock_weighted:
-        # weight map: higher weight near shocks (large |du/dx| in ground truth)
-        du_dx = torch.abs(target[:, :, 1:] - target[:, :, :-1])          # [B, nt, nx-1]
-        du_dx = torch.nn.functional.pad(du_dx, (0, 1), mode='replicate') # [B, nt, nx]
+        du_dx = torch.abs(target[:, :, 1:] - target[:, :, :-1])
+        du_dx = torch.nn.functional.pad(du_dx, (0, 1), mode='replicate')
         w = 1.0 + (shock_alpha - 1.0) * du_dx / (du_dx.amax(dim=(1, 2), keepdim=True) + 1e-8)
         loss_state = (w * (pred - target).abs()).mean()
     else:
         loss_state = (pred - target).abs().mean()
 
-    # mass conservation: penalise deviation at each time step (normalised by nx)
+    # mass conservation
     nx = pred.shape[2]
-    mass_pred = pred.sum(dim=2)                                          # [B, nt]
+    mass_pred = pred.sum(dim=2)
     mass_target = target.sum(dim=2)
     loss_mass = (mass_pred - mass_target).abs().mean() / nx
 
     # TV bound
-    tv_pred = total_variation(pred)                                      # [B, nt]
+    tv_pred = total_variation(pred)
     tv_target = total_variation(target)
     loss_tv = torch.clamp(tv_pred - tv_target, min=0.0).mean()
 
-    loss = lambda_state * loss_state + lambda_conservation * loss_mass + lambda_tv * loss_tv
+    # PINN auxiliary: train the coarse decoder to be a reasonable approximation
+    loss_pinn = (u_coarse - target).abs().mean()
+
+    loss = (
+        lambda_state * loss_state
+        + lambda_conservation * loss_mass
+        + lambda_tv * loss_tv
+        + lambda_pinn * loss_pinn
+    )
 
     info = {
         "state": loss_state.item(),
         "mass": loss_mass.item(),
         "tv": loss_tv.item(),
+        "pinn": loss_pinn.item(),
         "total": loss.item(),
     }
     return loss, info
 
 
 # --------------------------------------------------------------------------- #
+# logging + GPU monitoring
+# --------------------------------------------------------------------------- #
+def setup_logging(run_dir: Path) -> logging.Logger:
+    """File + console logger that survives crashes."""
+    log = logging.getLogger("hypno_pinn")
+    log.setLevel(logging.DEBUG)
+    log.handlers.clear()
+
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    fh = logging.FileHandler(run_dir / "train.log", mode="a", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    log.addHandler(ch)
+
+    return log
+
+
+def gpu_status() -> str:
+    """Return GPU temp, memory, utilization as a string."""
+    if not torch.cuda.is_available():
+        return "no-gpu"
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=temperature.gpu,memory.used,memory.total,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            text=True, timeout=5,
+        ).strip()
+        temp, mem_used, mem_total, util = out.split(", ")
+        return f"temp={temp}C  mem={mem_used}/{mem_total}MB  util={util}%"
+    except Exception:
+        return "nvidia-smi-failed"
+
+
+# --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train HypNO on hyperbolic PDE dataset.")
+    parser = argparse.ArgumentParser(description="Train HypNO-PINN on hyperbolic PDE dataset.")
     parser.add_argument(
-        "--config",
-        type=str,
+        "--config", type=str,
         default=str(resolve_config_path(ROOT / "configs")),
-        help="Path to YAML config.",
     )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
     cfg = apply_runtime_overrides(cfg)
     data_cfg = cfg["data"]
-    model_cfg = cfg["hypno"]
+    model_cfg = cfg["hypno_pinn"]
 
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
-    print(f"Training HypNO on device: {device}")
     torch.manual_seed(int(cfg.get("seed", 42)))
     np.random.seed(int(cfg.get("seed", 42)))
+
+    # create organized run directory
+    run_dir = create_run_dir()
+    log = setup_logging(run_dir)
+    log.info(f"Run directory: {run_dir}")
+    log.info(f"Device: {device}")
+    log.info(f"GPU: {gpu_status()}")
 
     dataset = load_dataset(Path(data_cfg["path"]))
     train_idx, _ = split_indices(dataset.u.shape[0], float(data_cfg["train_fraction"]), int(cfg.get("seed", 42)))
@@ -178,13 +262,12 @@ def main() -> None:
         val_data = HypNODataset(dataset.u0[val_idx], dataset.u[val_idx])
         val_loader = DataLoader(val_data, batch_size=int(model_cfg["batch_size"]), shuffle=False)
 
-    # radius overrides stencil_k when set — fixed physical distance instead of k-hop
     _rx = model_cfg.get("radius_x", None)
     _rt = model_cfg.get("radius_t", None)
     radius_x = float(_rx) if _rx is not None else None
     radius_t = float(_rt) if _rt is not None else None
 
-    model = HypNO(
+    model = HypNO_PINN(
         stencil_k_x=int(model_cfg.get("stencil_k_x", 3)),
         stencil_k_t=int(model_cfg.get("stencil_k_t", 2)),
         d_latent=int(model_cfg.get("d_latent", 128)),
@@ -192,40 +275,53 @@ def main() -> None:
         d_time=int(model_cfg.get("d_time", 32)),
         n_layers=int(model_cfg.get("n_layers", 6)),
         activation=str(model_cfg.get("activation", "gelu")),
+        shock_delta=float(model_cfg.get("shock_delta", 0.01)),
+        shock_threshold=float(model_cfg.get("shock_threshold", 0.1)),
+        causal_temporal=bool(model_cfg.get("causal_temporal", True)),
         radius_x=radius_x,
         radius_t=radius_t,
+        shock_mode=str(model_cfg.get("shock_mode", "pinn")),
+        weno_eps=float(model_cfg.get("weno_eps", 1e-6)),
+        weno_p=float(model_cfg.get("weno_p", 2.0)),
+        unified_mp=bool(model_cfg.get("unified_mp", False)),
+        readout=str(model_cfg.get("readout", "gelu")),
+        detector_path=model_cfg.get("detector_path", None),
+        detector_cfg=cfg.get("shock_detector", {}),
     ).to(device)
 
-    x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)  # [nx]
-    t_grid = torch.tensor(dataset.t, dtype=torch.float32, device=device)  # [nt]
+    x_grid = torch.tensor(dataset.x, dtype=torch.float32, device=device)
+    t_grid = torch.tensor(dataset.t, dtype=torch.float32, device=device)
 
-    # Resume from checkpoint if it exists
+    # resume from checkpoint if it exists
     resume_path = model_cfg.get("resume_from", None)
     if resume_path and Path(resume_path).exists():
         ckpt = torch.load(resume_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt)
-        print(f"[HypNO] Resumed weights from {resume_path}")
+        log.info(f"Resumed weights from {resume_path}")
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[HypNO] {n_params:,} trainable parameters")
+    log.info(f"{n_params:,} trainable parameters")
+
+    # save run metadata
+    save_run_metadata(run_dir, cfg, model, args.config)
 
     epochs = int(model_cfg["epochs"])
-    opt, use_lbfgs = make_optimizer(model.parameters(), model_cfg)
+    opt, _ = make_optimizer(model.parameters(), model_cfg)
     scheduler = None
     total_steps = epochs * max(1, len(loader))
     schedule = model_cfg.get("lr_schedule")
-    if not use_lbfgs:
-        if schedule == "cosine":
-            lr_min = float(model_cfg.get("lr_min", 1.0e-5))
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
-        elif schedule == "step":
-            lr_step = int(model_cfg.get("lr_step", 1000))
-            lr_gamma = float(model_cfg.get("lr_gamma", 0.5))
-            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step, gamma=lr_gamma)
+    if schedule == "cosine":
+        lr_min = float(model_cfg.get("lr_min", 1.0e-5))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=lr_min)
+    elif schedule == "step":
+        lr_step = int(model_cfg.get("lr_step", 1000))
+        lr_gamma = float(model_cfg.get("lr_gamma", 0.5))
+        scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=lr_step, gamma=lr_gamma)
 
     lambda_state = float(model_cfg.get("lambda_state", 1.0))
     lambda_conservation = float(model_cfg.get("lambda_conservation", 1.0))
     lambda_tv = float(model_cfg.get("lambda_tv", 0.0))
+    lambda_pinn = float(model_cfg.get("lambda_pinn", 0.1))
     shock_weighted = bool(model_cfg.get("shock_weighted", False))
     shock_alpha = float(model_cfg.get("shock_alpha", 5.0))
 
@@ -245,21 +341,18 @@ def main() -> None:
             u0 = u0.to(device)
             u_full = u_full.to(device)
 
-            def closure() -> torch.Tensor:
-                opt.zero_grad(set_to_none=True)
-                pred = model(u0, x_grid, t_grid)                         # [B, nt, nx]
-                loss, _ = hypno_loss(pred, u_full, lambda_state, lambda_conservation, lambda_tv, shock_weighted, shock_alpha)
-                loss.backward()
-                grad_clip = model_cfg.get("grad_clip")
-                if grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
-                return loss
-
-            if use_lbfgs:
-                loss = opt.step(closure)
-            else:
-                loss = closure()
-                opt.step()
+            opt.zero_grad(set_to_none=True)
+            pred, u_coarse, _ = model(u0, x_grid, t_grid)
+            loss, _ = hypno_pinn_loss(
+                pred, u_full, u_coarse,
+                lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
+                shock_weighted, shock_alpha,
+            )
+            loss.backward()
+            grad_clip = model_cfg.get("grad_clip")
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip))
+            opt.step()
             if scheduler is not None:
                 scheduler.step()
 
@@ -269,13 +362,24 @@ def main() -> None:
             if step % 50 == 0 or step == 1:
                 lr_now = opt.param_groups[0]["lr"]
                 with torch.no_grad():
-                    pred = model(u0, x_grid, t_grid)
-                    _, info = hypno_loss(pred, u_full, lambda_state, lambda_conservation, lambda_tv, shock_weighted, shock_alpha)
-                print(
-                    f"[HypNO] epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
+                    pred, u_coarse, _ = model(u0, x_grid, t_grid)
+                    _, info = hypno_pinn_loss(
+                        pred, u_full, u_coarse,
+                        lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
+                        shock_weighted, shock_alpha,
+                    )
+                gpu = gpu_status() if step % 200 == 0 or step == 1 else ""
+                msg = (
+                    f"epoch {epoch:3d}/{epochs} | step {step:5d}/{total_steps} | "
                     f"L={info['total']:.3e}  state={info['state']:.3e}  mass={info['mass']:.3e}  "
-                    f"tv={info['tv']:.3e} | lr={lr_now:.2e}"
+                    f"tv={info['tv']:.3e}  pinn={info['pinn']:.3e} | lr={lr_now:.2e}"
                 )
+                if gpu:
+                    msg += f" | {gpu}"
+                log.info(msg)
+                # flush to disk immediately so we see last line before crash
+                for h in log.handlers:
+                    h.flush()
 
         train_losses.append(epoch_loss_sum / max(1, epoch_count))
 
@@ -288,35 +392,39 @@ def main() -> None:
                 for v_u0, v_u in val_loader:
                     v_u0 = v_u0.to(device)
                     v_u = v_u.to(device)
-                    v_pred = model(v_u0, x_grid, t_grid)
-                    v_l, _ = hypno_loss(v_pred, v_u, lambda_state, lambda_conservation, lambda_tv, shock_weighted, shock_alpha)
+                    v_pred, v_coarse, _ = model(v_u0, x_grid, t_grid)
+                    v_l, _ = hypno_pinn_loss(
+                        v_pred, v_u, v_coarse,
+                        lambda_state, lambda_conservation, lambda_tv, lambda_pinn,
+                        shock_weighted, shock_alpha,
+                    )
                     val_loss += v_l.item() * v_u0.size(0)
                     val_count += v_u0.size(0)
             val_avg = val_loss / max(1, val_count)
             val_losses.append(val_avg)
-            print(f"[HypNO] epoch {epoch:3d}/{epochs} | val_loss={val_avg:.3e}")
+            log.info(f"epoch {epoch:3d}/{epochs} | val_loss={val_avg:.3e} | {gpu_status()}")
+            for h in log.handlers:
+                h.flush()
             model.train()
         else:
             val_losses.append(float("nan"))
 
         if checkpoint_every > 0 and epoch % checkpoint_every == 0:
-            save_path = Path(model_cfg["save_path"])
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            ckpt_path = save_path.with_name(f"{save_path.stem}_epoch{epoch}{save_path.suffix}")
+            ckpt_path = run_dir / f"checkpoint_epoch{epoch}.pt"
             torch.save(model.state_dict(), ckpt_path)
-            print(f"[HypNO] Saved checkpoint to {ckpt_path}")
+            log.info(f"Saved checkpoint to {ckpt_path}")
 
+    # save final model to run dir and to the configured save_path
+    final_path = run_dir / "model_final.pt"
+    torch.save(model.state_dict(), final_path)
     save_path = Path(model_cfg["save_path"])
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), save_path)
     elapsed = time.perf_counter() - start_time
-    print(f"Saved HypNO checkpoint to {save_path}")
-    print(f"[HypNO] Training time: {elapsed:.2f}s")
+    log.info(f"Saved final model to {final_path}")
+    log.info(f"Training time: {elapsed:.2f}s")
 
     # --- plot train/val loss curves ---
-    plot_dir = Path(model_cfg.get("plot_dir", "hyperbolic_pde/runs/plots/hypno"))
-    plot_dir.mkdir(parents=True, exist_ok=True)
-
     fig, ax = plt.subplots(figsize=(8, 5))
     ep_range = list(range(1, len(train_losses) + 1))
     ax.plot(ep_range, train_losses, label="Train loss")
@@ -324,14 +432,20 @@ def main() -> None:
         ax.plot(ep_range, val_losses, label="Val loss")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
-    ax.set_title("HypNO training curves")
+    ax.set_title("HypNO-PINN training curves")
     ax.set_yscale("log")
     ax.legend()
     ax.grid(True, alpha=0.3)
-    curve_path = plot_dir / "hypno_loss_curves.png"
+    curve_path = run_dir / "loss_curves.png"
     fig.savefig(curve_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"[HypNO] Saved loss curves to {curve_path}")
+    log.info(f"Saved loss curves to {curve_path}")
+
+    # write run_dir path so eval script can find it
+    latest_path = Path("hyperbolic_pde/runs/hypno_pinn/latest_run.txt")
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_path.write_text(str(run_dir), encoding="utf-8")
+    log.info(f"Run complete: {run_dir}")
 
 
 if __name__ == "__main__":
