@@ -32,7 +32,7 @@ from hyperbolic_pde.arz import riemann_arz as Rie
 from hyperbolic_pde.data.fvm import (
     _stratified_pair,
     piecewise_constant_stratified_ic,
-    piecewise_sine_ic,
+    sine_staircase_ic,
     riemann_stratified_ic,
 )
 
@@ -44,10 +44,15 @@ _V_MIN_DEFAULT = 0.0
 _V_MAX_DEFAULT = 1.0
 
 
+# NOTE: "piecewise_sine" maps to sine_staircase_ic (a PIECEWISE-CONSTANT
+# staircase quantisation of a single global sine), NOT the smooth per-segment
+# piecewise_sine_ic. The staircase has finitely many discontinuities, so WFT
+# can evolve it to MACHINE PRECISION -- the smooth variant would force an HLL
+# fallback, which is forbidden in a WFT-exact dataset.
 IC_FUNCS = {
     "riemann_stratified": riemann_stratified_ic,
     "piecewise_constant_stratified": piecewise_constant_stratified_ic,
-    "piecewise_sine": piecewise_sine_ic,
+    "piecewise_sine": sine_staircase_ic,
 }
 
 
@@ -310,12 +315,13 @@ def _solve_one(
     fv_solver controls which scheme is used for non-exact-Riemann samples:
       "hll"   -- Strang-split HLL reference solver (default, legacy behaviour)
       "weno5" -- component-wise WENO5 + SSP-RK3 + Strang-split exact relaxation
-      "wft"   -- wave-front tracking, MACHINE-PRECISION GT for piecewise-constant
-                 ICs (riemann_stratified, piecewise_constant_stratified). It is
-                 homogeneous (tau=inf) and exact on shocks/contacts; the ONLY
-                 error is the rarefaction-fan resolution. piecewise_sine is NOT
-                 piecewise-constant -> it falls back to the HLL FV reference (WFT
-                 cannot represent a smooth profile as finitely many fronts).
+      "wft"   -- wave-front tracking, MACHINE-PRECISION GT for ALL piecewise-
+                 constant IC families (riemann_stratified,
+                 piecewise_constant_stratified, and piecewise_sine -- which maps
+                 to the sine STAIRCASE, sine_staircase_ic). It is homogeneous
+                 (tau=inf) and exact on shocks/contacts; the ONLY error is the
+                 rarefaction-fan resolution. There is NO HLL fallback: a smooth
+                 IC reaching this path raises (it is not WFT-representable).
 
     When use_exact_riemann=True and ic_name=="riemann_stratified", the exact
     analytic solver is used regardless of fv_solver.
@@ -342,13 +348,9 @@ def _solve_one(
     if fv_solver == "wft":
         # Wave-front tracking: machine-precision GT for piecewise-constant ICs.
         # WFT is homogeneous (tau=inf); only valid when there is no relaxation
-        # source. piecewise_sine is smooth -> not representable as fronts -> HLL.
-        if ic_name == "piecewise_sine":
-            _, _, rho_hist, w_hist = Ref.solve_arz_reference(
-                rho0, w0, x_min, x_max, t_max, nt_out=nt,
-                tau=tau, cfl=cfl, boundary=boundary, refine=refine,
-            )
-            return rho_hist, w_hist
+        # source. EVERY IC family in a WFT dataset MUST be piecewise-constant so
+        # there is NO HLL fallback -- "piecewise_sine" therefore maps to the
+        # sine STAIRCASE (sine_staircase_ic), not the smooth per-segment sine.
         if np.isfinite(tau):
             raise ValueError(
                 "fv_solver='wft' is homogeneous (tau=inf) only; got finite "
@@ -358,6 +360,19 @@ def _solve_one(
         x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
         t = np.linspace(0.0, t_max, nt, dtype=np.float64)
         states, boundaries = _segments_from_cells(rho0, w0, x_min, x_max)
+        # Guard against a SMOOTH IC slipping into the WFT path: a true staircase
+        # has O(num_segments) interfaces, a smooth profile has ~nx (one per cell).
+        # If nearly every cell is an interface the IC is not piecewise-constant
+        # and WFT would (a) explode in front count and (b) not be exact -> refuse
+        # rather than silently degrade. (A WFT dataset must be HLL-free.)
+        if len(boundaries) > nx // 2:
+            raise ValueError(
+                f"WFT path received a near-smooth IC ('{ic_name}'): "
+                f"{len(boundaries)} interfaces over {nx} cells. WFT requires a "
+                f"piecewise-constant IC. Check IC_FUNCS mapping (e.g. "
+                f"piecewise_sine must map to sine_staircase_ic, not the smooth "
+                f"piecewise_sine_ic)."
+            )
         # Fan resolution. Default (wft_rare_delta<=0) scales with the GRID:
         # sub-cell fans are invisible on the nx-cell output and only inflate the
         # front count (each interface spawns ~|drho|/rare_delta fronts). A busy
@@ -761,8 +776,9 @@ if __name__ == "__main__":
                              "'hll' (default, Strang-split HLL), "
                              "'weno5' (WENO5+SSP-RK3+Strang-split relaxation), or "
                              "'wft' (wave-front tracking, MACHINE-PRECISION GT for "
-                             "piecewise-constant ICs; homogeneous tau=inf only; "
-                             "piecewise_sine falls back to HLL). "
+                             "ALL piecewise-constant IC families incl. piecewise_sine "
+                             "= sine staircase; homogeneous tau=inf only; NO HLL "
+                             "fallback -- a smooth IC raises). "
                              "Riemann ICs with --use-exact-riemann still use the "
                              "exact solver regardless of this flag.")
     parser.add_argument("--wft-rare-delta", type=float, default=0.0,
