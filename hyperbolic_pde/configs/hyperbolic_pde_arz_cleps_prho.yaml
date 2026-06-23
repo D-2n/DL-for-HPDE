@@ -622,6 +622,19 @@ arz_mixed_wft_prho:
   train_fraction: 0.8
   val_fraction: 0.1
 
+# CLEAN, fully WFT-exact mixed set (NO HLL). piecewise_sine is now a sine
+# STAIRCASE solved by WFT, not the smooth sine that fell back to HLL. This is the
+# drop-in replacement for arz_mixed_wft_prho (which had a HLL-diffused sine third).
+# 6000 = 2000 x 3 families. Generate with slurm/arz_gen_mixed_wft_clean.sh.
+arz_mixed_wft_clean_prho:
+  path: /home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho_clean.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho_clean.npz
+  pressure_form: rho
+  num_samples: 6000
+  tau: .inf
+  train_fraction: 0.8
+  val_fraction: 0.1
+
 # wft homog (5400) + exact Riemann (1000) = 6400 samples.
 # Generate with: sbatch slurm/arz_gen_riemann_1k.sh && sbatch slurm/arz_merge_wft_riemann.sh
 arz_mixed_wft_riemann_prho:
