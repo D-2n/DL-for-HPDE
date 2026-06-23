@@ -41,16 +41,21 @@ from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import riemann_arz as Rie
 
 
-def _recover_riemann_ic(rho0, w0, x_min, x_max):
-    """Replicate datagen's single-interface detection (datagen_arz.py)."""
-    nx = rho0.size
-    dx = (x_max - x_min) / nx
-    x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
+def _recover_riemann_ic(rho0, w0, x_grid):
+    """Single-interface detection on the dataset's OWN x grid (source of truth).
+
+    x_grid is the stored cell-midpoint array; the interface x0 is the shared edge
+    between the two cells straddling the largest jump = midpoint of x[j], x[j+1].
+    Using the stored x (not a re-derived linspace) avoids a half-cell drift in x0
+    that otherwise misaligns the analytic waves from the WFT data (error grows
+    with t as the misaligned waves travel).
+    """
+    x_grid = np.asarray(x_grid, dtype=np.float64)
     d = np.abs(np.diff(rho0)) + np.abs(np.diff(w0))
     j = int(np.argmax(d))
-    x0 = 0.5 * (x_mid[j] + x_mid[j + 1])
+    x0 = 0.5 * (x_grid[j] + x_grid[j + 1])
     return (float(rho0[j]), float(w0[j]),
-            float(rho0[j + 1]), float(w0[j + 1]), x0, x_mid)
+            float(rho0[j + 1]), float(w0[j + 1]), x0, x_grid)
 
 
 def _classify_1wave(rho_L, w_L, rho_R, w_R):
@@ -87,7 +92,6 @@ def check(data_path: Path, pressure_form: str, n_samples: int, out_dir: Path,
     nt, nx = d["rho"].shape[1], d["rho"].shape[2]
     x = d["x"] if "x" in d else np.linspace(-1, 1, nx)
     t = d["t"] if "t" in d else np.linspace(0, 1, nt)
-    x_min, x_max = float(x[0] - 0.5 * (x[1] - x[0])), float(x[-1] + 0.5 * (x[1] - x[0]))
     ic_types = d["ic_type"] if "ic_type" in d else np.array(["riemann_stratified"] * N)
 
     riemann_idx = np.where(ic_types == "riemann_stratified")[0]
@@ -99,7 +103,6 @@ def check(data_path: Path, pressure_form: str, n_samples: int, out_dir: Path,
     chosen = sorted(chosen)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    dx = (x_max - x_min) / nx
     results = []   # (idx, wave_type, max_abs_err, n_bad_shock_cells)
 
     for idx in chosen:
@@ -108,9 +111,9 @@ def check(data_path: Path, pressure_form: str, n_samples: int, out_dir: Path,
         rho0 = d["rho0"][idx].astype(np.float64) if "rho0" in d else rho_ds[0]
         w0 = d["w0"][idx].astype(np.float64) if "w0" in d else w_ds[0]
 
-        rho_L, w_L, rho_R, w_R, x0, x_mid = _recover_riemann_ic(rho0, w0, x_min, x_max)
+        rho_L, w_L, rho_R, w_R, x0, x_mid = _recover_riemann_ic(rho0, w0, x)
 
-        # exact analytic solution on the same grid
+        # exact analytic solution on the same grid (dataset's own x)
         rho_ex, w_ex, v_ex = Rie.solve_riemann_arz_xt(rho_L, w_L, rho_R, w_R, x_mid, t, x0=x0)
 
         err_rho = np.abs(rho_ds - rho_ex)
@@ -161,7 +164,7 @@ def check(data_path: Path, pressure_form: str, n_samples: int, out_dir: Path,
         rho_ds = d["rho"][idx].astype(np.float64)
         w0 = d["w0"][idx].astype(np.float64) if "w0" in d else d["w"][idx, 0].astype(np.float64)
         rho0 = d["rho0"][idx].astype(np.float64) if "rho0" in d else rho_ds[0]
-        rL, wL, rR, wR, x0, x_mid = _recover_riemann_ic(rho0, w0, x_min, x_max)
+        rL, wL, rR, wR, x0, x_mid = _recover_riemann_ic(rho0, w0, x)
         rho_ex, w_ex, v_ex = Rie.solve_riemann_arz_xt(rL, wL, rR, wR, x_mid, t, x0=x0)
 
         fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
