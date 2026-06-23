@@ -634,7 +634,14 @@ def generate_arz_dataset(
     master_rng = np.random.default_rng(seed)
     sample_seeds = master_rng.integers(0, 2**31, size=num_samples)
 
-    x = np.linspace(x_min, x_max, nx, dtype=np.float32)
+    # Cell-MIDPOINT grid -- the grid the PDE is actually solved on. _solve_one
+    # recomputes x_mid = linspace(x_min+0.5dx, x_max-0.5dx, nx) internally; the IC
+    # is sampled on this same x, and it is stored as the dataset's `x`. (Previously
+    # `x` was linspace(x_min, x_max, nx) -- ENDPOINT-inclusive -- which mislabeled
+    # the grid by ~half a cell and gave dx_stored = 2/(nx-1) instead of the true
+    # 2/nx, a ~0.8% error the model's rel_x/dx and CFL features inherited.)
+    dx = (x_max - x_min) / nx
+    x = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float32)
     t = np.linspace(0.0, t_max, nt, dtype=np.float32)
 
     rho_all = np.zeros((num_samples, nt, nx), dtype=np.float32)
