@@ -90,9 +90,36 @@ def check(data_path: Path, pressure_form: str, n_samples: int, out_dir: Path,
 
     N = d["rho"].shape[0]
     nt, nx = d["rho"].shape[1], d["rho"].shape[2]
-    x = d["x"] if "x" in d else np.linspace(-1, 1, nx)
+    x_stored = d["x"] if "x" in d else np.linspace(-1, 1, nx)
     t = d["t"] if "t" in d else np.linspace(0, 1, nt)
     ic_types = d["ic_type"] if "ic_type" in d else np.array(["riemann_stratified"] * N)
+
+    # CRITICAL grid convention. Two datagen paths store x DIFFERENTLY:
+    #   * MIXED set (datagen_arz.py:637): stores x = linspace(x_min, x_max, nx)
+    #     -- ENDPOINT-inclusive -- but COMPUTES physics on the cell-MIDPOINT grid
+    #     x_mid = linspace(x_min+0.5dx, x_max-0.5dx, nx) (line 336). So stored x is
+    #     OFF by half a cell from the grid the data actually lives on.
+    #   * DEDICATED Riemann set (line 483/549): stores x = the midpoint grid itself.
+    # We must sample the exact solution on the SAME midpoint grid the data used,
+    # else the analytic waves are offset half a cell and the error grows with
+    # wave_speed*t (the O(0.1-0.6) "smear" that is really a checker grid bug).
+    # Detect which case by whether stored x includes the domain endpoints.
+    x_stored = np.asarray(x_stored, dtype=np.float64)
+    dx_stored = x_stored[1] - x_stored[0]
+    # midpoint grids start half a cell IN from a round domain bound; endpoint grids
+    # start exactly on it. Reconstruct true bounds, then build the midpoint grid.
+    if np.isclose(x_stored[-1] - x_stored[0], (nx - 1) * dx_stored) and \
+       np.isclose(round(x_stored[0]), x_stored[0]):
+        # endpoint-inclusive (mixed set): x_stored[0]=x_min, x_stored[-1]=x_max
+        x_min, x_max = float(x_stored[0]), float(x_stored[-1])
+    else:
+        # already midpoints (dedicated set): bounds are half a cell outside
+        x_min = float(x_stored[0] - 0.5 * dx_stored)
+        x_max = float(x_stored[-1] + 0.5 * dx_stored)
+    dx = (x_max - x_min) / nx
+    x = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
+    print(f"[check] grid: stored x[0]={x_stored[0]:.5f} -> reconstructed midpoint "
+          f"x_mid[0]={x[0]:.5f} (x_min={x_min}, x_max={x_max})")
 
     riemann_idx = np.where(ic_types == "riemann_stratified")[0]
     if riemann_idx.size == 0:
