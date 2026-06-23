@@ -100,7 +100,7 @@ def plot_stratified(data_path: Path, pressure_form: str, per_bin: int,
                     [("rho", rho, rho_T), ("v", v, v_T)]):
                 im = axes[row, 0].imshow(fld, aspect="auto", origin="lower",
                                          extent=[x[0], x[-1], t[0], t[-1]],
-                                         cmap="viridis")
+                                         cmap="viridis", interpolation="nearest")
                 axes[row, 0].set_title(f"{fname} space-time"); axes[row, 0].set_xlabel("x"); axes[row, 0].set_ylabel("t")
                 plt.colorbar(im, ax=axes[row, 0])
 
