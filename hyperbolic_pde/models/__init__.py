@@ -1,6 +1,5 @@
 from .pinn_methods.pinn import UniversalPINN, hyperbolic_residual
 from .competitive_architectures.fno import FNO2d, SpectralConv2d
-from .fno_experiment import FNO2d as FNO2dExperiment
 from .competitive_architectures.deeponet import DeepONet
 from .pinn_methods.vpinn import VPINN
 from .hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3

@@ -129,8 +129,8 @@ def main() -> None:
                     vmin = float(np.min(truth_np))
                     vmax = float(np.max(truth_np))
 
-                fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
-                annotate_cfl(fig, cfl_metrics)
+                    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+                    annotate_cfl(fig, cfl_metrics)
                     im0 = axes[0].pcolormesh(
                         dataset.x, dataset.t, pred_np.T, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
                     )
