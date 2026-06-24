@@ -5,7 +5,9 @@ logs/
 # Datasets / artifacts
 *.npz
 *.zip
-
+*.csvl
+*.txt
+*.md
 # Runs, plots
 hyperbolic_pde/runs/
 **/plots/
