@@ -903,7 +903,7 @@ class HypNO_ST3(nn.Module):
         self.decoder = _make_mlp(d_latent, d_hidden, 1, 3, readout)
 
         if detector_path is not None:
-            from hyperbolic_pde.models.shock_detector import ShockDetector
+            from hyperbolic_pde.models.pinn_methods.shock_detector import ShockDetector
             det_cfg = cfg.get("shock_detector", {})
             self.external_detector = ShockDetector(
                 d_latent=int(det_cfg.get("d_latent", 64)),

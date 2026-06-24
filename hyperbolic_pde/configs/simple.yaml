@@ -1,9 +1,0 @@
-data:
-  num_samples: 20
-  train_fraction: 0.8
-
-
-fno:
-  epochs: 313
-  lr: 1.0e-3
-  batch_size: 1

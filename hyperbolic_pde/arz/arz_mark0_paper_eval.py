@@ -47,7 +47,7 @@ from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.model_arz_orig import load_hypno_arz_orig_from_checkpoint
 from hyperbolic_pde.arz.eval_vs_numerical_arz import _run_baseline
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 # Headline channel for the main-text tables/figures (LWR parity: u -> rho).
 HEADLINE_CHANNEL = "rho"

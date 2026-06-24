@@ -20,7 +20,7 @@ for k in np.unique(ic_types):
     print(f"  {k}: {int((ic_types == k).sum())}")
 
 field = d[args.field]
-n = min(args.n, field.shape[0])
+n = 10
 fig, axes = plt.subplots(2, n, figsize=(3 * n, 6))
 
 for i in range(n):

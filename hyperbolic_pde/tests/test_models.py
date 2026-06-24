@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import torch
 
-from hyperbolic_pde.models.deeponet import DeepONet
-from hyperbolic_pde.models.fno import FNO2d
-from hyperbolic_pde.models.pinn import UniversalPINN, hyperbolic_residual
+from hyperbolic_pde.models.competitive_architectures.deeponet import DeepONet
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
+from hyperbolic_pde.models.pinn_methods.pinn import UniversalPINN, hyperbolic_residual
 
 
 def test_universal_pinn_forward_and_residual() -> None:

@@ -672,7 +672,7 @@ class HypNO_PINN(nn.Module):
 
         # external pre-trained PINN shock detector (frozen)
         if detector_path is not None:
-            from hyperbolic_pde.models.shock_detector import ShockDetector
+            from hyperbolic_pde.models.pinn_methods.shock_detector import ShockDetector
             det_cfg = _load_cfg().get("shock_detector", {})
             self.external_detector = ShockDetector(
                 d_latent=int(det_cfg.get("d_latent", 64)),

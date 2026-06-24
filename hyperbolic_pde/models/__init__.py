@@ -1,15 +1,17 @@
-﻿from .pinn import UniversalPINN, hyperbolic_residual
-from .fno import FNO2d, SpectralConv2d
-from .fno_experiment import FNO2d as FNO2dExperiment
-from .deeponet import DeepONet
-from .vpinn import VPINN
-from .fluxgnn import FluxGNN1D
-from .hypgno import HypGNO
+from .pinn_methods.pinn import UniversalPINN, hyperbolic_residual
+from .competitive_architectures.fno import FNO2d, SpectralConv2d
+from .competitive_architectures.deeponet import DeepONet
+from .pinn_methods.vpinn import VPINN
 from .hypno_st3 import HypNO_ST3, precompute_lwr_edge_features_v3
 
-# Superseded LWR lineages (HypNO, HypNO_ST, HypNO_ST2, HypNO_ST4, _charcone,
-# _pinn, GridGNN) now live under ``hyperbolic_pde.models.legacy`` and are no
-# longer re-exported here. Import them explicitly from there if needed.
+# PINN-based methods (UniversalPINN, VPINN, ShockDetector) now live under
+# ``hyperbolic_pde.models.pinn_methods``; competitive baselines (FNO, DeepONet)
+# under ``hyperbolic_pde.models.competitive_architectures``.
+#
+# Superseded lineages now live under ``hyperbolic_pde.models.legacy`` and are
+# no longer re-exported here (HypNO, HypNO_ST, HypNO_ST2, HypNO_ST4, _charcone,
+# _pinn, GridGNN, FluxGNN1D, FluxGNN2, HypFluxNO, HypGNO). Import them
+# explicitly from there if needed.
 
 __all__ = [
     "UniversalPINN",
@@ -19,8 +21,6 @@ __all__ = [
     "FNO2dExperiment",
     "DeepONet",
     "VPINN",
-    "FluxGNN1D",
-    "HypGNO",
     "HypNO_ST3",
     "precompute_lwr_edge_features_v3",
 ]
