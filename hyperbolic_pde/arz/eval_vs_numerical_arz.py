@@ -276,7 +276,7 @@ def main():
                     err_vmax = None
                     for c, name in enumerate(methods_present):
                         arr = gt_arr if name == "GT" else pred_dict[name]
-                        im = axes[0, c].pcolormesh(x_np, t_np, arr, shading="auto",
+                        im = axes[0, c].pcolormesh(x_np, t_np, arr, shading="nearest",
                                                    cmap="jet", vmin=vmin, vmax=vmax)
                         if name == "GT":
                             axes[0, c].set_title(name)
@@ -300,7 +300,7 @@ def main():
                     )
                     for c, name in enumerate(methods_present[1:], start=1):
                         err = np.abs(pred_dict[name] - gt_arr)
-                        im = axes[1, c].pcolormesh(x_np, t_np, err, shading="auto",
+                        im = axes[1, c].pcolormesh(x_np, t_np, err, shading="nearest",
                                                    cmap="magma", vmin=0, vmax=err_vmax)
                         axes[1, c].set_title(f"|{name} - GT|  (shared)")
                         axes[1, c].set_xlabel("x"); axes[1, c].set_ylabel("t")
@@ -320,7 +320,7 @@ def main():
                     for c, name in enumerate(methods_present[1:], start=1):
                         err = np.abs(pred_dict[name] - gt_arr)
                         local_vmax = float(err.max()) if err.size else 0.0
-                        im = axes[2, c].pcolormesh(x_np, t_np, err, shading="auto",
+                        im = axes[2, c].pcolormesh(x_np, t_np, err, shading="nearest",
                                                    cmap="magma", vmin=0,
                                                    vmax=local_vmax if local_vmax > 0 else None)
                         axes[2, c].set_title(

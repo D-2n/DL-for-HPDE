@@ -348,6 +348,7 @@ class _ArzMPLayerOrig(nn.Module):
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
         new_entropy: bool = False,
+        output_v: bool = False,
     ) -> None:
         super().__init__()
         if double_batch and k_x % 2 != 0:
@@ -359,6 +360,7 @@ class _ArzMPLayerOrig(nn.Module):
         self.causal = causal_temporal
         self.normalize_edge_offsets = normalize_edge_offsets
         self.new_entropy = new_entropy
+        self.output_v = output_v
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
@@ -438,8 +440,13 @@ class _ArzMPLayerOrig(nn.Module):
 
         u_hat = self._shared_decoder(h)                       # [B, nt, nx, 2]
         rho_hat = u_hat[..., 0:1].clamp(1e-6, 1.0)
-        w_hat = u_hat[..., 1:2]
-        v_hat = w_hat - _p(rho_hat)
+        if self.output_v:
+            # Decoder's 2nd channel is v directly; recover w = v + p(rho).
+            v_hat = u_hat[..., 1:2]
+            w_hat = v_hat + _p(rho_hat)
+        else:
+            w_hat = u_hat[..., 1:2]
+            v_hat = w_hat - _p(rho_hat)
         lam1_i = v_hat - rho_hat * _dp(rho_hat)
         lam2_i = v_hat
         spec_i = torch.maximum(lam1_i.abs(), lam2_i.abs())
@@ -594,6 +601,7 @@ class HypNO_ARZ_Orig(nn.Module):
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
         new_entropy: bool = False,
+        output_v: bool = False,
         **_ignored,
     ) -> None:
         super().__init__()
@@ -604,6 +612,7 @@ class HypNO_ARZ_Orig(nn.Module):
         self.use_relaxation_features = use_relaxation_features
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
+        self.output_v = output_v
         if _ignored:
             print(f"[HypNO_ARZ_Orig] IGNORED kwargs = {sorted(_ignored.keys())}")
         print(
@@ -611,7 +620,8 @@ class HypNO_ARZ_Orig(nn.Module):
             f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
             f"skip={skip} normalize_edge_offsets={normalize_edge_offsets} "
             f"use_relaxation_features={use_relaxation_features} "
-            f"double_batch={double_batch} new_entropy={new_entropy}"
+            f"double_batch={double_batch} new_entropy={new_entropy} "
+            f"output_v={output_v}"
             + (f" neighborhood_spacing={neighborhood_spacing}" if double_batch else "")
         )
 
@@ -641,6 +651,7 @@ class HypNO_ARZ_Orig(nn.Module):
                 double_batch=double_batch,
                 neighborhood_spacing=neighborhood_spacing,
                 new_entropy=new_entropy,
+                output_v=output_v,
             )
             for _ in range(n_layers)
         ])
@@ -648,20 +659,31 @@ class HypNO_ARZ_Orig(nn.Module):
     def _decode(
         self, h: torch.Tensor, rho0: torch.Tensor, w0: torch.Tensor,
     ) -> torch.Tensor:
+        """Decode h to the model's native 2-channel output.
+
+        Channels are (rho, w) when ``output_v=False`` (default) and (rho, v)
+        when ``output_v=True``. The skip base is taken in the SAME frame as the
+        decoder output, so ``skip`` adds (rho0, w0) or (rho0, v0) accordingly.
+        """
         out = self.decoder(h)  # [B, nt, nx, 2]
         if self.skip:
             B, nt, nx, _ = out.shape
-            u0 = torch.stack([rho0, w0], dim=-1).unsqueeze(1).expand(B, nt, nx, 2)
+            if self.output_v:
+                v0 = w0 - _p(rho0)
+                u0 = torch.stack([rho0, v0], dim=-1)
+            else:
+                u0 = torch.stack([rho0, w0], dim=-1)
+            u0 = u0.unsqueeze(1).expand(B, nt, nx, 2)
             out = out + u0
         return out
 
-    def forward(
+    def _run_backbone(
         self,
         rho0: torch.Tensor, w0: torch.Tensor,
         x: torch.Tensor, t: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+    ) -> list[torch.Tensor]:
+        """Lifting + MP stack -> list of per-layer native 2-channel decodes."""
         h = self.lifting(rho0, w0, x, t)
-
         u_hats: list[torch.Tensor] = []
         for layer in self.mp_layers:
             if self.use_checkpoint:
@@ -671,11 +693,63 @@ class HypNO_ARZ_Orig(nn.Module):
             else:
                 h = layer(h, x, t, rho0, w0)
             u_hats.append(self._decode(h, rho0, w0))
+        return u_hats
 
-        u_pred = u_hats[-1]                              # [B, nt, nx, 2]
+    def forward(
+        self,
+        rho0: torch.Tensor, w0: torch.Tensor,
+        x: torch.Tensor, t: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        """Backward-compatible (rho, w, u_hats) interface in the w-frame.
+
+        Regardless of ``output_v``, this always returns w-frame tensors so all
+        existing eval/loss code keeps working unchanged. When ``output_v=True``
+        the native decodes hold (rho, v); they are converted to (rho, w) here.
+        """
+        native = self._run_backbone(rho0, w0, x, t)
+        if self.output_v:
+            u_hats = []
+            for u in native:
+                rho_h = u[..., 0:1]
+                w_h = u[..., 1:2] + _p(rho_h)
+                u_hats.append(torch.cat([rho_h, w_h], dim=-1))
+        else:
+            u_hats = native
+
+        u_pred = u_hats[-1]                              # [B, nt, nx, 2] (rho, w)
         rho_pred = u_pred[..., 0]
         w_pred = u_pred[..., 1]
         return rho_pred, w_pred, u_hats
+
+    def forward_primitive(
+        self,
+        rho0: torch.Tensor, w0: torch.Tensor,
+        x: torch.Tensor, t: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        """(rho, v)-frame interface, matching the mark2 family.
+
+        Returns ``(rho_pred, v_pred, w_pred, u_hats_rv)`` where ``u_hats_rv`` is
+        the list of per-layer (rho, v) decodes (for deep supervision in the
+        primitive loss). Use this when training with ``output_v=True``; the
+        v-channel is then a directly-supervised network output rather than a
+        ``w - p(rho)`` recovery.
+        """
+        native = self._run_backbone(rho0, w0, x, t)
+        if self.output_v:
+            u_hats_rv = native
+        else:
+            # Decoder is in the w-frame; convert each decode to (rho, v).
+            u_hats_rv = []
+            for u in native:
+                rho_h = u[..., 0:1]
+                v_h = u[..., 1:2] - _p(rho_h)
+                u_hats_rv.append(torch.cat([rho_h, v_h], dim=-1))
+
+        u_pred = u_hats_rv[-1]                           # [B, nt, nx, 2] (rho, v)
+        rho_pred = u_pred[..., 0]
+        v_pred = u_pred[..., 1]
+        w_pred = v_pred + _p(rho_pred)
+        return rho_pred, v_pred, w_pred, u_hats_rv
 
 
 # --------------------------------------------------------------------------- #
@@ -701,6 +775,7 @@ def _cfg_to_kwargs_orig(model_cfg: dict) -> dict:
         double_batch=bool(model_cfg.get("double_batch", False)),
         neighborhood_spacing=int(model_cfg.get("neighborhood_spacing", 1)),
         new_entropy=bool(model_cfg.get("new_entropy", False)),
+        output_v=bool(model_cfg.get("output_v", False)),
     )
 
 

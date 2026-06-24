@@ -423,10 +423,16 @@ def main() -> None:
         model = HypNO_ARZ_Mark1Router(**m1r_kwargs).to(device)
     elif variant == "orig":
         # The ORIGINAL pre-pure-pairwise 2d+12 HypNO_ARZ (frozen at 11ae6bc).
-        # Mark1 frame (rho,w decoder, arz_total_loss) -- NOT the m2 family.
+        # Mark1 frame (rho,w decoder, arz_total_loss) by default. With
+        # output_v=True the decoder switches to the (rho,v) frame and the model
+        # exposes forward_primitive, so it trains through the mark2 primitive
+        # loss path -- route it into the m2 family in that case.
         orig_kwargs = _cfg_to_kwargs_orig(model_cfg)
         orig_kwargs["use_checkpoint"] = bool(model_cfg.get("use_checkpoint", True))
         model = HypNO_ARZ_Orig(**orig_kwargs).to(device)
+        if orig_kwargs.get("output_v", False):
+            is_m2_family = True
+            log.info("orig variant with output_v=True -> (rho,v) primitive-loss path")
     else:
         model = HypNO_ARZ(
             stencil_k_x=int(model_cfg.get("stencil_k_x", 2)),
