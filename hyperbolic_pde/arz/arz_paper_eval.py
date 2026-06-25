@@ -320,7 +320,7 @@ def _render_cell_figures(rep_by_cell, methods, x_np, t_np, figs_dir, plt):
             sol_axes = [fig.add_subplot(gs[1, c]) for c in range(ncols)]
             for c, (name, sol) in enumerate(panels):
                 im = sol_axes[c].pcolormesh(
-                    x_np, t_np, sol, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+                    x_np, t_np, sol, shading="nearest", cmap="jet", vmin=vmin, vmax=vmax
                 )
                 sol_axes[c].set_title(name)
                 sol_axes[c].set_xlabel("x"); sol_axes[c].set_ylabel("t")
@@ -335,7 +335,7 @@ def _render_cell_figures(rep_by_cell, methods, x_np, t_np, figs_dir, plt):
                     continue
                 err = np.abs(sol - gt_arr)
                 im = err_axes[c].pcolormesh(
-                    x_np, t_np, err, shading="auto", cmap="magma", vmin=0, vmax=err_vmax
+                    x_np, t_np, err, shading="nearest", cmap="magma", vmin=0, vmax=err_vmax
                 )
                 err_axes[c].set_title(f"|{name} - GT|")
                 err_axes[c].set_xlabel("x"); err_axes[c].set_ylabel("t")
