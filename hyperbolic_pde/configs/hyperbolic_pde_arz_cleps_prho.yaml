@@ -67,6 +67,51 @@ arz_paper_eval_data:
   val_fraction: 0.1
   num_workers: null
 
+# === ARZ_Evaluation: dedicated paper-eval set (mirrors LWR paper_eval_data) ===
+# Same num_segments grid as LWR's paper_eval_data so the "#-of-discontinuities
+# ID vs OOD" story is directly comparable across PDEs. WFT machine-precision GT
+# (NOT the stale tau=0.1 FV arz_paper_eval_data above, whose WENO5 baseline
+# hard-crashes) so it matches the clean WFT training set the live runs use.
+# Homogeneous (tau=inf), p=rho. Self-contained (base config is gitignored).
+#   ic_types = the 3 families the clean WFT set trains on (riemann_stratified,
+#              piecewise_constant_stratified, piecewise_sine -> sine STAIRCASE),
+#              so ID family-matching works in arz_paper_eval.
+#   segments = [2,3,5,7,8,10,30,40]. vs clean-WFT training segments [2,3,5,7,10]:
+#              {2,3,5,7,10} are ID, {8,30,40} are OOD.
+#   3 ic_types x 8 num_segments x 20/cell = 480 (divisible by 24).
+#   seed 2026 != training seed 42 -> even the ID-segment cells are held-out.
+#   train_fraction 0.0 -> the whole file is held-out (eval scores all 480).
+# For ID/OOD labels in arz_paper_eval, pass:
+#   --train-section arz_mixed_wft_clean_prho   (lists the training ic_types+segs)
+# Generate with slurm/arz_gen_evaluation.sh.
+arz_evaluation_data:
+  path: /home/dzdrale/scratch/arz_1d/arz_evaluation_prho.npz
+  test_path: /home/dzdrale/scratch/arz_1d/arz_evaluation_prho.npz
+  num_samples: 480
+  pressure_form: rho
+  nx: 128
+  nt: 128
+  x_min: -1.0
+  x_max: 1.0
+  t_max: 1.0
+  cfl: 0.4
+  stratify: true
+  ic_types: [riemann_stratified, piecewise_constant_stratified, piecewise_sine]
+  num_segments: [2, 3, 5, 7, 8, 10, 30, 40]
+  rho_min: 0.1
+  rho_max: 0.9
+  v_min: 0.0
+  v_max: 1.0
+  ic_points: 128
+  boundary: ghost
+  refine: 1
+  tau: .inf
+  use_exact_riemann: true
+  fv_solver: wft
+  seed: 2026
+  train_fraction: 0.0
+  val_fraction: 0.0
+
 arz_riemann_trial:
   path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
   test_path: /home/dzdrale/scratch/arz_1d/arz_riemann_trial.npz
@@ -162,6 +207,27 @@ fno_arz:
   checkpoint_every: 20
   save_path: /home/dzdrale/scratch/runs/fno_arz_prho.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/fno_arz_prho
+
+# Bigger ARZ FNO (12 layers vs fno_arz's 8). Architecture must match the trained
+# bigger weights (fno_arz_bigger.pt) or load_state_dict fails. For arz_mark0_paper_eval
+# pass --fno-section fno_arz_bigger (the eval reads width/modes_x/modes_t/layers).
+fno_arz_bigger:
+  width: 128
+  modes_x: 24
+  modes_t: 24
+  layers: 12
+  optimizer: adamw
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  lr_schedule: cosine
+  lr_min: 1.0e-5
+  batch_size: 16
+  epochs: 220
+  loss_type: mae
+  checkpoint_every: 20
+  save_path: /home/dzdrale/scratch/runs/fno_arz_bigger.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/fno_arz_bigger
 
 hypno_arz:
   compile: false
@@ -591,6 +657,68 @@ hypno_arz_orig:
   save_path: /home/dzdrale/scratch/runs/hypno_arz_orig.pt
   plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_orig
 
+# FAST variant of hypno_arz_orig: IDENTICAL architecture + recipe, plus two
+# opt-in performance flags that are numerically equivalent to the default path
+# (verified fp64 in tests/test_orig_fast_equiv.py), so this is NOT an A/B change
+# -- it trains the SAME model, just faster. Keep hypno_arz_orig (above) as the
+# canonical section; use this one for new speed-tuned runs.
+#   * fast_static_cache: cache grid-only edge geometry + evaluate the lifting's
+#     non-adjacent edge MLP at B=1 (point 3). Zero memory cost, exact.
+#   * checkpoint_stride: checkpoint only every k-th MP layer (point 1). stride=2
+#     halves the backward recompute (~faster) but raises peak memory vs stride=1.
+#     Run this on the 80GB+/H200 pool; if it OOMs, drop checkpoint_stride to 1
+#     (still gets the other flags + the trainer-side sync removal) or set
+#     use_checkpoint:false on an H200 (141GB) for the full no-recompute speedup.
+#   * fast_message_factor: factor the non-adjacent message MLP's first Linear
+#     into shared block projections (point 2) -- the biggest k_x-preserving win
+#     (~45% of the non-adj MLP) AND ~halves that path's activation memory.
+#     fp64-equivalent (a reassociation of the same sum).
+hypno_arz_orig_fast:
+  stencil_k_x: 6
+  stencil_k_t: 4
+  d_latent: 96
+  d_hidden: 96
+  d_hidden_nonadj: null
+  n_layers: 11
+  activation: gelu
+  causal_temporal: true
+  decoder_depth: 5
+  skip: false
+  use_relaxation_features: false
+  normalize_edge_offsets: true
+  use_checkpoint: true
+  checkpoint_stride: 2       # point 1: recompute every 2nd MP layer in backward
+  fast_static_cache: true    # point 3: cache static edge geometry (exact)
+  fast_message_factor: true  # point 2: factor non-adj message 1st layer (~45%)
+  compile: false
+  new_entropy: true
+
+  optimizer: adamw
+  epochs: 220
+  lr: 4.2e-4
+  weight_decay: 1.0e-4
+  grad_clip: 3.0
+  lr_schedule: cosine
+  lr_min: 5.0e-6
+  lr_warmup_steps: 540
+  batch_size: 16
+  amp_dtype: bf16
+
+  loss_type: mae
+  w_weight: 1.0
+  lambda_state: 1.0
+  lambda_conservation: 1.0
+  lambda_balance: 0.0
+  lambda_probe: 0.01
+
+  checkpoint_every: 10
+  val_every: 10
+  log_batch_every: 50
+  diseq_threshold: 0.1
+
+  save_path: /home/dzdrale/scratch/runs/hypno_arz_orig_fast.pt
+  plot_dir: /home/dzdrale/scratch/runs/plots/hypno_arz_orig_fast
+
 # Mixed general dataset: 3 IC families x 6 num_segments x N/cell samples.
 # Riemann ICs -> exact analytic GT (use_exact_riemann=True).
 # piecewise_constant + piecewise_sine -> WENO5+SSP-RK3+Strang-split (fv_solver=weno5).
@@ -632,6 +760,11 @@ arz_mixed_wft_clean_prho:
   pressure_form: rho
   num_samples: 6000
   tau: .inf
+  # Training IC grid (unused by the trainer -- it reads the .npz; present so this
+  # section can be the --train-section that defines the ID set for arz_paper_eval
+  # against arz_evaluation_data). Matches slurm/arz_gen_mixed_wft_clean.sh.
+  ic_types: [riemann_stratified, piecewise_constant_stratified, piecewise_sine]
+  num_segments: [2, 3, 5, 7, 10]
   train_fraction: 0.8
   val_fraction: 0.1
 

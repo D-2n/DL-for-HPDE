@@ -197,7 +197,7 @@ def arz_total_loss(
     rho_pred, w_pred, u_hats,
     rho_gt, w_gt, t, tau,
     *, lambda_state, lambda_conservation, lambda_balance, lambda_probe,
-    w_weight, loss_type,
+    w_weight, loss_type, return_info=True,
 ):
     L_state = state_loss(rho_pred, w_pred, rho_gt, w_gt, w_weight=w_weight, loss_type=loss_type)
     L_cons  = rho_mass_loss(rho_pred, rho_gt, loss_type=loss_type)
@@ -211,6 +211,12 @@ def arz_total_loss(
     L_probe = probe_loss(u_hats, rho_gt, w_gt, w_weight=w_weight, loss_type=loss_type)
     L = (lambda_state * L_state + lambda_conservation * L_cons
          + lambda_balance * L_bal + lambda_probe * L_probe)
+    # The per-term floats are only consumed by the periodic batch log. Each
+    # .item() is a CUDA sync that stalls the pipeline, so skip them on
+    # non-logging steps (return_info=False) -- the scalar loss tensor is all
+    # backward() needs.
+    if not return_info:
+        return L, None
     info = {
         "state": float(L_state.detach().item()),
         "cons":  float(L_cons.detach().item()),
@@ -566,14 +572,17 @@ def main() -> None:
     val_mses:     list[float] = []
 
     for epoch in range(start_epoch, epochs + 1):
-        epoch_loss_sum = 0.0
-        epoch_mse_sum = 0.0
-        epoch_mae_rho_sum = 0.0
-        epoch_mae_w_sum = 0.0
-        epoch_mae_v_sum = 0.0
+        # Epoch accumulators live on-device and are summed without a per-batch
+        # .item() sync; materialized to host once at epoch end (point 4 speedup).
+        epoch_loss_sum    = torch.zeros((), device=device)
+        epoch_mse_sum     = torch.zeros((), device=device)
+        epoch_mae_rho_sum = torch.zeros((), device=device)
+        epoch_mae_w_sum   = torch.zeros((), device=device)
+        epoch_mae_v_sum   = torch.zeros((), device=device)
         epoch_count = 0
         for rho0, w0, rho_gt, w_gt in loader:
             step += 1
+            is_log_step = (log_batch_every > 0 and step % log_batch_every == 0)
             rho0 = rho0.to(device); w0 = w0.to(device)
             rho_gt = rho_gt.to(device); w_gt = w_gt.to(device)
 
@@ -589,6 +598,7 @@ def main() -> None:
                         lambda_probe=lambda_probe,
                         v_weight=w_weight,
                         loss_type=loss_type,
+                        return_info=is_log_step,
                     )
                 else:
                     rho_p, w_p, u_hats = model(rho0, w0, x_grid, t_grid)
@@ -599,68 +609,75 @@ def main() -> None:
                         lambda_balance=lambda_balance,
                         lambda_probe=lambda_probe,
                         w_weight=w_weight, loss_type=loss_type,
+                        return_info=is_log_step,
                     )
             loss.backward()
             # clip_grad_norm_ returns the PRE-clip total norm; capture it so we
             # can see whether clipping is actually firing (effective lr would be
             # lr/||g|| when ||g|| > grad_clip, silently altering the schedule).
-            if grad_clip is not None:
-                gnorm = float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), float(grad_clip)).item())
-            else:
-                gnorm = float(torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), float("inf")).item())
+            # Keep it as a tensor and only .item()-sync it on logging steps.
+            max_norm = float(grad_clip) if grad_clip is not None else float("inf")
+            gnorm_t = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
             opt.step()
             if scheduler is not None:
                 scheduler.step()
 
             with torch.no_grad():
                 # Monitoring metric: (rho, w)-frame MAE, matching the (mae)
-                # objective. Independent of loss_type so it stays a stable
-                # yardstick, but reported as MAE to align with the objective.
-                # Also split per channel (rho / w / v) so the train log mirrors
-                # the val log's per-channel breakdown. v is the directly-decoded
-                # output for the mark2 family, else recovered as w - p(rho).
-                mae_rho_b = (rho_p - rho_gt).abs().mean().item()
-                mae_w_b   = (w_p - w_gt).abs().mean().item()
+                # objective. Kept as on-device tensors and accumulated without a
+                # per-batch .item() sync (point 4); split per channel (rho/w/v)
+                # so the train log mirrors the val log's breakdown. v is the
+                # directly-decoded output for the mark2 family, else w - p(rho).
+                mae_rho_t = (rho_p - rho_gt).abs().mean()
+                mae_w_t   = (w_p - w_gt).abs().mean()
                 if is_m2_family:
                     v_p_mon = v_p
                 else:
                     v_p_mon = w_p - _p_gt(rho_p)
                 v_gt_mon = w_gt - _p_gt(rho_gt)
-                mae_v_b = (v_p_mon - v_gt_mon).abs().mean().item()
-                batch_mae = mae_rho_b + mae_w_b
+                mae_v_t = (v_p_mon - v_gt_mon).abs().mean()
+                batch_mae_t = mae_rho_t + mae_w_t
             bs = rho0.size(0)
-            epoch_loss_sum += loss.item() * bs
-            epoch_mse_sum  += batch_mae   * bs
-            epoch_mae_rho_sum += mae_rho_b * bs
-            epoch_mae_w_sum   += mae_w_b   * bs
-            epoch_mae_v_sum   += mae_v_b   * bs
+            epoch_loss_sum    += loss.detach() * bs
+            epoch_mse_sum     += batch_mae_t   * bs
+            epoch_mae_rho_sum += mae_rho_t     * bs
+            epoch_mae_w_sum   += mae_w_t       * bs
+            epoch_mae_v_sum   += mae_v_t       * bs
             epoch_count += bs
 
-            if log_batch_every > 0 and step % log_batch_every == 0:
+            if is_log_step:
+                # The only per-batch sync point: materialize the scalars for the
+                # log line here (every log_batch_every steps), not every step.
                 n_batches = len(loader)
                 batch_idx = (step - 1) % n_batches + 1
+                gnorm = float(gnorm_t.item())
+                batch_mae = float(batch_mae_t.item())
                 clip_flag = "*" if (grad_clip is not None and gnorm > float(grad_clip)) else " "
                 log.info(
                     f"  epoch {epoch:3d} batch {batch_idx}/{n_batches} | "
-                    f"loss={loss.item():.3e} | state={info['state']:.3e} "
+                    f"loss={float(loss.item()):.3e} | state={info['state']:.3e} "
                     f"cons={info['cons']:.3e} bal={info['bal']:.3e} "
                     f"probe={info['probe']:.3e} | mae={batch_mae:.3e} "
-                    f"(rho/w/v={mae_rho_b:.3e}/{mae_w_b:.3e}/{mae_v_b:.3e}) "
+                    f"(rho/w/v={float(mae_rho_t.item()):.3e}/{float(mae_w_t.item()):.3e}/{float(mae_v_t.item()):.3e}) "
                     f"| gnorm={gnorm:.2e}{clip_flag}"
                 )
                 for h in log.handlers: h.flush()
 
-        train_losses.append(epoch_loss_sum / max(1, epoch_count))
-        train_mses.append(epoch_mse_sum / max(1, epoch_count))
         _ec = max(1, epoch_count)
+        # Single per-epoch sync: pull the on-device accumulators to host once.
+        epoch_loss_avg = float(epoch_loss_sum.item()) / _ec
+        epoch_mse_avg  = float(epoch_mse_sum.item()) / _ec
+        epoch_mae_rho  = float(epoch_mae_rho_sum.item()) / _ec
+        epoch_mae_w    = float(epoch_mae_w_sum.item()) / _ec
+        epoch_mae_v    = float(epoch_mae_v_sum.item()) / _ec
+        train_losses.append(epoch_loss_avg)
+        train_mses.append(epoch_mse_avg)
         lr_now = opt.param_groups[0]["lr"]
         log.info(
             f"epoch {epoch:3d}/{epochs} | optim_loss={train_losses[-1]:.3e} | "
             f"mae={train_mses[-1]:.3e} "
-            f"(rho/w/v={epoch_mae_rho_sum/_ec:.3e}/{epoch_mae_w_sum/_ec:.3e}/"
-            f"{epoch_mae_v_sum/_ec:.3e}) | lr={lr_now:.2e} | {gpu_status()}"
+            f"(rho/w/v={epoch_mae_rho:.3e}/{epoch_mae_w:.3e}/"
+            f"{epoch_mae_v:.3e}) | lr={lr_now:.2e} | {gpu_status()}"
         )
         for h in log.handlers: h.flush()
 
@@ -689,6 +706,7 @@ def main() -> None:
                                 lambda_probe=lambda_probe,
                                 v_weight=w_weight,
                                 loss_type=loss_type,
+                                return_info=False,
                             )
                         else:
                             vrp, vwp, vuh = model(v_rho0, v_w0, x_grid, t_grid)
@@ -699,6 +717,7 @@ def main() -> None:
                                 lambda_balance=lambda_balance,
                                 lambda_probe=lambda_probe,
                                 w_weight=w_weight, loss_type=loss_type,
+                                return_info=False,
                             )
                     B = v_rho0.size(0)
                     # (rho, w)-frame MAE monitor, matching the train-loop metric.

@@ -158,18 +158,23 @@ def mark2_total_loss(
     lambda_probe: float = 0.01,
     v_weight: float = 1.0,
     loss_type: str = "mse",
+    return_info: bool = True,
 ) -> tuple:
     """HypNO-ARZ Mark2 objective (homogeneous): (rho,v)-frame state + probe,
     plus rho mass conservation. No relaxation-balance term (tau=inf).
     loss_type selects the elementwise distance (mae/mse/huber) for all terms.
 
     Returns (scalar_loss, info_dict). v_gt is computed by the caller from
-    w_gt via v = w - p(rho_gt).
+    w_gt via v = w - p(rho_gt). When return_info=False the per-term floats
+    (and their CUDA syncs) are skipped and info is None -- use on non-logging
+    training steps where only the scalar loss is needed for backward().
     """
     L_state = state_loss_rv(rho_pred, v_pred, rho_gt, v_gt, v_weight=v_weight, loss_type=loss_type)
     L_cons  = rho_mass_loss(rho_pred, rho_gt, loss_type=loss_type)
     L_probe = probe_loss_rv(u_hats_rv, rho_gt, v_gt, v_weight=v_weight, loss_type=loss_type)
     L = lambda_state * L_state + lambda_conservation * L_cons + lambda_probe * L_probe
+    if not return_info:
+        return L, None
     info = {
         "state": float(L_state.detach().item()),
         "cons":  float(L_cons.detach().item()),

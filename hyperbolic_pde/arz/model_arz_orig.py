@@ -129,6 +129,7 @@ class _ArzLiftingOrig(nn.Module):
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
         new_entropy: bool = False,
+        fast_static_cache: bool = False,
     ) -> None:
         super().__init__()
         if double_batch and stencil_k_x % 2 != 0:
@@ -143,6 +144,12 @@ class _ArzLiftingOrig(nn.Module):
         self.use_relaxation_features = use_relaxation_features
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
+        self.fast_static_cache = bool(fast_static_cache)
+        # Lazily-built cache of the non-adjacent edge input (grid-only, so
+        # constant across batch and across training steps). Plain attribute, not
+        # a buffer -> never enters the state_dict, so checkpoints are unchanged.
+        self._nonadj_cache = None
+        self._nonadj_key = None
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
         n_node_in = 9 if use_relaxation_features else 7
@@ -239,6 +246,12 @@ class _ArzLiftingOrig(nn.Module):
         nonadj_gates: list[torch.Tensor] = []
 
         for di, dm in offsets:
+            is_adj_sp = (dm == 0) and (abs(di) == 1)
+            # Fast path: non-adjacent edges carry only grid geometry, so their
+            # MLP input is batch- and step-invariant -> built once at B=1 and
+            # cached (handled after the loop). Skip them here.
+            if self.fast_static_cache and not is_adj_sp:
+                continue
             rho_j = rho0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             w_j   = w0_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
             x_j   = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
@@ -254,7 +267,6 @@ class _ArzLiftingOrig(nn.Module):
                 rel_t_feat = rel_t
 
             r = torch.sign(rel_x)
-            is_adj_sp = (dm == 0) and (abs(di) == 1)
 
             if is_adj_sp:
                 v_j = w_j - _p(rho_j)
@@ -307,20 +319,79 @@ class _ArzLiftingOrig(nn.Module):
                 nonadj_feats.append(edge_in)
                 nonadj_gates.append(gate)
 
-        all_gates = adj_gates + nonadj_gates
-        gate_sum = torch.stack(all_gates, dim=-2).sum(dim=-2) + 1e-3
-
-        n_adj = len(adj_feats); n_nonadj = len(nonadj_feats)
-        adj_in = torch.stack(adj_feats, dim=3)
-        nonadj_in = torch.stack(nonadj_feats, dim=3)
         d_out = h_node.shape[-1]
+        n_adj = len(adj_feats)
+        adj_in = torch.stack(adj_feats, dim=3)
         adj_out = self.adj_edge_mlp(adj_in.reshape(-1, adj_in.shape[-1])).reshape(B, nt, nx, n_adj, d_out)
-        nonadj_out = self.nonadj_edge_mlp(nonadj_in.reshape(-1, nonadj_in.shape[-1])).reshape(B, nt, nx, n_nonadj, d_out)
+        adj_gates_t = torch.stack(adj_gates, dim=3)  # [B, nt, nx, n_adj, 1]
+
+        if self.fast_static_cache:
+            # Non-adjacent edges: input is grid-only -> evaluate the MLP once at
+            # B=1 then broadcast (its rows are identical across the batch). The
+            # gates are all-ones, exactly as the default path's torch.ones_like.
+            nonadj_in_b1 = self._nonadj_static_input(
+                x, t, nt, nx, dx_grid, dt_grid, offsets, pad_x)
+            n_nonadj = nonadj_in_b1.shape[3]
+            nonadj_out = self.nonadj_edge_mlp(
+                nonadj_in_b1.reshape(-1, nonadj_in_b1.shape[-1])
+            ).reshape(1, nt, nx, n_nonadj, d_out).expand(B, nt, nx, n_nonadj, d_out)
+            nonadj_gates_t = adj_gates_t.new_ones((B, nt, nx, n_nonadj, 1))
+            all_gates_t = torch.cat([adj_gates_t, nonadj_gates_t], dim=3)
+        else:
+            n_nonadj = len(nonadj_feats)
+            nonadj_in = torch.stack(nonadj_feats, dim=3)
+            nonadj_out = self.nonadj_edge_mlp(nonadj_in.reshape(-1, nonadj_in.shape[-1])).reshape(B, nt, nx, n_nonadj, d_out)
+            # Equivalent to the original torch.stack(adj_gates + nonadj_gates, dim=3):
+            # same elements, same order -> bit-identical to the pre-refactor path.
+            all_gates_t = torch.stack(adj_gates + nonadj_gates, dim=3)
+
+        gate_sum = all_gates_t.sum(dim=3) + 1e-3
         all_msgs = torch.cat([adj_out, nonadj_out], dim=3)
-        all_gates_t = torch.stack(all_gates, dim=3)
         agg = (all_gates_t / gate_sum.unsqueeze(3) * all_msgs).sum(dim=3)
 
         return self.combine(torch.cat([h_node, agg], dim=-1))
+
+    def _nonadj_static_input(
+        self, x, t, nt, nx, dx_grid, dt_grid, offsets, pad_x,
+    ) -> torch.Tensor:
+        """Build (and cache) the non-adjacent edge MLP input at B=1.
+
+        The non-adjacent lifting edges carry only grid geometry
+        [rel_x_feat, rel_t_feat, sign(rel_x)], which is identical across the
+        batch and constant across training steps (fixed grid). Cached, keyed by
+        the grid signature; rebuilt only if the grid changes. Built under
+        no_grad -- these are constants in the autograd graph.
+        """
+        key = (nx, nt, float(dx_grid), float(dt_grid),
+               bool(self.normalize_edge_offsets), x.device, x.dtype)
+        if self._nonadj_key == key and self._nonadj_cache is not None:
+            return self._nonadj_cache
+        with torch.no_grad():
+            x1 = x[0:1]  # [1, nx] -- grid identical across batch rows
+            x1_pad = F.pad(x1.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
+            t_pad = F.pad(t.view(1, 1, -1), (self.k_t, self.k_t), mode="replicate").view(-1)
+            x_bc1 = x1.unsqueeze(1).unsqueeze(-1).expand(1, nt, nx, 1)
+            t_bc1 = t.view(1, nt, 1, 1).expand(1, nt, nx, 1)
+            feats: list[torch.Tensor] = []
+            for di, dm in offsets:
+                if (dm == 0) and (abs(di) == 1):
+                    continue  # adjacent edges handled in the main loop
+                x_j = x1_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(1, nt, nx, 1)
+                t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(1, nt, nx, 1)
+                rel_x = x_j - x_bc1
+                rel_t = t_j - t_bc1
+                if self.normalize_edge_offsets:
+                    rel_x_feat = rel_x / dx_grid
+                    rel_t_feat = rel_t / dt_grid
+                else:
+                    rel_x_feat = rel_x
+                    rel_t_feat = rel_t
+                r = torch.sign(rel_x)
+                feats.append(torch.cat([rel_x_feat, rel_t_feat, r], dim=-1))
+            nonadj_in = torch.stack(feats, dim=3).contiguous()  # [1, nt, nx, n_nonadj, 3]
+        self._nonadj_cache = nonadj_in
+        self._nonadj_key = key
+        return nonadj_in
 
 
 # --------------------------------------------------------------------------- #
@@ -348,6 +419,8 @@ class _ArzMPLayerOrig(nn.Module):
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
         new_entropy: bool = False,
+        fast_static_cache: bool = False,
+        fast_message_factor: bool = False,
     ) -> None:
         super().__init__()
         if double_batch and k_x % 2 != 0:
@@ -361,6 +434,19 @@ class _ArzMPLayerOrig(nn.Module):
         self.new_entropy = new_entropy
         self.double_batch = double_batch
         self.neighborhood_spacing = neighborhood_spacing
+        self.fast_static_cache = bool(fast_static_cache)
+        # Point 2: factor the non-adjacent message MLP's first Linear over its
+        # concatenated input [h_i, h_j, geom, spec_j]. A matmul over a concat is
+        # the sum of per-block matmuls -> project h_i / h_j / spec once on the
+        # grid (h_j, spec_j are shifts of those) and add a cheap per-offset geom
+        # term, instead of 62 matmuls over the full 2d+4 input. Numerically
+        # equivalent (a reassociation of the same sum); opt-in, default off.
+        self.fast_message_factor = bool(fast_message_factor)
+        # Cache of per-offset grid geometry (rel_x, rel_t, rel_x_feat,
+        # rel_t_feat, sign) at B=1; constant across steps. Plain attribute (not
+        # a buffer) -> stays out of the state_dict.
+        self._geo_cache = None
+        self._geo_key = None
         self.act = nn.GELU() if activation == "gelu" else nn.Tanh()
         dh_na = d_hidden if d_hidden_nonadj is None else d_hidden_nonadj
 
@@ -469,31 +555,69 @@ class _ArzMPLayerOrig(nn.Module):
         adj_gates:    list[torch.Tensor] = []
         nonadj_gates: list[torch.Tensor] = []
 
-        for di, dm in offsets:
+        # Fast path: the per-offset grid geometry is constant across steps; build
+        # it once at B=1 and reuse (the dynamic h_j / spec_j are still gathered
+        # per step). Numerically identical to recomputing it every forward.
+        geo_cache = (
+            self._static_geo(x, t, nt, nx, dx_val, dt_val, offsets, pad_x)
+            if self.fast_static_cache else None
+        )
+
+        # Point 2: precompute the shared/projectable pieces of the non-adjacent
+        # message MLP's first Linear. msg_in = [h_i, h_j, geom, spec_j] and
+        # Linear0(msg_in) = W_hi@h_i + W_hj@h_j + W_geom@geom + W_spec@spec_j + b1.
+        # h_j and spec_j are space-time shifts of h and spec_i, and replicate
+        # padding commutes with a linear map, so W_hj@h_j / W_spec@spec_j are
+        # slices of padded grid-wide projections. Only the small geom term
+        # (3 -> hidden) is computed per offset.
+        if self.fast_message_factor:
+            W1 = self.nonadj_msg[0].weight          # [hidden, 2d + 4]
+            b1 = self.nonadj_msg[0].bias            # [hidden]
+            W_hi = W1[:, 0:d]
+            W_hj = W1[:, d:2 * d]
+            W_geom = W1[:, 2 * d:2 * d + 3]         # rel_x_feat, rel_t_feat, sign
+            W_spec = W1[:, 2 * d + 3:2 * d + 4]     # spec_j
+            mf_proj_hi = F.linear(h, W_hi)          # [B, nt, nx, hidden] (shared)
+            mf_proj_hj_pad = _pad_space_time(F.linear(h, W_hj), pad_x, self.k_t)
+            mf_proj_spec_pad = _pad_space_time(F.linear(spec_i, W_spec), pad_x, self.k_t)
+            mf_b1 = b1
+            mf_W_geom = W_geom
+
+        for idx, (di, dm) in enumerate(offsets):
             h_j = h_pad[:, self.k_t + dm : self.k_t + dm + nt,
                             pad_x + di : pad_x + di + nx, :]
             rho_j = rho_hat_pad[:, self.k_t + dm : self.k_t + dm + nt,
                                     pad_x + di : pad_x + di + nx, :]
             w_j = w_hat_pad[:, self.k_t + dm : self.k_t + dm + nt,
                                 pad_x + di : pad_x + di + nx, :]
-            x_j = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
-            t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
-            rel_x = x_j - x_i
-            rel_t = t_j - t_i
             v_j = w_j - _p(rho_j)
             lam1_j = v_j - rho_j * _dp(rho_j)
             lam2_j = v_j
             spec_j = torch.maximum(lam1_j.abs(), lam2_j.abs())
 
-            if self.normalize_edge_offsets:
-                rel_x_feat = rel_x / dx_val
-                rel_t_feat = rel_t / dt_val
+            if self.fast_static_cache:
+                # Cached geometry is [1, nt, nx, 1]; broadcast to the batch
+                # (identical values to recomputing x_j - x_i etc.).
+                g_rel_x, g_rel_t, g_rxf, g_rtf, g_r = geo_cache[idx]
+                rel_x = g_rel_x.expand(B, nt, nx, 1)
+                rel_t = g_rel_t.expand(B, nt, nx, 1)
+                rel_x_feat = g_rxf.expand(B, nt, nx, 1)
+                rel_t_feat = g_rtf.expand(B, nt, nx, 1)
+                r = g_r.expand(B, nt, nx, 1)
             else:
-                rel_x_feat = rel_x
-                rel_t_feat = rel_t
+                x_j = x_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(B, nt, nx, 1)
+                t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(B, nt, nx, 1)
+                rel_x = x_j - x_i
+                rel_t = t_j - t_i
+                if self.normalize_edge_offsets:
+                    rel_x_feat = rel_x / dx_val
+                    rel_t_feat = rel_t / dt_val
+                else:
+                    rel_x_feat = rel_x
+                    rel_t_feat = rel_t
+                r = torch.sign(rel_x)
 
             is_adj_sp = (dm == 0) and (abs(di) == 1)
-            r = torch.sign(rel_x)
 
             if is_adj_sp:
                 rho_ij = 0.5 * (rho_hat + rho_j)
@@ -539,12 +663,24 @@ class _ArzMPLayerOrig(nn.Module):
                 adj_feats.append(msg_in)
                 adj_gates.append(gate)
             else:
-                msg_in = torch.cat([
-                    h, h_j,
-                    rel_x_feat, rel_t_feat, r, spec_j,
-                ], dim=-1)  # 2d + 4
+                if self.fast_message_factor:
+                    # First-Linear pre-activation, assembled block-wise (point 2):
+                    # shared h_i term + shifted h_j/spec_j projections + small
+                    # per-offset geom term + bias. Equivalent to Linear0(msg_in).
+                    proj_hj = mf_proj_hj_pad[:, self.k_t + dm : self.k_t + dm + nt,
+                                                 pad_x + di : pad_x + di + nx, :]
+                    proj_spec = mf_proj_spec_pad[:, self.k_t + dm : self.k_t + dm + nt,
+                                                     pad_x + di : pad_x + di + nx, :]
+                    geom = torch.cat([rel_x_feat, rel_t_feat, r], dim=-1)  # [.,.,.,3]
+                    z = mf_proj_hi + proj_hj + F.linear(geom, mf_W_geom) + proj_spec + mf_b1
+                    nonadj_feats.append(z)
+                else:
+                    msg_in = torch.cat([
+                        h, h_j,
+                        rel_x_feat, rel_t_feat, r, spec_j,
+                    ], dim=-1)  # 2d + 4
+                    nonadj_feats.append(msg_in)
                 gate = self._gate_nonadj(dm, rel_t, rel_x, spec_i, dx_val)
-                nonadj_feats.append(msg_in)
                 nonadj_gates.append(gate)
 
         all_gates = adj_gates + nonadj_gates
@@ -553,9 +689,15 @@ class _ArzMPLayerOrig(nn.Module):
         n_adj = len(adj_feats)
         n_nonadj = len(nonadj_feats)
         adj_in = torch.stack(adj_feats, dim=3)
-        nonadj_in = torch.stack(nonadj_feats, dim=3)
         adj_out = self.adj_msg(adj_in.reshape(-1, adj_in.shape[-1])).reshape(B, nt, nx, n_adj, d)
-        nonadj_out = self.nonadj_msg(nonadj_in.reshape(-1, nonadj_in.shape[-1])).reshape(B, nt, nx, n_nonadj, d)
+        nonadj_stack = torch.stack(nonadj_feats, dim=3)
+        if self.fast_message_factor:
+            # nonadj_stack already holds the first-Linear pre-activations; apply
+            # only the remaining layers (act, Linear, act, Linear) of nonadj_msg.
+            rest = self.nonadj_msg[1:]
+            nonadj_out = rest(nonadj_stack.reshape(-1, nonadj_stack.shape[-1])).reshape(B, nt, nx, n_nonadj, d)
+        else:
+            nonadj_out = self.nonadj_msg(nonadj_stack.reshape(-1, nonadj_stack.shape[-1])).reshape(B, nt, nx, n_nonadj, d)
         all_msgs = torch.cat([adj_out, nonadj_out], dim=3)
         all_gates_t = torch.stack(all_gates, dim=3)
         agg = (all_gates_t / gate_sum.unsqueeze(3) * all_msgs).sum(dim=3)
@@ -564,6 +706,42 @@ class _ArzMPLayerOrig(nn.Module):
         h_nonlocal = self.update_net(upd_in)
         h_local = self.W(h)
         return self.act(h_nonlocal + h_local)
+
+    def _static_geo(self, x, t, nt, nx, dx_val, dt_val, offsets, pad_x):
+        """Build (and cache) per-offset grid geometry at B=1.
+
+        Returns a list aligned with `offsets`; each entry is a 5-tuple of
+        [1, nt, nx, 1] tensors (rel_x, rel_t, rel_x_feat, rel_t_feat,
+        sign(rel_x)). These depend only on the (fixed) grid, so they are cached
+        and reused across steps. Built under no_grad -- constants in the graph.
+        """
+        key = (nx, nt, float(dx_val), float(dt_val),
+               bool(self.normalize_edge_offsets), x.device, x.dtype)
+        if self._geo_key == key and self._geo_cache is not None:
+            return self._geo_cache
+        with torch.no_grad():
+            x1 = x[0:1]  # [1, nx] -- grid identical across batch rows
+            x1_pad = F.pad(x1.unsqueeze(1), (pad_x, pad_x), mode="replicate").squeeze(1)
+            t_pad = F.pad(t.view(1, 1, -1), (self.k_t, self.k_t), mode="replicate").view(-1)
+            x_i1 = x1.unsqueeze(1).unsqueeze(-1).expand(1, nt, nx, 1)
+            t_i1 = t.view(1, nt, 1, 1).expand(1, nt, nx, 1)
+            cache: list[tuple] = []
+            for di, dm in offsets:
+                x_j = x1_pad[:, pad_x + di : pad_x + di + nx].unsqueeze(1).unsqueeze(-1).expand(1, nt, nx, 1)
+                t_j = t_pad[self.k_t + dm : self.k_t + dm + nt].view(1, nt, 1, 1).expand(1, nt, nx, 1)
+                rel_x = (x_j - x_i1).contiguous()
+                rel_t = (t_j - t_i1).contiguous()
+                if self.normalize_edge_offsets:
+                    rel_x_feat = (rel_x / dx_val).contiguous()
+                    rel_t_feat = (rel_t / dt_val).contiguous()
+                else:
+                    rel_x_feat = rel_x
+                    rel_t_feat = rel_t
+                r = torch.sign(rel_x).contiguous()
+                cache.append((rel_x, rel_t, rel_x_feat, rel_t_feat, r))
+        self._geo_cache = cache
+        self._geo_key = key
+        return cache
 
 
 # --------------------------------------------------------------------------- #
@@ -594,11 +772,27 @@ class HypNO_ARZ_Orig(nn.Module):
         double_batch: bool = False,
         neighborhood_spacing: int = 1,
         new_entropy: bool = False,
+        checkpoint_stride: int = 1,
+        fast_static_cache: bool = False,
+        fast_message_factor: bool = False,
         **_ignored,
     ) -> None:
         super().__init__()
         self.skip = skip
         self.use_checkpoint = use_checkpoint
+        # Gradient-checkpoint granularity (point 1): with use_checkpoint, only
+        # checkpoint layers where (i % checkpoint_stride == 0). stride=1 ->
+        # every layer (original behaviour, min memory / max recompute); larger
+        # stride -> fewer layers recomputed in backward (faster, more memory).
+        # Recompute is exact, so this never changes the trained function.
+        self.checkpoint_stride = max(1, int(checkpoint_stride))
+        # Static-geometry fast path (point 3): cache the grid-only edge geometry
+        # (constant across steps) and evaluate the lifting's non-adjacent edge
+        # MLP at B=1 (its input is batch-independent), then broadcast. Numerically
+        # equivalent to the default path; opt-in, default off.
+        self.fast_static_cache = bool(fast_static_cache)
+        # Point 2: factor the non-adjacent message MLP's first layer (MP layers).
+        self.fast_message_factor = bool(fast_message_factor)
         self.normalize_edge_offsets = normalize_edge_offsets
         self.new_entropy = new_entropy
         self.use_relaxation_features = use_relaxation_features
@@ -611,7 +805,10 @@ class HypNO_ARZ_Orig(nn.Module):
             f"d_latent={d_latent} d_hidden={d_hidden} layers={n_layers} "
             f"skip={skip} normalize_edge_offsets={normalize_edge_offsets} "
             f"use_relaxation_features={use_relaxation_features} "
-            f"double_batch={double_batch} new_entropy={new_entropy}"
+            f"double_batch={double_batch} new_entropy={new_entropy} "
+            f"checkpoint_stride={self.checkpoint_stride} "
+            f"fast_static_cache={self.fast_static_cache} "
+            f"fast_message_factor={self.fast_message_factor}"
             + (f" neighborhood_spacing={neighborhood_spacing}" if double_batch else "")
         )
 
@@ -625,6 +822,7 @@ class HypNO_ARZ_Orig(nn.Module):
             double_batch=double_batch,
             neighborhood_spacing=neighborhood_spacing,
             new_entropy=new_entropy,
+            fast_static_cache=self.fast_static_cache,
         )
 
         # Decoder outputs (rho, w) -- 2 channels.
@@ -641,6 +839,8 @@ class HypNO_ARZ_Orig(nn.Module):
                 double_batch=double_batch,
                 neighborhood_spacing=neighborhood_spacing,
                 new_entropy=new_entropy,
+                fast_static_cache=self.fast_static_cache,
+                fast_message_factor=self.fast_message_factor,
             )
             for _ in range(n_layers)
         ])
@@ -663,8 +863,12 @@ class HypNO_ARZ_Orig(nn.Module):
         h = self.lifting(rho0, w0, x, t)
 
         u_hats: list[torch.Tensor] = []
-        for layer in self.mp_layers:
-            if self.use_checkpoint:
+        for i, layer in enumerate(self.mp_layers):
+            # Checkpoint only every `checkpoint_stride`-th layer (point 1): the
+            # non-checkpointed layers retain activations (more memory, no
+            # recompute), trading memory for backward speed. Exact either way.
+            do_ckpt = self.use_checkpoint and (i % self.checkpoint_stride == 0)
+            if do_ckpt:
                 h = torch_checkpoint(
                     layer, h, x, t, rho0, w0, use_reentrant=False,
                 )
@@ -701,6 +905,9 @@ def _cfg_to_kwargs_orig(model_cfg: dict) -> dict:
         double_batch=bool(model_cfg.get("double_batch", False)),
         neighborhood_spacing=int(model_cfg.get("neighborhood_spacing", 1)),
         new_entropy=bool(model_cfg.get("new_entropy", False)),
+        checkpoint_stride=int(model_cfg.get("checkpoint_stride", 1)),
+        fast_static_cache=bool(model_cfg.get("fast_static_cache", False)),
+        fast_message_factor=bool(model_cfg.get("fast_message_factor", False)),
     )
 
 
