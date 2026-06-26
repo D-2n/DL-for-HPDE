@@ -616,11 +616,11 @@ hypno_arz_mark1_normal:
 # --model-section contains 'orig' -> --model-variant auto -> HypNO_ARZ_Orig.
 hypno_arz_orig:
   stencil_k_x: 6
-  stencil_k_t: 4
+  stencil_k_t: 4 # 5 for the one that was pre-trained on hll
   d_latent: 96
   d_hidden: 96
   d_hidden_nonadj: null
-  n_layers: 11
+  n_layers: 12
   activation: gelu
   causal_temporal: true
   decoder_depth: 5
