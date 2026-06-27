@@ -109,7 +109,9 @@ def main() -> None:
         if data_cfg.get("num_workers", None) is not None
         else None
     )
-    base_seed = int(cfg.get("seed", 42))
+    # Per-block seed wins over the global so eval sets are held out from
+    # training (which uses the top-level seed). Falls back to the global.
+    base_seed = int(data_cfg.get("seed", cfg.get("seed", 42)))
 
     # Generate ordered by num_segments (outer) then ic_type (inner) so that
     # contiguous blocks of the final arrays share a num_segments value.
