@@ -50,6 +50,20 @@ from hyperbolic_pde.scripts.shock_comparison import (
 )
 
 
+# sine_staircase is a subset of the general piecewise-constant family (finite
+# discontinuities), so for the paper we report only two IC families: riemann and
+# piecewise constant. The shock export pools by num_segments, so this only
+# affects the IC label shown in the representative-sample captions/logs.
+_FAMILY_ALIASES = {
+    "sine_staircase": "piecewise_constant",
+    "piecewise_sine": "piecewise_constant",
+}
+
+
+def canonical_family(name: str) -> str:
+    return _FAMILY_ALIASES.get(name, name)
+
+
 # ----------------------------------------------------------------------------
 # LaTeX-name mapping
 # ----------------------------------------------------------------------------
@@ -510,7 +524,7 @@ def main() -> None:
     n_total = u0_all.shape[0]
     for idx in range(n_total):
         seg = int(seg_all[idx])
-        ic_type = str(ictype_all[idx])
+        ic_type = canonical_family(str(ictype_all[idx]))
         done = len(mae_full[seg]["HypNO-ST3"])
         if args.n_per_group is not None and done >= args.n_per_group:
             continue

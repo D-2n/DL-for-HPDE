@@ -154,6 +154,20 @@ def extract_segment_values(u0: np.ndarray, atol: float = 1e-6) -> list[float]:
     return values
 
 
+# sine_staircase (a staircase of sine samples) is a subset of the general
+# piecewise-constant family (finite discontinuities), so for the paper
+# tables/figures we merge it into piecewise_constant -> only two IC families
+# remain: riemann and piecewise constant.
+_FAMILY_ALIASES = {
+    "sine_staircase": "piecewise_constant",
+    "piecewise_sine": "piecewise_constant",
+}
+
+
+def canonical_family(name: str) -> str:
+    return _FAMILY_ALIASES.get(name, name)
+
+
 def format_ic_label(u0: np.ndarray, ic_type: str, num_segments: int) -> str:
     """One-line label for the figure title."""
     if ic_type in ("piecewise_constant", "sine_staircase", "riemann"):
@@ -294,7 +308,7 @@ def main() -> None:
     out_dir = run_dir / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ic_types = sorted(set(ictype_all.tolist()))
+    ic_types = sorted(set(canonical_family(s) for s in ictype_all.tolist()))
     seg_values = sorted(set(int(s) for s in seg_all))
     print(f"ic_types: {ic_types}")
     print(f"num_segments groups: {seg_values}")
@@ -302,7 +316,9 @@ def main() -> None:
     # ID/OOD classification: a (ic_type, num_segments) cell is in-distribution
     # iff its ic_type appears in cfg['data']['ic_types'] AND its num_segments
     # appears in cfg['data']['num_segments'] from the run config.
-    train_ic_types: set[str] = set(str(s) for s in cfg["data"].get("ic_types", []))
+    train_ic_types: set[str] = set(
+        canonical_family(str(s)) for s in cfg["data"].get("ic_types", [])
+    )
     train_segs: set[int] = set(int(s) for s in cfg["data"].get("num_segments", []))
 
     def cell_is_id(ic_type: str, seg: int) -> bool:
@@ -347,7 +363,7 @@ def main() -> None:
     n_total = u0_all.shape[0]
     for idx in range(n_total):
         seg = int(seg_all[idx])
-        ic_type = str(ictype_all[idx])
+        ic_type = canonical_family(str(ictype_all[idx]))
         cell = (ic_type, seg)
         if cell not in mae_by_cell:
             continue
