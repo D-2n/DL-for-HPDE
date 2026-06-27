@@ -49,6 +49,10 @@ TEX_NAME = {"model": r"HypNO-ARZ", "weno5": r"WENO5", "godunov": r"Godunov"}
 BAND_1SHOCK_COLOR = "#ff1493"
 BAND_CONTACT_COLOR = "#00ced1"
 REGIONS = ["full", "1shock", "contact"]
+# Regions accumulated per sample. "combined" (1-shock OR contact) is the ARZ
+# analogue of the LWR "shock band" and feeds the single-panel mae-vs-segments
+# plot; REGIONS (without it) still drives the table + summary, unchanged.
+ACCUM_REGIONS = REGIONS + ["combined"]
 
 
 def configure_paper_style(plt) -> None:
@@ -96,27 +100,31 @@ def draw_band_outline(ax, mask: np.ndarray, x_np, t_np, color, dashed=False) -> 
                linestyles="dashed" if dashed else "solid")
 
 
-def plot_mae_vs_segments(seg_values, mae_by_region, methods, fig_path, band_half, tau_shock, plt):
-    """Three panels (full, 1shock, contact): rho-band MAE vs num_segments."""
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 3.8), constrained_layout=True)
-    for ax, region in zip(axes, REGIONS):
-        any_curve = False
-        for m in methods:
-            means = [np.nanmean(mae_by_region[region][seg][m]) for seg in seg_values]
-            stds = [np.nanstd(mae_by_region[region][seg][m]) for seg in seg_values]
-            if all(not np.isfinite(v) for v in means):
-                continue
-            ax.errorbar(seg_values, means, yerr=stds, marker="o", capsize=3,
-                        label=m, color=COLORS.get(m), linewidth=1.4)
-            any_curve = True
-        ax.set_xlabel("num.\\ IC segments")
-        ax.set_ylabel("rho MAE")
-        ax.set_yscale("log")
-        ax.set_xticks(seg_values)
-        ax.set_title(f"{region} (band $\\pm${band_half}, $\\tau={tau_shock}$)")
-        if any_curve:
-            ax.legend()
-        ax.grid(True, alpha=0.3)
+def plot_mae_vs_segments(seg_values, mae_by_region, methods, fig_path, band_half,
+                         tau_shock, plt, region="combined"):
+    """Single-panel shock-band MAE vs num_segments (mirrors the LWR export).
+
+    `region` selects the band whose MAE is plotted; "combined" (1-shock OR
+    contact) is the ARZ counterpart of the LWR shock band.
+    """
+    fig, ax = plt.subplots(figsize=(5.2, 3.4), constrained_layout=True)
+    for m in methods:
+        means = [np.nanmean(mae_by_region[region][seg][m]) for seg in seg_values]
+        stds = [np.nanstd(mae_by_region[region][seg][m]) for seg in seg_values]
+        if all(not np.isfinite(v) for v in means):
+            continue
+        ax.errorbar(seg_values, means, yerr=stds, marker="o", capsize=3,
+                    label=TEX_NAME.get(m, m), color=COLORS.get(m), linewidth=1.4)
+    ax.set_xlabel("num.\\ IC segments")
+    ax.set_ylabel("shock-band MAE")
+    ax.set_yscale("log")
+    ax.set_xticks(seg_values)
+    ax.set_title(
+        f"OOD shock-band MAE  "
+        f"(band $\\pm${band_half} cells, signed jump $>${tau_shock})"
+    )
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     fig.savefig(fig_path)
     plt.close(fig)
 
@@ -423,7 +431,7 @@ def main() -> None:
     seg_values = sorted(set(int(s) for s in bundle.num_segments))
     # mae_by_region[region][seg][method] -> list of per-sample rho MAE.
     mae_by_region = {
-        r: {seg: {m: [] for m in methods} for seg in seg_values} for r in REGIONS
+        r: {seg: {m: [] for m in methods} for seg in seg_values} for r in ACCUM_REGIONS
     }
     rep_by_seg: dict = {}
     fallback_by_seg: dict = {}
@@ -449,7 +457,8 @@ def main() -> None:
         mask_1shock = detect_1shock_band(rho_gt, w_gt, v_gt, args.tau_shock, args.band_halfwidth, args.tv_mult)
         mask_contact = detect_contact_band(rho_gt, w_gt, v_gt, args.tau_shock, args.band_halfwidth, args.tv_mult)
         mask_combined = mask_1shock | mask_contact
-        region_masks = {"full": None, "1shock": mask_1shock, "contact": mask_contact}
+        region_masks = {"full": None, "1shock": mask_1shock, "contact": mask_contact,
+                        "combined": mask_combined}
 
         print(
             f"[{i+1}/{N}] seg={seg} fam={fam} "

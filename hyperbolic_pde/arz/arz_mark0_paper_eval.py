@@ -47,6 +47,7 @@ from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.model_arz_orig import load_hypno_arz_orig_from_checkpoint
 from hyperbolic_pde.arz.eval_vs_numerical_arz import _run_baseline
+from hyperbolic_pde.arz.arz_baseline_cache import load_baseline_cache, cached_sample
 from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 # Headline channel for the main-text tables/figures (LWR parity: u -> rho).
@@ -182,6 +183,10 @@ def main() -> None:
                     help="Stratified eval dataset .npz (must carry ic_type, "
                          "num_segments).")
     ap.add_argument("--baselines", type=str, default="godunov,weno5")
+    ap.add_argument("--baselines-npz", type=Path, default=None,
+                    help="Precomputed baseline cache (arz_precompute_baselines). "
+                         "Cached methods are loaded instead of re-solved; "
+                         "uncached methods still solve on the fly.")
     ap.add_argument("--n_per_cell", type=int, default=None,
                     help="Cap on samples per (ic_type, num_segments) cell.")
     ap.add_argument("--device", type=str,
@@ -225,6 +230,13 @@ def main() -> None:
         model_section=args.model_section,
     )
     print(f"[arz_mark0_paper_eval] loaded {args.ckpt}  tau_eval={tau}")
+
+    # ---- Optional precomputed baseline cache ------------------------- #
+    baseline_cache = None
+    if args.baselines_npz is not None:
+        baseline_cache = load_baseline_cache(args.baselines_npz, bundle)
+        print(f"[arz_mark0_paper_eval] using baseline cache "
+              f"{args.baselines_npz} (methods: {sorted(baseline_cache)})")
 
     # ---- Optional FNO baseline --------------------------------------- #
     fno_model = None
@@ -323,13 +335,19 @@ def main() -> None:
             w_f = out[0, 1].cpu().numpy().T
             preds["FNO"] = {"rho": rho_f, "w": w_f, "v": w_f - P.pressure(rho_f)}
 
-        # Numerical baselines.
+        # Numerical baselines (cache hit -> no re-solve; cached NaN -> skip).
         for m in baselines:
-            try:
-                rho_b, w_b = _run_baseline(m, rho0, w0, bundle, baseline_tau, args.boundary)
-            except Exception as e:
-                print(f"  [warn] {m} failed on sample {i}: {e}", flush=True)
-                continue
+            if baseline_cache is not None and m in baseline_cache:
+                hit = cached_sample(baseline_cache, m, i)
+                if hit is None:
+                    continue  # cache says this method failed on this sample
+                rho_b, w_b = hit
+            else:
+                try:
+                    rho_b, w_b = _run_baseline(m, rho0, w0, bundle, baseline_tau, args.boundary)
+                except Exception as e:
+                    print(f"  [warn] {m} failed on sample {i}: {e}", flush=True)
+                    continue
             preds[m] = {"rho": rho_b, "w": w_b, "v": w_b - P.pressure(rho_b)}
 
         for m, pdict in preds.items():

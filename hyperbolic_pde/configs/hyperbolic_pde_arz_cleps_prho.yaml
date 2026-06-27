@@ -76,8 +76,10 @@ arz_paper_eval_data:
 #   ic_types = the 3 families the clean WFT set trains on (riemann_stratified,
 #              piecewise_constant_stratified, piecewise_sine -> sine STAIRCASE),
 #              so ID family-matching works in arz_paper_eval.
-#   segments = [2,3,5,7,8,10,30,40]. vs clean-WFT training segments [2,3,5,7,10]:
-#              {2,3,5,7,10} are ID, {8,30,40} are OOD.
+#   segments = [2,3,5,7,8,10,20,30]. vs clean-WFT training segments [2,3,5,7,10]:
+#              {2,3,5,7,10} are ID, {8,20,30} are OOD. (40 was dropped: rho and v
+#              are independently segmented -> ~2x interfaces, and 40 segs trips the
+#              WFT smoothness guard >nx/2=64 at nx=128. 30 is safe (~51 interfaces).)
 #   3 ic_types x 8 num_segments x 20/cell = 480 (divisible by 24).
 #   seed 2026 != training seed 42 -> even the ID-segment cells are held-out.
 #   train_fraction 0.0 -> the whole file is held-out (eval scores all 480).
@@ -97,7 +99,7 @@ arz_evaluation_data:
   cfl: 0.4
   stratify: true
   ic_types: [riemann_stratified, piecewise_constant_stratified, piecewise_sine]
-  num_segments: [2, 3, 5, 7, 8, 10, 30, 40]
+  num_segments: [2, 3, 5, 7, 8, 10, 20, 30]
   rho_min: 0.1
   rho_max: 0.9
   v_min: 0.0

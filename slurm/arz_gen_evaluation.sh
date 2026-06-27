@@ -17,8 +17,10 @@
 #              clean WFT training set so eval is on the same regime).
 #   families : riemann_stratified, piecewise_constant_stratified, piecewise_sine
 #              (piecewise_sine maps to the sine STAIRCASE -- WFT-able).
-#   segments : 2,3,5,7,8,10,30,40
-#              vs clean-WFT training segs [2,3,5,7,10]: {2,3,5,7,10} ID, {8,30,40} OOD.
+#   segments : 2,3,5,7,8,10,20,30
+#              vs clean-WFT training segs [2,3,5,7,10]: {2,3,5,7,10} ID, {8,20,30} OOD.
+#              (40 dropped: rho+v are independently segmented -> ~2x interfaces;
+#               40 segs trips the WFT smoothness guard >nx/2 at nx=128. 30 is safe.)
 #   N = 480  = 3 families x 8 segments x 20/cell (divisible by 24).
 #   seed 2026 (!= training seed 42) -> ID-segment cells are held-out samples too.
 #
@@ -33,7 +35,7 @@ mkdir -p /home/dzdrale/scratch/arz_1d /home/dzdrale/scratch/logs
 OUT=${1:-/home/dzdrale/scratch/arz_1d/arz_evaluation_prho.npz}
 N=${2:-480}
 # WFT rarefaction-fan resolution. 0 = auto (0.1*dx) = coarsest sub-cell fans =
-# fewest fronts = fastest/safest. The high-segment ICs (30/40) have many
+# fewest fronts = fastest/safest. The high-segment ICs (20/30) have many
 # interfaces; do NOT push rare_delta much below ~0.0005 here or the O(n^2)
 # front-collision blow-up can hang datagen on the busy cells.
 RARE_DELTA=${3:-0}
@@ -45,7 +47,7 @@ RARE_DELTA=${3:-0}
     --x-min -1.0 --x-max 1.0 --t-max 1.0 \
     --tau inf \
     --families riemann_stratified,piecewise_constant_stratified,piecewise_sine \
-    --segments 2,3,5,7,8,10,30,40 \
+    --segments 2,3,5,7,8,10,20,30 \
     --fv-solver wft \
     --wft-rare-delta "$RARE_DELTA" \
     --use-exact-riemann \

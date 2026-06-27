@@ -115,7 +115,13 @@ def _mae(arr_pred, arr_gt, mask=None):
 
 def _run_baseline(name, rho0, w0, bundle, tau, boundary):
     nt = bundle.t.shape[0]
-    x_min = float(bundle.x.min()); x_max = float(bundle.x.max())
+    # bundle.x are CELL MIDPOINTS (datagen: x_min + (i+0.5)*dx). Recover the
+    # TRUE domain edges so the baseline builds the same midpoint grid as the
+    # dataset/model rather than a linspace-endpoints grid half a cell off.
+    xb = np.asarray(bundle.x, dtype=np.float64)
+    dx = float(xb[1] - xb[0])
+    x_min = float(xb[0] - 0.5 * dx)
+    x_max = float(xb[-1] + 0.5 * dx)
     t_max = float(bundle.t.max())
     if name == "godunov":
         _, _, rho_h, w_h = Ref.solve_arz_reference(
@@ -156,6 +162,10 @@ def main():
                     help="If set, write per-sample band-overlay plots into "
                          "this directory.")
     ap.add_argument("--n-plots", type=int, default=5)
+    ap.add_argument("--slice-times", type=str, default="0.5,1.0",
+                    help="Comma list of time fractions in [0,1] at which to plot "
+                         "1D x-profile slices (GT vs each method, rho/w/v) per "
+                         "plotted sample. Empty string disables the slice plots.")
     ap.add_argument("--model-variant", type=str, default="auto",
                     choices=["auto", "mark1", "mark1_router", "orig", "mark2", "mark2_1"],
                     help="Model class. 'auto' reads it off --model-section.")
@@ -164,6 +174,13 @@ def main():
     args = ap.parse_args()
 
     bundle = load_arz_dataset(args.data)
+    # The pressure closure is a GLOBAL switch (physics_arz._P_FORM, module
+    # default "rho+rho2"). The GT-derived v, the model's frozen closures, and
+    # the godunov baseline ALL read it at call time, so failing to align it
+    # with the dataset silently runs the wrong physics everywhere. Mirror
+    # eval_vs_numerical_arz and pin it to the dataset's stored form.
+    P.set_pressure_form(str(bundle.p_form))
+    print(f"[eval_shock_arz] pressure_form={P.get_pressure_form()}")
     tau = float(args.tau) if args.tau is not None else float(bundle.tau)
     N = bundle.rho.shape[0]
     take = min(args.samples, N)
@@ -349,6 +366,43 @@ def main():
             )
             fig.savefig(plot_dir / f"shock_sample_{i}_rho.png", dpi=150)
             plt.close(fig)
+
+            # Per-sample 1D x-profile slices at fixed times (GT vs each method,
+            # all three channels). Complements the space-time heatmaps above.
+            slice_fracs = [float(s) for s in args.slice_times.split(",") if s.strip()]
+            if slice_fracs:
+                t0, t1 = float(t_np[0]), float(t_np[-1])
+                gt_fields = {"rho": rho_gt, "w": w_gt, "v": v_gt}
+                method_fields = {}
+                for m in method_order:
+                    rho_b, w_b = preds[m]
+                    method_fields[m] = {
+                        "rho": rho_b, "w": w_b, "v": w_b - P.pressure(rho_b),
+                    }
+                channels = ["rho", "w", "v"]
+                nrows = len(slice_fracs)
+                sfig, saxes = plt.subplots(
+                    nrows, 3, figsize=(15, 4 * nrows),
+                    constrained_layout=True, squeeze=False,
+                )
+                for r, frac in enumerate(slice_fracs):
+                    # Nearest stored timestep to the requested fraction of horizon.
+                    ti = int(np.argmin(np.abs(t_np - (t0 + frac * (t1 - t0)))))
+                    for c, ch in enumerate(channels):
+                        ax = saxes[r, c]
+                        ax.plot(x_np, gt_fields[ch][ti], color="k", lw=2.0,
+                                label="GT", zorder=3)
+                        for m in method_order:
+                            ax.plot(x_np, method_fields[m][ch][ti], lw=1.2,
+                                    alpha=0.85, label=m)
+                        ax.set_title(f"{ch}  t={t_np[ti]:.3f} (frac={frac:g})")
+                        ax.set_xlabel("x"); ax.set_ylabel(ch)
+                        ax.grid(alpha=0.25)
+                        if r == 0 and c == 2:
+                            ax.legend(fontsize=8)
+                sfig.suptitle(f"Sample {i}  fam={fam} seg={seg}  x-profile slices")
+                sfig.savefig(plot_dir / f"slice_sample_{i}.png", dpi=150)
+                plt.close(sfig)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", newline="") as f:
