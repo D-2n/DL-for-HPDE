@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=arz_gen_riemann_1k
-#SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00

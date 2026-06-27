@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=arz_gen_mixed_wft
-#SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
@@ -22,7 +21,7 @@ export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/arz_1d /home/dzdrale/scratch/logs
 
 OUT=${1:-/home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho.npz}
-N=${2:-5400}
+N=${2:-6000}
 # WFT rarefaction-fan resolution (absolute, rho units). 0 = auto = 0.1*dx
 # (dx = 2/128 = 0.0156 -> 0.00156). Lower = sharper fans but more fronts / slower
 # on busy multi-segment ICs. Pass e.g. 0.0008 for ~2x finer.
@@ -35,7 +34,7 @@ RARE_DELTA=${3:-0}
     --x-min -1.0 --x-max 1.0 --t-max 1.0 \
     --tau inf \
     --families riemann_stratified,piecewise_constant_stratified,piecewise_sine \
-    --segments 2,3,5,7,10,25 \
+    --segments 2,3,5,7,10, \
     --fv-solver wft \
     --wft-rare-delta "$RARE_DELTA" \
     --use-exact-riemann \

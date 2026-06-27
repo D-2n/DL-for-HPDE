@@ -20,7 +20,7 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 
 DATA=${1:-/home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho_clean.npz}
-N=${2:-40}
+N=${2:-10}
 OUT=${3:-/home/dzdrale/scratch/results/wft_vs_exact}
 
 mkdir -p "$OUT" /home/dzdrale/scratch/logs
@@ -31,7 +31,7 @@ echo "Checking WFT vs exact Riemann for: $DATA"
     --pressure-form rho \
     --n "$N" \
     --tol 1e-5 \
-    --plot-worst 6 \
+    --plot-worst 4 \
     --out "$OUT"
 
 echo "[arz_check_wft_vs_exact] done -> $OUT"

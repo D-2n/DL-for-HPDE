@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=arz_eval_mark0_paper
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=64G
-#SBATCH --time=06:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_eval_mark0_paper_%j.log
 
 # ARZ mark-0 (orig) paper evaluation: HypNO-orig vs FNO vs Godunov vs WENO5
@@ -24,11 +24,11 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
-CKPT=${1:-/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260616_173152/checkpoint_epoch170.pt}
-HOMOG_DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_stratified_homog_prho.npz}
+CKPT=${1:-/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_arz/run_20260620_222959/checkpoint_epoch90.pt}
+HOMOG_DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho.npz}
 RIEMANN_DATA=${3:-/home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho_strat.npz}
 FNO_WEIGHTS=${4:-/home/dzdrale/scratch/runs/fno_arz_prho.pt}
-OUTDIR=${5:-/home/dzdrale/scratch/results/mark0_paper_eval}
+OUTDIR=${5:-/home/dzdrale/scratch/results/mark0_paper_eval_wft}
 N=${6:-100}
 N_PLOTS=${7:-10}
 BASELINES=${8:-godunov,weno5}

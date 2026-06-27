@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=arz_inspect_data
-#SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G

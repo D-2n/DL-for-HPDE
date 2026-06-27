@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=arz_eval_orig
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=64G
-#SBATCH --time=06:00:00
+#SBATCH --time=00:15:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_eval_orig_%j.log
 
 # Evaluate the ORIGINAL pre-pure-pairwise 2d+12 HypNO_ARZ_Orig checkpoint vs
@@ -22,14 +22,14 @@ export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
 CKPT=${1:?usage: sbatch arz_eval_orig.sh <checkpoint.pt> [data] [outdir] [n_plots] [samples] [baselines] [config]}
-DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_stratified_homog_prho.npz}
+DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho_clean.npz}
 OUTDIR=${3:-/home/dzdrale/scratch/results}
 N_PLOTS=${4:-5}
 N=${5:-200}
 # Homogeneous (tau=inf): godunov here = HLL + (no relaxation). weno5 is the
 # sharper but slower baseline. Default to both; drop to 'godunov' (or fewer
 # --samples) if walltime gets tight.
-BASELINES=${6:-godunov,weno5}
+BASELINES=${6:-godunov,muscl}
 CONFIG=${7:-}
 
 CONFIG_ARG=()
