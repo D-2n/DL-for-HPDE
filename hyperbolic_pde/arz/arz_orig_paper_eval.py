@@ -39,7 +39,7 @@ from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.model_arz_orig import load_hypno_arz_orig_from_checkpoint
 from hyperbolic_pde.arz.eval_vs_numerical_arz import solve_arz_weno5
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 CHANNELS = ["rho", "w", "v"]
 COLORS = {
@@ -245,7 +245,7 @@ def _save_compare_fig(idx, rho0, gt, preds, x_np, t_np, methods, figs_dir, plt):
         for c, (name, arr) in enumerate(zip(col_names, col_arrs)):
             ax = fig.add_subplot(gs[1, c])
             mae_str = "" if name == "GT" else f"\nMAE={_mae(arr, gt_arr):.2e}"
-            im = ax.pcolormesh(x_np, t_np, arr, shading="auto",
+            im = ax.pcolormesh(x_np, t_np, arr, shading="nearest",
                                cmap="jet", vmin=vmin, vmax=vmax)
             ax.set_title(f"{name}{mae_str}")
             ax.set_xlabel("x"); ax.set_ylabel("t")
@@ -260,7 +260,7 @@ def _save_compare_fig(idx, rho0, gt, preds, x_np, t_np, methods, figs_dir, plt):
                 ax.axis("off")
                 continue
             err = np.abs(preds[name][ch] - gt_arr)
-            im = ax.pcolormesh(x_np, t_np, err, shading="auto",
+            im = ax.pcolormesh(x_np, t_np, err, shading="nearest",
                                cmap="magma", vmin=0, vmax=err_vmax)
             ax.set_title(f"|{name} − GT|")
             ax.set_xlabel("x"); ax.set_ylabel("t")

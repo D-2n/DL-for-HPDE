@@ -5,7 +5,9 @@ logs/
 # Datasets / artifacts
 *.npz
 *.zip
-
+*.csv
+*.txt
+*.md
 # Runs, plots
 hyperbolic_pde/runs/
 **/plots/
@@ -32,6 +34,9 @@ writeup/
 # Python caches
 __pycache__/
 *.pyc
+
+# Claude Code
+.claude/
 
 # Local reference clones
 _fluxgnn_ref/

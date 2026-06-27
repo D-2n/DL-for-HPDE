@@ -38,7 +38,7 @@ from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import reference_arz as Ref
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.eval_vs_numerical_arz import solve_arz_weno5
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 
 # --------------------------------------------------------------------------- #

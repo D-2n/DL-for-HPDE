@@ -16,11 +16,11 @@ sys.path.append(str(ROOT.parent))
 
 from hyperbolic_pde.data.fvm import load_dataset
 from hyperbolic_pde.cfl import annotate_cfl, print_cfl_report
-from hyperbolic_pde.models.deeponet import DeepONet
-from hyperbolic_pde.models.fno import FNO2d
-from hyperbolic_pde.models.fluxgnn import FluxGNN1D
-from hyperbolic_pde.models.pinn import UniversalPINN
-from hyperbolic_pde.models.vpinn import VPINN
+from hyperbolic_pde.models.competitive_architectures.deeponet import DeepONet
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
+from hyperbolic_pde.models.legacy.fluxgnn import FluxGNN1D
+from hyperbolic_pde.models.pinn_methods.pinn import UniversalPINN
+from hyperbolic_pde.models.pinn_methods.vpinn import VPINN
 
 
 def _deep_update(base: dict, override: dict) -> dict:

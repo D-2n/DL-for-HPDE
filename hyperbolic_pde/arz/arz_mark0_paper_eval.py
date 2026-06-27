@@ -47,7 +47,8 @@ from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz.datagen_arz import load_arz_dataset
 from hyperbolic_pde.arz.model_arz_orig import load_hypno_arz_orig_from_checkpoint
 from hyperbolic_pde.arz.eval_vs_numerical_arz import _run_baseline
-from hyperbolic_pde.models.fno import FNO2d
+from hyperbolic_pde.arz.arz_baseline_cache import load_baseline_cache, cached_sample
+from hyperbolic_pde.models.competitive_architectures.fno import FNO2d
 
 # Headline channel for the main-text tables/figures (LWR parity: u -> rho).
 HEADLINE_CHANNEL = "rho"
@@ -60,6 +61,16 @@ COLORS = {
 }
 # Maximum number of segment values to spell out in a figure title.
 _MAX_SEG_VALUES_IN_TITLE = 8
+
+# piecewise_sine (sine staircase) is a subset of the general piecewise-constant
+# family (finite discontinuities, WFT-exact), so for the paper tables/figures we
+# merge it into piecewise_constant_stratified -> only two IC families remain:
+# riemann and piecewise constant.
+_FAMILY_ALIASES = {"piecewise_sine": "piecewise_constant_stratified"}
+
+
+def canonical_family(name: str) -> str:
+    return _FAMILY_ALIASES.get(name, name)
 
 
 def mae(pred: np.ndarray, truth: np.ndarray) -> float:
@@ -99,7 +110,7 @@ def _load_train_id_sets(
             f"all cells -> OOD"
         )
         return set(), set()
-    ic_types = set(str(s) for s in sec.get("ic_types", []))
+    ic_types = set(canonical_family(str(s)) for s in sec.get("ic_types", []))
     segs = set(int(s) for s in sec.get("num_segments", []))
     print(f"[arz_mark0_paper_eval] train ic_types={sorted(ic_types)}  segs={sorted(segs)}")
     return ic_types, segs
@@ -182,6 +193,10 @@ def main() -> None:
                     help="Stratified eval dataset .npz (must carry ic_type, "
                          "num_segments).")
     ap.add_argument("--baselines", type=str, default="godunov,weno5")
+    ap.add_argument("--baselines-npz", type=Path, default=None,
+                    help="Precomputed baseline cache (arz_precompute_baselines). "
+                         "Cached methods are loaded instead of re-solved; "
+                         "uncached methods still solve on the fly.")
     ap.add_argument("--n_per_cell", type=int, default=None,
                     help="Cap on samples per (ic_type, num_segments) cell.")
     ap.add_argument("--device", type=str,
@@ -226,6 +241,13 @@ def main() -> None:
     )
     print(f"[arz_mark0_paper_eval] loaded {args.ckpt}  tau_eval={tau}")
 
+    # ---- Optional precomputed baseline cache ------------------------- #
+    baseline_cache = None
+    if args.baselines_npz is not None:
+        baseline_cache = load_baseline_cache(args.baselines_npz, bundle)
+        print(f"[arz_mark0_paper_eval] using baseline cache "
+              f"{args.baselines_npz} (methods: {sorted(baseline_cache)})")
+
     # ---- Optional FNO baseline --------------------------------------- #
     fno_model = None
     if args.no_fno:
@@ -264,7 +286,7 @@ def main() -> None:
     # Method order: model, FNO (if present), then numerical baselines.
     methods = ["model"] + (["FNO"] if fno_model is not None else []) + baselines
 
-    ic_types = sorted(set(str(s) for s in bundle.ic_type))
+    ic_types = sorted(set(canonical_family(str(s)) for s in bundle.ic_type))
     seg_values = sorted(set(int(s) for s in bundle.num_segments))
     print(f"[arz_mark0_paper_eval] ic_types={ic_types}  num_segments={seg_values}")
 
@@ -286,7 +308,7 @@ def main() -> None:
     baseline_tau = tau if np.isfinite(tau) else 1e6
 
     for i in range(N):
-        fam = str(bundle.ic_type[i])
+        fam = canonical_family(str(bundle.ic_type[i]))
         seg = int(bundle.num_segments[i])
         cell = (fam, seg)
         if cell not in mae_by_cell:
@@ -323,13 +345,19 @@ def main() -> None:
             w_f = out[0, 1].cpu().numpy().T
             preds["FNO"] = {"rho": rho_f, "w": w_f, "v": w_f - P.pressure(rho_f)}
 
-        # Numerical baselines.
+        # Numerical baselines (cache hit -> no re-solve; cached NaN -> skip).
         for m in baselines:
-            try:
-                rho_b, w_b = _run_baseline(m, rho0, w0, bundle, baseline_tau, args.boundary)
-            except Exception as e:
-                print(f"  [warn] {m} failed on sample {i}: {e}", flush=True)
-                continue
+            if baseline_cache is not None and m in baseline_cache:
+                hit = cached_sample(baseline_cache, m, i)
+                if hit is None:
+                    continue  # cache says this method failed on this sample
+                rho_b, w_b = hit
+            else:
+                try:
+                    rho_b, w_b = _run_baseline(m, rho0, w0, bundle, baseline_tau, args.boundary)
+                except Exception as e:
+                    print(f"  [warn] {m} failed on sample {i}: {e}", flush=True)
+                    continue
             preds[m] = {"rho": rho_b, "w": w_b, "v": w_b - P.pressure(rho_b)}
 
         for m, pdict in preds.items():
@@ -413,7 +441,7 @@ def _render_cell_figures(rep_by_cell, methods, x_np, t_np, figs_dir, plt):
             sol_axes = [fig.add_subplot(gs[1, c]) for c in range(ncols)]
             for c, (name, sol) in enumerate(panels):
                 im = sol_axes[c].pcolormesh(
-                    x_np, t_np, sol, shading="auto", cmap="jet", vmin=vmin, vmax=vmax
+                    x_np, t_np, sol, shading="nearest", cmap="jet", vmin=vmin, vmax=vmax
                 )
                 sol_axes[c].set_title(name)
                 sol_axes[c].set_xlabel("x"); sol_axes[c].set_ylabel("t")
@@ -428,7 +456,7 @@ def _render_cell_figures(rep_by_cell, methods, x_np, t_np, figs_dir, plt):
                     continue
                 err = np.abs(sol - gt_arr)
                 im = err_axes[c].pcolormesh(
-                    x_np, t_np, err, shading="auto", cmap="magma", vmin=0, vmax=err_vmax
+                    x_np, t_np, err, shading="nearest", cmap="magma", vmin=0, vmax=err_vmax
                 )
                 err_axes[c].set_title(f"|{name} - GT|")
                 err_axes[c].set_xlabel("x"); err_axes[c].set_ylabel("t")
