@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=arz_merge_wft_riemann
-#SBATCH --partition=cpu
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --time=00:30:00

@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=arz_gen_ood_wft
-#SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00

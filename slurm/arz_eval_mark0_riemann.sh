@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=arz_eval_mark0_riemann
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem=64G
-#SBATCH --time=06:00:00
+#SBATCH --time=00:10:00
 #SBATCH --output=/home/dzdrale/scratch/logs/arz_eval_mark0_riemann_%j.log
 
 # Evaluate the mark0 (orig) HypNO-ARZ checkpoint trained on the stratified
@@ -18,11 +18,11 @@ cd /home/dzdrale/DL-for-HPDE
 export PYTHONPATH=/home/dzdrale/DL-for-HPDE:${PYTHONPATH:-}
 mkdir -p /home/dzdrale/scratch/results /home/dzdrale/scratch/logs
 
-CKPT=${1:-/home/dzdrale/scratch/runs/hypno_arz/run_20260617_195405/model_final.pt}
-DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_riemann_exact_prho_strat.npz}
-OUTDIR=${3:-/home/dzdrale/scratch/results/mark0_riemann}
+CKPT=${1:-hyperbolic_pde/runs/hypno_arz/run_20260624_001010/checkpoint_epoch20.pt}
+DATA=${2:-/home/dzdrale/scratch/arz_1d/arz_mixed_wft_prho_clean.npz}
+OUTDIR=${3:-/home/dzdrale/scratch/results/mark0_riemann_wft}
 N_PLOTS=${4:-10}
-N=${5:-200}
+N=${5:-50}
 BASELINES=${6:-godunov}
 CONFIG=${7:-}
 

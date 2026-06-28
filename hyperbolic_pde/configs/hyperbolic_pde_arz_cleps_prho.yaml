@@ -651,7 +651,7 @@ hypno_arz_orig:
   lambda_balance: 0.0     # tau=inf (homogeneous) -> relaxation balance OFF
   lambda_probe: 0.01
 
-  checkpoint_every: 10
+  checkpoint_every: 2
   val_every: 10
   log_batch_every: 50
   diseq_threshold: 0.1
