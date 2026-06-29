@@ -16,8 +16,8 @@ mkdir -p /home/dzdrale/scratch/logs
 # Detector defaults match shock_comparison.sh (jump=0.06, band=2, TV-gate on,
 # multiplier=1.5). Override via passthrough args, e.g.
 #   sbatch slurm/shock_paper_export.sh --jump-threshold 0.08 --band-cells 3
-RUN_DIR=/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260520_162334
-DATA_PATH=/home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_ood_grouped.npz
+RUN_DIR=/home/dzdrale/DL-for-HPDE/hyperbolic_pde/runs/hypno_st3/run_20260518_000640_128_paper
+DATA_PATH=/home/dzdrale/scratch/lwr_1d/hyperbolic_dataset_paper_eval.npz
 N_PER_GROUP=5
 
 /home/dzdrale/hypno_env/bin/python -m hyperbolic_pde.scripts.shock_paper_export \
