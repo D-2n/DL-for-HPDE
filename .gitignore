@@ -8,6 +8,7 @@ logs/
 *.csv
 *.txt
 *.md
+!README.md
 # Runs, plots
 hyperbolic_pde/runs/
 **/plots/
