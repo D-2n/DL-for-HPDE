@@ -17,21 +17,22 @@ both paths available via the `use_exact_riemann` flag.)
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
-import multiprocessing as mp
 
 import numpy as np
 
 from hyperbolic_pde.arz import physics_arz as P
 from hyperbolic_pde.arz import reference_arz as Ref
-from hyperbolic_pde.arz.reference_arz import solve_arz_weno5
+from hyperbolic_pde.arz.reference_arz import WenoInstabilityError, solve_arz_weno5
 from hyperbolic_pde.arz.wft_arz import solve_arz_wft_xt
 from hyperbolic_pde.arz import riemann_arz as Rie
 from hyperbolic_pde.data.fvm import (
     _stratified_pair,
     piecewise_constant_stratified_ic,
+    piecewise_sine_ic,
     sine_staircase_ic,
     riemann_stratified_ic,
 )
@@ -44,15 +45,12 @@ _V_MIN_DEFAULT = 0.0
 _V_MAX_DEFAULT = 1.0
 
 
-# NOTE: "piecewise_sine" maps to sine_staircase_ic (a PIECEWISE-CONSTANT
-# staircase quantisation of a single global sine), NOT the smooth per-segment
-# piecewise_sine_ic. The staircase has finitely many discontinuities, so WFT
-# can evolve it to MACHINE PRECISION -- the smooth variant would force an HLL
-# fallback, which is forbidden in a WFT-exact dataset.
+# "piecewise_sine" is the sine STAIRCASE (WFT-exact), not the smooth per-segment sine.
 IC_FUNCS = {
     "riemann_stratified": riemann_stratified_ic,
     "piecewise_constant_stratified": piecewise_constant_stratified_ic,
     "piecewise_sine": sine_staircase_ic,
+    "piecewise_sine_smooth": piecewise_sine_ic,
 }
 
 
@@ -278,17 +276,7 @@ def _segments_from_cells(
     rho0: np.ndarray, w0: np.ndarray,
     x_min: float, x_max: float, jump_tol: float = 1e-9,
 ) -> Tuple[list, list]:
-    """Recover piecewise-constant (states, boundaries) from cell arrays.
-
-    For a piecewise-constant IC sampled at cell midpoints (datagen convention:
-    nx cells, dx = (x_max-x_min)/nx, centres x_min + (i+0.5)*dx), detect the
-    interfaces (adjacent cells whose state differs) and return:
-      states     = [(rho, v), ...]   one per constant segment (primitive (rho,v))
-      boundaries = [...]              interface x-locations between segments
-
-    A boundary between cell i and i+1 is placed at the shared cell edge
-    x_min + (i+1)*dx. WFT then evolves the exact piecewise-constant data.
-    """
+    """Recover piecewise-constant (states, boundaries) from cell arrays."""
     nx = rho0.size
     dx = (x_max - x_min) / nx
     v0 = w0 - P.pressure(rho0)
@@ -308,20 +296,15 @@ def _solve_one(
     tau: float, cfl: float, boundary: str, refine: int,
     use_exact_riemann: bool,
     fv_solver: str = "hll",
+    weno_cfl: float | None = None,
     wft_rare_delta: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return rho_hist, w_hist of shape (nt, nx).
 
-    fv_solver controls which scheme is used for non-exact-Riemann samples:
+    fv_solver controls which FV scheme is used for non-exact-Riemann samples:
       "hll"   -- Strang-split HLL reference solver (default, legacy behaviour)
       "weno5" -- component-wise WENO5 + SSP-RK3 + Strang-split exact relaxation
-      "wft"   -- wave-front tracking, MACHINE-PRECISION GT for ALL piecewise-
-                 constant IC families (riemann_stratified,
-                 piecewise_constant_stratified, and piecewise_sine -- which maps
-                 to the sine STAIRCASE, sine_staircase_ic). It is homogeneous
-                 (tau=inf) and exact on shocks/contacts; the ONLY error is the
-                 rarefaction-fan resolution. There is NO HLL fallback: a smooth
-                 IC reaching this path raises (it is not WFT-representable).
+      "weno5_char" -- characteristic WENO5-Z (same RK/PP limiter, better contacts)
 
     When use_exact_riemann=True and ic_name=="riemann_stratified", the exact
     analytic solver is used regardless of fv_solver.
@@ -346,57 +329,39 @@ def _solve_one(
         return rho_hist.astype(np.float32), w_hist.astype(np.float32)
 
     if fv_solver == "wft":
-        # Wave-front tracking: machine-precision GT for piecewise-constant ICs.
-        # WFT is homogeneous (tau=inf); only valid when there is no relaxation
-        # source. EVERY IC family in a WFT dataset MUST be piecewise-constant so
-        # there is NO HLL fallback -- "piecewise_sine" therefore maps to the
-        # sine STAIRCASE (sine_staircase_ic), not the smooth per-segment sine.
         if np.isfinite(tau):
             raise ValueError(
                 "fv_solver='wft' is homogeneous (tau=inf) only; got finite "
-                f"tau={tau}. Use 'hll'/'weno5' for relaxation datasets."
+                f"tau={tau}."
             )
         dx = (x_max - x_min) / nx
         x_mid = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float64)
         t = np.linspace(0.0, t_max, nt, dtype=np.float64)
         states, boundaries = _segments_from_cells(rho0, w0, x_min, x_max)
-        # Guard against a SMOOTH IC slipping into the WFT path: a true staircase
-        # has O(num_segments) interfaces, a smooth profile has ~nx (one per cell).
-        # If nearly every cell is an interface the IC is not piecewise-constant
-        # and WFT would (a) explode in front count and (b) not be exact -> refuse
-        # rather than silently degrade. (A WFT dataset must be HLL-free.)
         if len(boundaries) > nx // 2:
             raise ValueError(
                 f"WFT path received a near-smooth IC ('{ic_name}'): "
-                f"{len(boundaries)} interfaces over {nx} cells. WFT requires a "
-                f"piecewise-constant IC. Check IC_FUNCS mapping (e.g. "
-                f"piecewise_sine must map to sine_staircase_ic, not the smooth "
-                f"piecewise_sine_ic)."
+                f"{len(boundaries)} interfaces over {nx} cells."
             )
-        # Fan resolution. Default (wft_rare_delta<=0) scales with the GRID:
-        # sub-cell fans are invisible on the nx-cell output and only inflate the
-        # front count (each interface spawns ~|drho|/rare_delta fronts). A busy
-        # multi-segment IC at rare_delta<<dx makes simulate() O(n^2) explode (the
-        # 2026-06-20 datagen hang), so the auto value is tied to a tenth of a cell
-        # -- finer than the output grid but still cheap. Pass wft_rare_delta>0 to
-        # override with an explicit absolute fan resolution (smaller = sharper
-        # rarefactions, more fronts, slower on busy ICs).
-        if wft_rare_delta and wft_rare_delta > 0.0:
-            rare_delta = float(wft_rare_delta)
-        else:
-            rare_delta = max(0.1 * dx, 1e-4)
+        rare_delta = (
+            float(wft_rare_delta)
+            if wft_rare_delta and wft_rare_delta > 0.0
+            else max(0.1 * dx, 1e-4)
+        )
         rho_hist, w_hist, _ = solve_arz_wft_xt(
             states, boundaries, x_mid, t, rare_delta=rare_delta,
         )
         return rho_hist.astype(np.float32), w_hist.astype(np.float32)
 
-    if fv_solver == "weno5":
+    if fv_solver in ("weno5", "weno5_char"):
         # WENO5 + SSP-RK3 + Strang-split exact relaxation.
-        # tau=inf -> baseline_tau clamped to a large finite value so exp(-dt/tau)~1.
         baseline_tau = tau if np.isfinite(tau) else 1e12
+        w_cfl = 0.2 if weno_cfl is None else float(weno_cfl)
+        weno_variant = "characteristic" if fv_solver == "weno5_char" else "component"
         rho_hist, w_hist = solve_arz_weno5(
             rho0, w0, x_min, x_max, t_max, nt_out=nt,
-            tau=baseline_tau, cfl=cfl, boundary=boundary,
+            tau=baseline_tau, cfl=w_cfl, boundary=boundary,
+            variant=weno_variant,
         )
         return rho_hist, w_hist
 
@@ -556,39 +521,14 @@ def generate_arz_riemann_exact_dataset(
     )
 
 
-def _worker_generate_sample(args: tuple) -> tuple:
-    """Top-level (picklable) worker for parallel datagen.
-
-    Returns (i, rho0, w0, v0, rho_hist, w_hist, seg, fam).
-    """
-    (i, fam, seg, seed_i,
-     x, x_min, x_max, t_max, nt,
-     tau, cfl, boundary, refine,
-     use_exact_riemann, fv_solver, n_jump_bins,
-     rho_min, rho_max, v_min, v_max, wft_rare_delta,
-     pressure_form) = args
-
-    # Each spawned worker is a fresh process — set_pressure_form must be called
-    # here or it defaults to rho+rho2 regardless of the main process setting.
-    P.set_pressure_form(pressure_form)
-
-    rng = np.random.default_rng(seed_i)
-    rho0, v0 = _sample_rho_v_pair(
-        fam, x.astype(np.float64), seg, rng,
-        rho_min, rho_max, v_min, v_max,
-        n_jump_bins=n_jump_bins,
-    )
-    rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
-    w0 = v0 + P.pressure(rho0)
-    rho_hist, w_hist = _solve_one(
-        fam, rho0, w0,
-        x_min=x_min, x_max=x_max, t_max=t_max, nt=nt,
-        tau=tau, cfl=cfl, boundary=boundary, refine=refine,
-        use_exact_riemann=use_exact_riemann,
-        fv_solver=fv_solver,
-        wft_rare_delta=wft_rare_delta,
-    )
-    return i, rho0.astype(np.float32), w0.astype(np.float32), v0.astype(np.float32), rho_hist, w_hist, seg, fam
+def _weno_max_tries_per_cell(fam: str, per_cell: int, factor: float) -> int:
+    """Cap resampling attempts per stratified cell (WENO instability skips)."""
+    if fam == "riemann_stratified":
+        return max(per_cell + 1, int(math.ceil(per_cell * max(factor, 2.0))))
+    if fam == "piecewise_sine":
+        # Hardest family on coarse grids; needs a much larger draw budget.
+        return max(per_cell + 1, int(math.ceil(per_cell * factor * 8.0)))
+    return max(per_cell + 1, int(math.ceil(per_cell * factor * 2.0)))
 
 
 def generate_arz_dataset(
@@ -604,22 +544,24 @@ def generate_arz_dataset(
     use_exact_riemann: bool = False,
     fv_solver: str = "hll",
     n_jump_bins: int = 0,
-    num_workers: int = 1,
     seed: int = 0,
     rho_min: float = _RHO_MIN_DEFAULT,
     rho_max: float = _RHO_MAX_DEFAULT,
     v_min: float = _V_MIN_DEFAULT,
     v_max: float = _V_MAX_DEFAULT,
-    wft_rare_delta: float = 0.0,
+    show_progress: bool = False,
+    weno_cfl: float = 0.2,
+    weno_max_attempts_factor: float = 20.0,
 ) -> ArzDatasetBundle:
     """Generate a stratified ARZ dataset.
 
     num_samples must be divisible by len(families) * len(segments) (stratified
     quota per cell, matching the LWR datagen convention).
 
-    num_workers: number of parallel processes for solving (default 1). Set to
-    the number of CPUs allocated (e.g. 8) to get near-linear speedup on
-    WENO5 datagen, which is CPU-bound and embarrassingly parallel.
+    When fv_solver is weno5 or weno5_char, unstable samples raise WenoInstabilityError and are
+    skipped; each (family, segment) cell keeps drawing until it collects
+    per_cell successes or hits its family-specific attempt cap
+    (see _weno_max_tries_per_cell).
     """
     n_cells = len(families) * len(segments)
     if num_samples % n_cells != 0:
@@ -629,19 +571,8 @@ def generate_arz_dataset(
         )
     per_cell = num_samples // n_cells
 
-    # Use a single master RNG to generate per-sample seeds deterministically,
-    # so parallel execution produces the same dataset as serial.
-    master_rng = np.random.default_rng(seed)
-    sample_seeds = master_rng.integers(0, 2**31, size=num_samples)
-
-    # Cell-MIDPOINT grid -- the grid the PDE is actually solved on. _solve_one
-    # recomputes x_mid = linspace(x_min+0.5dx, x_max-0.5dx, nx) internally; the IC
-    # is sampled on this same x, and it is stored as the dataset's `x`. (Previously
-    # `x` was linspace(x_min, x_max, nx) -- ENDPOINT-inclusive -- which mislabeled
-    # the grid by ~half a cell and gave dx_stored = 2/(nx-1) instead of the true
-    # 2/nx, a ~0.8% error the model's rel_x/dx and CFL features inherited.)
-    dx = (x_max - x_min) / nx
-    x = np.linspace(x_min + 0.5 * dx, x_max - 0.5 * dx, nx, dtype=np.float32)
+    rng = np.random.default_rng(seed)
+    x = np.linspace(x_min, x_max, nx, dtype=np.float32)
     t = np.linspace(0.0, t_max, nt, dtype=np.float32)
 
     rho_all = np.zeros((num_samples, nt, nx), dtype=np.float32)
@@ -654,53 +585,75 @@ def generate_arz_dataset(
 
     print(
         f"[arz datagen] N={num_samples}  cells={n_cells}  per_cell={per_cell}  "
+        f"weno_max_attempts_factor={weno_max_attempts_factor}  "
         f"families={families}  segments={segments}  tau={tau}  refine={refine}  "
-        f"fv_solver={fv_solver}  use_exact_riemann={use_exact_riemann}  "
-        f"n_jump_bins={n_jump_bins}  num_workers={num_workers}  "
+        f"fv_solver={fv_solver}  weno_cfl={weno_cfl}  use_exact_riemann={use_exact_riemann}  "
+        f"n_jump_bins={n_jump_bins}  "
         f"rho in [{rho_min}, {rho_max}]  v in [{v_min}, {v_max}]"
     )
 
-    # Build flat list of (global_index, family, segments) in deterministic order.
-    work_items = []
-    idx = 0
+    if show_progress:
+        from tqdm.auto import tqdm
+    pbar = tqdm(total=num_samples, desc="arz datagen", unit="sample") if show_progress else None
+    weno_skips = 0
+    write = pbar.write if pbar is not None else print
+    i = 0
+
     for seg in segments:
         for fam in families:
-            for _ in range(per_cell):
-                work_items.append((
-                    idx, fam, seg, int(sample_seeds[idx]),
-                    x, x_min, x_max, t_max, nt,
-                    tau, cfl, boundary, refine,
-                    use_exact_riemann, fv_solver, n_jump_bins,
-                    rho_min, rho_max, v_min, v_max, wft_rare_delta,
-                    P.get_pressure_form(),
-                ))
-                idx += 1
+            max_tries = _weno_max_tries_per_cell(fam, per_cell, weno_max_attempts_factor)
+            got = 0
+            tries = 0
+            while got < per_cell:
+                tries += 1
+                if tries > max_tries:
+                    raise RuntimeError(
+                        f"Cell ({fam}, seg={seg}) collected {got}/{per_cell} samples after "
+                        f"{max_tries} attempts ({weno_skips} WENO skips total). "
+                        f"Increase weno_max_attempts_factor (currently {weno_max_attempts_factor}), "
+                        f"or reduce nx/nt/refine for WENO piecewise ICs."
+                    )
+                rho0, v0 = _sample_rho_v_pair(
+                    fam, x.astype(np.float64), seg, rng,
+                    rho_min, rho_max, v_min, v_max,
+                    n_jump_bins=n_jump_bins,
+                )
+                rho0 = np.clip(rho0, P.RHO_MIN, 1.0 - 1e-6)
+                w0 = v0 + P.pressure(rho0)
+                try:
+                    rho_hist, w_hist = _solve_one(
+                        fam, rho0, w0,
+                        x_min=x_min, x_max=x_max, t_max=t_max, nt=nt,
+                        tau=tau, cfl=cfl, boundary=boundary, refine=refine,
+                        use_exact_riemann=use_exact_riemann,
+                        fv_solver=fv_solver,
+                        weno_cfl=weno_cfl,
+                    )
+                except WenoInstabilityError as exc:
+                    weno_skips += 1
+                    if weno_skips <= 5 or weno_skips % 10 == 0:
+                        write(f"[weno skip] {fam} seg={seg}: {exc}")
+                    continue
 
-    def _collect(result):
-        i, rho0, w0, v0, rho_hist, w_hist, seg, fam = result
-        rho_all[i] = rho_hist
-        w_all[i] = w_hist
-        rho0_all[i] = rho0
-        w0_all[i] = w0
-        v0_all[i] = v0
-        seg_meta[i] = seg
-        ic_meta[i] = fam
+                rho_all[i] = rho_hist
+                w_all[i] = w_hist
+                rho0_all[i] = rho0.astype(np.float32)
+                w0_all[i] = w0.astype(np.float32)
+                v0_all[i] = v0.astype(np.float32)
+                seg_meta[i] = seg
+                ic_meta[i] = fam
+                i += 1
+                got += 1
+                if pbar is not None:
+                    pbar.update(1)
+                    pbar.set_postfix(seg=seg, fam=fam.split("_")[0], skipped=weno_skips, refresh=False)
+                elif i % max(1, num_samples // 10) == 0:
+                    print(f"  {i}/{num_samples}  skipped={weno_skips}", flush=True)
 
-    if num_workers > 1:
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=num_workers) as pool:
-            done = 0
-            log_every = max(1, num_samples // 10)
-            for result in pool.imap_unordered(_worker_generate_sample, work_items, chunksize=4):
-                _collect(result)
-                done += 1
-                if done % log_every == 0:
-                    print(f"  {done}/{num_samples}", flush=True)
-    else:
-        for k, item in enumerate(work_items):
-            _collect(_worker_generate_sample(item))
-            if (k + 1) % max(1, num_samples // 10) == 0:
-                print(f"  {k+1}/{num_samples}", flush=True)
+    if pbar is not None:
+        pbar.close()
+    if weno_skips:
+        print(f"[arz datagen] skipped {weno_skips} unstable WENO samples", flush=True)
 
     # v field from (rho, w).
     v_all = w_all - P.pressure(rho_all)
@@ -753,50 +706,37 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Generate ARZ dataset.")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--N", type=int, default=6)
-    parser.add_argument("--nx", type=int, default=64)
-    parser.add_argument("--nt", type=int, default=32)
-    parser.add_argument("--x-min", type=float, default=0.0)
+    parser.add_argument("--N", type=int, default=6000)
+    parser.add_argument("--nx", type=int, default=128)
+    parser.add_argument("--nt", type=int, default=128)
+    parser.add_argument("--x-min", type=float, default=-1.0)
     parser.add_argument("--x-max", type=float, default=1.0)
-    parser.add_argument("--t-max", type=float, default=0.3)
-    parser.add_argument("--tau", type=float, default=0.1)
+    parser.add_argument("--t-max", type=float, default=1.0)
+    parser.add_argument("--tau", type=float, default=float("inf"))
     parser.add_argument(
         "--families", type=str,
         default="riemann_stratified,piecewise_constant_stratified,piecewise_sine",
     )
-    parser.add_argument("--segments", type=str, default="2,3")
+    parser.add_argument("--segments", type=str, default="2,3,5,7,10")
     parser.add_argument("--cfl", type=float, default=0.4)
     parser.add_argument("--boundary", type=str, default="ghost")
     parser.add_argument("--refine", type=int, default=4)
-    parser.add_argument("--num-workers", type=int, default=1,
-                        help="Number of parallel worker processes for solving. "
-                             "Set to the number of CPUs allocated (e.g. 8).")
-    parser.add_argument("--n-jump-bins", type=int, default=0,
+    parser.add_argument("--n-jump-bins", type=int, default=8,
                         help="Number of jump-magnitude bins for riemann_stratified ICs "
                              "in the multi-disc path. 0 = legacy U(0.03,0.95)*span draw "
                              "(under-samples weak jumps). >0 = bins of equal width over "
                              "[0, span] chosen uniformly, guaranteeing weak and strong "
-                             "jumps are equally represented. Recommended: 8.")
+                             "jumps are equally represented.")
     parser.add_argument("--fv-solver", type=str, default="hll",
-                        choices=["hll", "weno5", "wft"],
+                        choices=["hll", "weno5", "weno5_char", "wft"],
                         help="Solver for non-exact-Riemann samples: "
-                             "'hll' (default, Strang-split HLL), "
-                             "'weno5' (WENO5+SSP-RK3+Strang-split relaxation), or "
-                             "'wft' (wave-front tracking, MACHINE-PRECISION GT for "
-                             "ALL piecewise-constant IC families incl. piecewise_sine "
-                             "= sine staircase; homogeneous tau=inf only; NO HLL "
-                             "fallback -- a smooth IC raises). "
-                             "Riemann ICs with --use-exact-riemann still use the "
-                             "exact solver regardless of this flag.")
-    parser.add_argument("--wft-rare-delta", type=float, default=0.0,
-                        help="WFT rarefaction-fan resolution (absolute, in rho units) "
-                             "for --fv-solver wft. 0 (default) = auto = 0.1*dx (a tenth "
-                             "of a cell; finer than the output grid, still cheap). "
-                             "Smaller = sharper rarefactions but more fronts and slower "
-                             "on busy multi-segment ICs (rare_delta << dx can make the "
-                             "front tracker O(n^2)-explode -- watch the per-sample time).")
-    parser.add_argument("--use-exact-riemann", action="store_true",
-                        help="Use exact homogeneous (tau=inf) solver for Riemann ICs.")
+                             "'hll' (default), 'weno5', 'weno5_char', or "
+                             "'wft' (wave-front tracking). "
+                             "Riemann ICs still use the exact solver by default.")
+    parser.add_argument("--use-exact-riemann", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use exact homogeneous (tau=inf) solver for Riemann ICs "
+                             "(default True). Pass --no-use-exact-riemann to disable.")
     parser.add_argument("--exact-riemann-only", action="store_true",
                         help="Generate a pure exact-Riemann dataset evaluated at cell midpoints "
                              "(no FVM; overrides --families/--segments/--tau).")
@@ -808,17 +748,16 @@ if __name__ == "__main__":
     parser.add_argument("--n-strength-bins", type=int, default=4,
                         help="Number of jump-strength bins per axis for "
                              "--stratified-riemann (grid = 2 x bins^2 cells).")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--rho-min", type=float, default=_RHO_MIN_DEFAULT)
     parser.add_argument("--rho-max", type=float, default=_RHO_MAX_DEFAULT)
     parser.add_argument("--v-min",   type=float, default=_V_MIN_DEFAULT)
     parser.add_argument("--v-max",   type=float, default=_V_MAX_DEFAULT)
-    parser.add_argument("--pressure-form", type=str, default=None,
-                        help="Pressure closure: 'rho' or 'rho+rho2' (default: current module default).")
+    parser.add_argument("--pressure-form", type=str, default="rho",
+                        help="Pressure closure: 'rho' (default) or 'rho+rho2'.")
     args = parser.parse_args()
 
-    if args.pressure_form is not None:
-        P.set_pressure_form(args.pressure_form)
+    P.set_pressure_form(args.pressure_form)
     print(f"[arz datagen] pressure_form={P.get_pressure_form()}")
 
     if args.exact_riemann_only:
@@ -842,11 +781,9 @@ if __name__ == "__main__":
             use_exact_riemann=args.use_exact_riemann,
             fv_solver=args.fv_solver,
             n_jump_bins=args.n_jump_bins,
-            num_workers=args.num_workers,
             seed=args.seed,
             rho_min=args.rho_min, rho_max=args.rho_max,
             v_min=args.v_min,     v_max=args.v_max,
-            wft_rare_delta=args.wft_rare_delta,
         )
     save_arz_dataset(bundle, args.out)
     print(f"[arz datagen] saved {args.out}  shapes: rho={bundle.rho.shape}")
